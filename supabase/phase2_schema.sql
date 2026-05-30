@@ -5,7 +5,7 @@ create table if not exists public.projects (
   title text not null,
   research_question text not null default '',
   study_description text not null default '',
-  language text not null default 'English' check (language in ('English')),
+  language text not null default 'English' check (language in ('English', 'Chinese')),
   protocol text not null default 'GDIQR' check (protocol in ('GDIQR')),
   light_interpretation boolean not null default false,
   status text not null default 'Draft',
@@ -144,7 +144,7 @@ insert into public.projects (
   'proj_student_wellbeing',
   'Student Well-being Interview Study',
   'How do students describe their experiences of brief mindfulness practice and peer support?',
-  'Prototype demo project using a short English interview excerpt for GDIQR-guided analysis.',
+  'Prototype demo project using a short English interview excerpt for qualitative analysis.',
   'English',
   'GDIQR',
   false,
@@ -295,7 +295,7 @@ insert into public.audit_events (
   action,
   target
 ) values
-  ('audit_001', 'proj_student_wellbeing', '2026-05-29 18:40:00+00', 'Researcher', 'Created project with GDIQR protocol', 'Project setup'),
+  ('audit_001', 'proj_student_wellbeing', '2026-05-29 18:40:00+00', 'Researcher', 'Created project using GDIQR method', 'Project setup'),
   ('audit_002', 'proj_student_wellbeing', '2026-05-29 18:44:00+00', 'AI', 'Generated draft meaning units and concise summaries', 'SEG-001'),
   ('audit_003', 'proj_student_wellbeing', '2026-05-29 18:47:00+00', 'Reviewer', 'Flagged uncertainty around MU 5', 'MU 5'),
   ('audit_004', 'proj_student_wellbeing', '2026-05-29 18:49:00+00', 'Researcher', 'Edited human summary for MU 7', 'MU 7')

@@ -1,4 +1,4 @@
-# GDIQR Protocol-Guided Qualitative Analysis Prototype
+# GDIQR Qualitative Analysis Prototype
 
 This is a GDIQR-specific qualitative analysis workspace. Phase 1 was a mock prototype; Phase 2 adds a Supabase-backed API layer while keeping mock fallback behavior for local demo use.
 
@@ -6,7 +6,7 @@ This is a GDIQR-specific qualitative analysis workspace. Phase 1 was a mock prot
 
 - Project setup for one GDIQR study.
 - Mock audio upload state.
-- Editable English transcript.
+- Editable English or Chinese transcript.
 - Segment overview with continuous meaning unit numbering.
 - Editable Meaning Units + Summaries table.
 - Mode A, Mode B, and Mode C category workflow.
@@ -64,3 +64,5 @@ Run `supabase/phase2_schema.sql` in the Supabase SQL Editor, then fill `.env.loc
 See `LOCAL_AI_PHASE3.md` for the Ollama setup path and the recommended order for replacing mock AI responses with a local provider.
 
 For live local testing against remote Supabase data, use `LOCAL_AI_TESTING.md`.
+
+For Chinese audio/transcript support, see `CHINESE_AUDIO_SUPPORT.md`.

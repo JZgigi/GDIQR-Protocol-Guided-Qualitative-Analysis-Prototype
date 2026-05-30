@@ -17,7 +17,7 @@ export interface Project {
   title: string;
   researchQuestion: string;
   studyDescription: string;
-  language: "English";
+  language: "English" | "Chinese";
   protocol: "GDIQR";
   lightInterpretation: boolean;
   status: string;

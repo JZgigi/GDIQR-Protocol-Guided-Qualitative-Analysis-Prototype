@@ -316,7 +316,7 @@ export function GdiqrWorkspace({
           <div>
             <h1 className="brand-title">GDIQR Analysis Assistant</h1>
             <p className="brand-subtitle">
-              Protocol-guided qualitative analysis prototype
+              Qualitative analysis workspace
             </p>
           </div>
         </div>
@@ -389,9 +389,9 @@ export function GdiqrWorkspace({
                 <span className="badge">Current view</span>
                 <h2 className="section-title">{selectedTitle}</h2>
                 <p className="section-copy">
-                  This mock prototype keeps GDIQR stages separate: transcript
+                  This workspace keeps the analysis stages separate: transcript
                   work, meaning unit summaries, category construction, reviewer
-                  checks, and audit export.
+                  checks, and audit export. GDIQR is used as the default method.
                 </p>
                 <p className="small">{apiStatus}</p>
               </div>
@@ -413,7 +413,7 @@ export function GdiqrWorkspace({
 
             {activeStep === "setup" && (
               <div className="section-body grid">
-                <div className="grid two">
+                <div className="grid">
                   <div>
                     <label className="label" htmlFor="project-title">
                       Project title
@@ -422,17 +422,6 @@ export function GdiqrWorkspace({
                       className="field"
                       defaultValue={project.title}
                       id="project-title"
-                    />
-                  </div>
-                  <div>
-                    <label className="label" htmlFor="protocol">
-                      Protocol
-                    </label>
-                    <input
-                      className="field"
-                      defaultValue={`${project.protocol} only`}
-                      id="protocol"
-                      readOnly
                     />
                   </div>
                 </div>
@@ -462,6 +451,10 @@ export function GdiqrWorkspace({
                     <strong>{project.language}</strong>
                   </div>
                   <div className="mini-card soft">
+                    <span className="label">Analysis method</span>
+                    <strong>GDIQR</strong>
+                  </div>
+                  <div className="mini-card soft">
                     <span className="label">Light interpretation</span>
                     <button
                       className={`button ${
@@ -489,8 +482,9 @@ export function GdiqrWorkspace({
                     <FileAudio size={28} />
                     <h3>Audio upload</h3>
                     <p className="small">
-                      Phase 1 uses a demo transcript. Phase 2 will store audio
-                      in Supabase Storage and attach transcription status.
+                      Audio files can be stored in Supabase Storage. Local
+                      transcription is the next worker step; Chinese transcripts
+                      can already be analyzed after transcription.
                     </p>
                     <button className="button primary" type="button">
                       <Upload size={18} />

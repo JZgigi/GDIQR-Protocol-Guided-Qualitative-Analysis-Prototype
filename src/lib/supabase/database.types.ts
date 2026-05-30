@@ -15,7 +15,7 @@ export interface Database {
           title: string;
           research_question: string;
           study_description: string;
-          language: "English";
+          language: "English" | "Chinese";
           protocol: "GDIQR";
           light_interpretation: boolean;
           status: string;
@@ -26,7 +26,7 @@ export interface Database {
           title: string;
           research_question?: string;
           study_description?: string;
-          language?: "English";
+          language?: "English" | "Chinese";
           protocol?: "GDIQR";
           light_interpretation?: boolean;
           status?: string;

@@ -119,6 +119,7 @@ Rules:
 
 Project title: ${input.project.title}
 Research question: ${input.project.researchQuestion}
+Interview language: ${input.project.language}
 Light interpretation: ${input.lightInterpretation ? "on" : "off"}
 
 Transcript:
@@ -195,6 +196,7 @@ Rules:
 }
 
 Research question: ${input.project.researchQuestion}
+Interview language: ${input.project.language}
 Meaning units:
 ${input.units
   .map(

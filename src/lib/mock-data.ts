@@ -13,7 +13,7 @@ export const mockProject: Project = {
   researchQuestion:
     "How do students describe their experiences of brief mindfulness practice and peer support?",
   studyDescription:
-    "Prototype demo project using a short English interview excerpt for GDIQR-guided analysis.",
+    "Prototype demo project using a short English interview excerpt for qualitative analysis.",
   language: "English",
   protocol: "GDIQR",
   lightInterpretation: false,
@@ -247,7 +247,7 @@ export const mockAuditEvents: AuditEvent[] = [
     id: "audit_001",
     timestamp: "2026-05-29 18:40",
     actor: "Researcher",
-    action: "Created project with GDIQR protocol",
+    action: "Created project using GDIQR method",
     target: "Project setup"
   },
   {

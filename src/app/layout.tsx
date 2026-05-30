@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "GDIQR Analysis Assistant",
   description:
-    "A protocol-guided qualitative analysis prototype for GDIQR workflows."
+    "A qualitative analysis workspace using GDIQR as the default method."
 };
 
 export default function RootLayout({

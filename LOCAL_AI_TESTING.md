@@ -90,6 +90,7 @@ Meaning-unit generation replaces the current project meaning units. Reviewer gen
 - The local model may occasionally return invalid JSON. The API will show an error instead of saving malformed output.
 - Long transcripts may exceed the useful context window for `qwen3:8b`; test one segment at a time first.
 - Local transcription is not wired yet. This test path starts from an existing transcript row in Supabase.
+- Chinese transcripts are supported; direct Chinese audio transcription is the next worker step.
 
 ## 6. Next development step
 

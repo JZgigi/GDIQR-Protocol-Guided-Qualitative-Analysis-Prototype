@@ -97,7 +97,7 @@ Do not store raw service-role keys, local model logs, or sensitive transcript sn
 
 ## 7. Local transcription after text AI
 
-For audio transcription, use a separate local service rather than blocking the Next.js request:
+For audio transcription, including Chinese audio, use a separate local service rather than blocking the Next.js request:
 
 ```text
 audio upload -> Supabase Storage -> transcription job -> local faster-whisper worker -> transcript row
@@ -110,3 +110,5 @@ Whisper large-v3-turbo through faster-whisper
 ```
 
 This should be treated as a later Phase 3 subtask after the text-only Ollama flow is stable.
+
+For Chinese audio specifics, see `CHINESE_AUDIO_SUPPORT.md`.
