@@ -34,6 +34,15 @@ For Phase 1, keep:
 AI_PROVIDER=mock
 ```
 
+For Phase 2 Supabase persistence, also fill:
+
+```text
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_ANON_OR_PUBLISHABLE_KEY
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+GDIQR_DEFAULT_PROJECT_ID=proj_student_wellbeing
+```
+
 For the later local AI phase:
 
 ```text
@@ -74,6 +83,8 @@ AI_PROVIDER=mock
 
 The Vercel demo will use mock data, so reviewers can open it without installing Ollama or Supabase.
 
+For local AI setup after Phase 2 is stable, see `LOCAL_AI_PHASE3.md`.
+
 ## 5. Supabase Setup for Phase 2
 
 Create a Supabase project, then collect:
@@ -83,6 +94,8 @@ NEXT_PUBLIC_SUPABASE_URL
 NEXT_PUBLIC_SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY
 ```
+
+Then run `supabase/phase2_schema.sql` in the Supabase SQL Editor. The SQL creates the first tables, enables RLS, grants server-side Data API access, creates Storage buckets, and seeds the demo project.
 
 Planned storage buckets:
 

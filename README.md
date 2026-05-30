@@ -1,6 +1,6 @@
 # GDIQR Protocol-Guided Qualitative Analysis Prototype
 
-This is a Phase 1 mock prototype for a GDIQR-specific qualitative analysis workspace. It demonstrates the intended end-to-end flow before connecting Supabase, local transcription, or a local LLM.
+This is a GDIQR-specific qualitative analysis workspace. Phase 1 was a mock prototype; Phase 2 adds a Supabase-backed API layer while keeping mock fallback behavior for local demo use.
 
 ## Current Prototype Scope
 
@@ -12,7 +12,8 @@ This is a Phase 1 mock prototype for a GDIQR-specific qualitative analysis works
 - Mode A, Mode B, and Mode C category workflow.
 - Reviewer agent panels.
 - Mock export and audit trail.
-- Mock API routes for future AI provider switching.
+- Mock AI API routes for future AI provider switching.
+- Supabase-backed workspace API for projects, transcripts, segments, meaning units, category systems, reviewer comments, and audit events.
 
 ## Planned Provider Strategy
 
@@ -47,3 +48,17 @@ POST /api/ai/reviewer
 ```
 
 These routes currently return deterministic mock outputs so the interface can be demonstrated on Vercel without a live model.
+
+## Phase 2 Supabase Routes
+
+```http
+GET /api/workspace
+POST /api/transcript-versions
+PATCH /api/meaning-units/:unitId
+```
+
+Run `supabase/phase2_schema.sql` in the Supabase SQL Editor, then fill `.env.local` with `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `GDIQR_DEFAULT_PROJECT_ID`. See `SUPABASE_PHASE2.md` for the Supabase dashboard checklist.
+
+## Phase 3 Local AI
+
+See `LOCAL_AI_PHASE3.md` for the Ollama setup path and the recommended order for replacing mock AI responses with a local provider.

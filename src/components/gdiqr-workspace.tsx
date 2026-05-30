@@ -33,6 +33,7 @@ import type {
   TranscriptSegment,
   WorkflowStep
 } from "@/lib/types";
+import type { WorkspaceData } from "@/lib/gdiqr-repository";
 
 const steps: Array<{
   id: WorkflowStep;
@@ -58,6 +59,8 @@ interface GdiqrWorkspaceProps {
   reviewerComments: ReviewerComment[];
   auditEvents: AuditEvent[];
   integratedNarrative: string;
+  dataSource?: WorkspaceData["dataSource"];
+  supabaseConfigured?: boolean;
 }
 
 export function GdiqrWorkspace({
@@ -68,7 +71,9 @@ export function GdiqrWorkspace({
   categories,
   reviewerComments,
   auditEvents,
-  integratedNarrative
+  integratedNarrative,
+  dataSource = "mock",
+  supabaseConfigured = false
 }: GdiqrWorkspaceProps) {
   const [activeStep, setActiveStep] = useState<WorkflowStep>("setup");
   const [mode, setMode] = useState<CategoryMode>("A");
@@ -76,7 +81,18 @@ export function GdiqrWorkspace({
     project.lightInterpretation
   );
   const [editableTranscript, setEditableTranscript] = useState(transcript);
+  const [displaySegments, setDisplaySegments] = useState(segments);
   const [units, setUnits] = useState(meaningUnits);
+  const [displayCategories, setDisplayCategories] = useState(categories);
+  const [reviewerOutputs, setReviewerOutputs] = useState(reviewerComments);
+  const [displayAuditEvents, setDisplayAuditEvents] = useState(auditEvents);
+  const [narrative, setNarrative] = useState(integratedNarrative);
+  const [apiDataSource, setApiDataSource] = useState(dataSource);
+  const [apiStatus, setApiStatus] = useState(
+    supabaseConfigured
+      ? `Loaded from ${dataSource}`
+      : "Supabase env missing; using mock data"
+  );
   const [reviewerHasRun, setReviewerHasRun] = useState(true);
 
   const completedSteps = useMemo(
@@ -95,6 +111,100 @@ export function GdiqrWorkspace({
 
   const selectedTitle = steps.find((step) => step.id === activeStep)?.label;
 
+  function applyWorkspace(workspace: WorkspaceData) {
+    setEditableTranscript(workspace.transcript);
+    setDisplaySegments(workspace.segments);
+    setUnits(workspace.meaningUnits);
+    setDisplayCategories(workspace.categories);
+    setReviewerOutputs(workspace.reviewerComments);
+    setDisplayAuditEvents(workspace.auditEvents);
+    setNarrative(workspace.integratedNarrative);
+    setApiDataSource(workspace.dataSource);
+    setApiStatus(`Loaded from ${workspace.dataSource}`);
+  }
+
+  async function refreshWorkspace() {
+    setApiStatus("Loading workspace API...");
+    const response = await fetch(`/api/workspace?projectId=${project.id}`, {
+      cache: "no-store"
+    });
+    const workspace = (await response.json()) as WorkspaceData;
+    applyWorkspace(workspace);
+  }
+
+  async function saveTranscriptVersion() {
+    setApiStatus("Saving transcript version...");
+    const response = await fetch("/api/transcript-versions", {
+      body: JSON.stringify({
+        content: editableTranscript,
+        projectId: project.id
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+    const result = (await response.json()) as {
+      saved?: boolean;
+      reason?: string;
+      error?: string;
+    };
+    setApiStatus(
+      result.saved
+        ? "Transcript version saved"
+        : result.reason ?? result.error ?? "Transcript save failed"
+    );
+  }
+
+  async function generateMeaningUnits() {
+    setApiStatus("Calling meaning-unit API...");
+    const response = await fetch("/api/ai/meaning-units", {
+      body: JSON.stringify({
+        lightInterpretation,
+        projectId: project.id,
+        transcript: editableTranscript
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+    const result = (await response.json()) as { meaningUnits?: MeaningUnit[] };
+    if (result.meaningUnits) {
+      setUnits(result.meaningUnits);
+      setApiStatus("Meaning-unit API response applied");
+    }
+  }
+
+  async function runCategories() {
+    setApiStatus(`Calling category API Mode ${mode}...`);
+    const response = await fetch("/api/ai/categories", {
+      body: JSON.stringify({ mode, projectId: project.id, units }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+    const result = (await response.json()) as {
+      categories?: CategoryNode[];
+      integratedNarrative?: string;
+    };
+    if (result.categories) {
+      setDisplayCategories(result.categories);
+    }
+    setNarrative(result.integratedNarrative ?? "");
+    setApiStatus(`Category API Mode ${mode} response applied`);
+  }
+
+  async function runReviewer() {
+    setApiStatus("Calling reviewer API...");
+    const response = await fetch("/api/ai/reviewer", {
+      body: JSON.stringify({ projectId: project.id, units }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+    const result = (await response.json()) as {
+      comments?: ReviewerComment[];
+    };
+    setReviewerOutputs(result.comments ?? []);
+    setReviewerHasRun(true);
+    setApiStatus("Reviewer API response applied");
+  }
+
   function updateHumanSummary(unitId: string, value: string) {
     setUnits((current) =>
       current.map((unit) =>
@@ -105,11 +215,42 @@ export function GdiqrWorkspace({
     );
   }
 
-  function markAccepted(unitId: string) {
+  async function markAccepted(unitId: string) {
+    const unit = units.find((item) => item.id === unitId);
     setUnits((current) =>
       current.map((unit) =>
         unit.id === unitId ? { ...unit, humanStatus: "Accepted" } : unit
       )
+    );
+    setApiStatus("Saving meaning-unit decision...");
+
+    const response = await fetch(`/api/meaning-units/${unitId}`, {
+      body: JSON.stringify({
+        humanStatus: "Accepted",
+        humanSummary: unit?.humanSummary
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH"
+    });
+    const result = (await response.json()) as {
+      saved?: boolean;
+      reason?: string;
+      error?: string;
+      meaningUnit?: MeaningUnit;
+    };
+
+    if (result.meaningUnit) {
+      setUnits((current) =>
+        current.map((item) =>
+          item.id === result.meaningUnit?.id ? result.meaningUnit : item
+        )
+      );
+    }
+
+    setApiStatus(
+      result.saved
+        ? "Meaning-unit decision saved"
+        : result.reason ?? result.error ?? "Meaning-unit save skipped"
     );
   }
 
@@ -127,8 +268,24 @@ export function GdiqrWorkspace({
         </div>
         <div className="topbar-actions">
           <span className="badge blue">AI provider: mock</span>
-          <span className="badge">Supabase ready: Phase 2</span>
-          <button className="button soft" type="button" title="Run mock AI">
+          <span className="badge">
+            Data: {apiDataSource === "supabase" ? "Supabase" : "Mock"}
+          </span>
+          <button
+            className="button soft"
+            onClick={refreshWorkspace}
+            type="button"
+            title="Reload workspace data"
+          >
+            <RefreshCcw size={18} />
+            Refresh API
+          </button>
+          <button
+            className="button soft"
+            onClick={generateMeaningUnits}
+            type="button"
+            title="Run mock AI"
+          >
             <Bot size={18} />
             Run mock AI
           </button>
@@ -182,6 +339,7 @@ export function GdiqrWorkspace({
                   work, meaning unit summaries, category construction, reviewer
                   checks, and audit export.
                 </p>
+                <p className="small">{apiStatus}</p>
               </div>
               <button
                 className="button"
@@ -309,7 +467,11 @@ export function GdiqrWorkspace({
                     <RefreshCcw size={18} />
                     Clean transcript
                   </button>
-                  <button className="button" type="button">
+                  <button
+                    className="button"
+                    onClick={saveTranscriptVersion}
+                    type="button"
+                  >
                     <Archive size={18} />
                     Save version
                   </button>
@@ -328,7 +490,7 @@ export function GdiqrWorkspace({
 
             {activeStep === "segments" && (
               <div className="section-body grid">
-                {segments.map((segment) => (
+                {displaySegments.map((segment) => (
                   <div className="mini-card" key={segment.id}>
                     <div className="category-header">
                       <div>
@@ -359,11 +521,19 @@ export function GdiqrWorkspace({
             {activeStep === "meaning-units" && (
               <div className="section-body grid">
                 <div className="button-row">
-                  <button className="button primary" type="button">
+                  <button
+                    className="button primary"
+                    onClick={generateMeaningUnits}
+                    type="button"
+                  >
                     <Bot size={18} />
                     Generate draft MUs
                   </button>
-                  <button className="button" type="button">
+                  <button
+                    className="button"
+                    onClick={runReviewer}
+                    type="button"
+                  >
                     <ShieldCheck size={18} />
                     Run reviewer
                   </button>
@@ -451,7 +621,11 @@ export function GdiqrWorkspace({
                   />
                 </div>
                 <div className="button-row">
-                  <button className="button primary" type="button">
+                  <button
+                    className="button primary"
+                    onClick={runCategories}
+                    type="button"
+                  >
                     <Bot size={18} />
                     Run Mode {mode}
                   </button>
@@ -462,14 +636,14 @@ export function GdiqrWorkspace({
                   )}
                 </div>
                 <div className="grid">
-                  {categories.map((category) => (
+                  {displayCategories.map((category) => (
                     <CategoryBlock category={category} key={category.id} />
                   ))}
                 </div>
                 {mode === "C" && (
                   <div className="mini-card soft">
                     <span className="label">Integrated narrative</span>
-                    <p>{integratedNarrative}</p>
+                    <p>{narrative}</p>
                   </div>
                 )}
               </div>
@@ -480,7 +654,7 @@ export function GdiqrWorkspace({
                 <div className="button-row">
                   <button
                     className="button primary"
-                    onClick={() => setReviewerHasRun(true)}
+                    onClick={runReviewer}
                     type="button"
                   >
                     <SearchCheck size={18} />
@@ -491,7 +665,7 @@ export function GdiqrWorkspace({
                   </span>
                 </div>
                 <div className="grid two">
-                  {reviewerComments.map((comment) => (
+                  {reviewerOutputs.map((comment) => (
                     <div className="mini-card" key={comment.id}>
                       <div className="category-header">
                         <div>
@@ -529,7 +703,7 @@ export function GdiqrWorkspace({
                 <div className="mini-card soft">
                   <span className="label">Audit trail</span>
                   <div className="timeline">
-                    {auditEvents.map((event) => (
+                    {displayAuditEvents.map((event) => (
                       <div className="timeline-item" key={event.id}>
                         <span className="mono small">{event.timestamp}</span>
                         <div>

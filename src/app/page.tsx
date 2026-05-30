@@ -1,26 +1,23 @@
 import { GdiqrWorkspace } from "@/components/gdiqr-workspace";
-import {
-  integratedNarrative,
-  mockAuditEvents,
-  mockCategories,
-  mockMeaningUnits,
-  mockProject,
-  mockReviewerComments,
-  mockSegments,
-  mockTranscript
-} from "@/lib/mock-data";
+import { getWorkspace } from "@/lib/gdiqr-repository";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  const workspace = await getWorkspace();
+
   return (
     <GdiqrWorkspace
-      auditEvents={mockAuditEvents}
-      categories={mockCategories}
-      integratedNarrative={integratedNarrative}
-      meaningUnits={mockMeaningUnits}
-      project={mockProject}
-      reviewerComments={mockReviewerComments}
-      segments={mockSegments}
-      transcript={mockTranscript}
+      auditEvents={workspace.auditEvents}
+      categories={workspace.categories}
+      dataSource={workspace.dataSource}
+      integratedNarrative={workspace.integratedNarrative}
+      meaningUnits={workspace.meaningUnits}
+      project={workspace.project}
+      reviewerComments={workspace.reviewerComments}
+      segments={workspace.segments}
+      supabaseConfigured={workspace.supabaseConfigured}
+      transcript={workspace.transcript}
     />
   );
 }
