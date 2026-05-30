@@ -10,6 +10,7 @@ import {
 } from "@/lib/mock-data";
 import type {
   AuditEvent,
+  CategoryMode,
   CategoryNode,
   MeaningUnit,
   Project,
@@ -229,6 +230,178 @@ export async function updateMeaningUnit({
   return { saved: true, meaningUnit: mapMeaningUnit(data) };
 }
 
+export async function replaceMeaningUnitsFromAi({
+  projectId = defaultProjectId,
+  units
+}: {
+  projectId?: string;
+  units: MeaningUnit[];
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured.", units };
+  }
+
+  await supabase.from("meaning_units").delete().eq("project_id", projectId);
+
+  if (units.length === 0) {
+    return { saved: true, units: [] };
+  }
+
+  const rows: Array<Database["public"]["Tables"]["meaning_units"]["Insert"]> =
+    units.map((unit) => ({
+      id: stableId("mu", projectId, unit.number),
+      project_id: projectId,
+      segment_id: unit.segmentId,
+      case_id: unit.caseId,
+      speaker: unit.speaker,
+      unit_number: unit.number,
+      excerpt: unit.excerpt,
+      ai_summary: unit.aiSummary,
+      human_summary: unit.humanSummary,
+      tentative_interpretation: unit.tentativeInterpretation ?? null,
+      uncertainty: unit.uncertainty ?? null,
+      human_status: unit.humanStatus,
+      reviewer_status: unit.reviewerStatus
+    }));
+
+  const { data, error } = await supabase
+    .from("meaning_units")
+    .insert(rows)
+    .select()
+    .order("unit_number", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "AI",
+    action: `Generated ${units.length} local AI meaning units`,
+    target: "Meaning Units"
+  });
+
+  return {
+    saved: true,
+    units: (data ?? []).map(mapMeaningUnit)
+  };
+}
+
+export async function saveCategorySystemFromAi({
+  categories,
+  integratedNarrative,
+  mode,
+  projectId = defaultProjectId
+}: {
+  categories: CategoryNode[];
+  integratedNarrative: string;
+  mode: CategoryMode;
+  projectId?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return {
+      saved: false,
+      reason: "Supabase is not configured.",
+      categories,
+      integratedNarrative
+    };
+  }
+
+  const { data: system, error: systemError } = await supabase
+    .from("category_systems")
+    .insert({
+      project_id: projectId,
+      mode,
+      integrated_narrative: integratedNarrative
+    })
+    .select()
+    .single();
+
+  if (systemError) {
+    throw new Error(systemError.message);
+  }
+
+  const rows = flattenCategoryRows(categories, system.id);
+  if (rows.length > 0) {
+    const { error } = await supabase.from("categories").insert(rows);
+    if (error) {
+      throw new Error(error.message);
+    }
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "AI",
+    action: `Generated local AI category system Mode ${mode}`,
+    target: system.id
+  });
+
+  return {
+    saved: true,
+    categories,
+    integratedNarrative
+  };
+}
+
+export async function replaceReviewerCommentsFromAi({
+  comments,
+  projectId = defaultProjectId
+}: {
+  comments: ReviewerComment[];
+  projectId?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured.", comments };
+  }
+
+  await supabase
+    .from("reviewer_comments")
+    .delete()
+    .eq("project_id", projectId);
+
+  if (comments.length === 0) {
+    return { saved: true, comments: [] };
+  }
+
+  const rows: Array<
+    Database["public"]["Tables"]["reviewer_comments"]["Insert"]
+  > = comments.map((comment, index) => ({
+    id: stableId("rev", projectId, index + 1),
+    project_id: projectId,
+    agent: comment.agent,
+    target: comment.target,
+    severity: comment.severity,
+    comment: comment.comment,
+    suggested_action: comment.suggestedAction,
+    resolved: comment.resolved
+  }));
+
+  const { data, error } = await supabase
+    .from("reviewer_comments")
+    .insert(rows)
+    .select()
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Reviewer",
+    action: `Generated ${comments.length} local AI reviewer comments`,
+    target: "Reviewer agents"
+  });
+
+  return {
+    saved: true,
+    comments: (data ?? []).map(mapReviewerComment)
+  };
+}
+
 function mapProject(row: Database["public"]["Tables"]["projects"]["Row"]) {
   return {
     id: row.id,
@@ -241,6 +414,43 @@ function mapProject(row: Database["public"]["Tables"]["projects"]["Row"]) {
     status: row.status,
     updatedAt: row.updated_at
   } satisfies Project;
+}
+
+function flattenCategoryRows(
+  categories: CategoryNode[],
+  categorySystemId: string,
+  parentId: string | null = null,
+  offset = 0
+): Array<Database["public"]["Tables"]["categories"]["Insert"]> {
+  return categories.flatMap((category, index) => {
+    const sortOrder = offset + index + 1;
+    const id = stableId("cat", categorySystemId, sortOrder);
+    const row: Database["public"]["Tables"]["categories"]["Insert"] = {
+      id,
+      category_system_id: categorySystemId,
+      parent_category_id: parentId,
+      name: category.name,
+      definition: category.definition,
+      included_unit_numbers: category.includedUnitIds,
+      sort_order: sortOrder
+    };
+
+    return [
+      row,
+      ...flattenCategoryRows(
+        category.subcategories ?? [],
+        categorySystemId,
+        id,
+        sortOrder * 100
+      )
+    ];
+  });
+}
+
+function stableId(prefix: string, scope: string, number: number) {
+  return `${prefix}_${scope.replace(/[^a-zA-Z0-9]/g, "_")}_${String(
+    number
+  ).padStart(3, "0")}`;
 }
 
 function mapSegment(row: Database["public"]["Tables"]["segments"]["Row"]) {

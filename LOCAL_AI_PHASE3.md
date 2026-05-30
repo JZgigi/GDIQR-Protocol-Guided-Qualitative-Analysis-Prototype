@@ -71,7 +71,7 @@ You should see `qwen3:8b` in the model list.
 
 ## 5. Implementation order
 
-Recommended development sequence:
+Implemented first-pass sequence:
 
 1. Add a provider switch in `src/lib/ai-provider.ts`.
 2. Keep `mock` as the safe fallback provider.
@@ -80,6 +80,8 @@ Recommended development sequence:
 5. Parse model output with strict JSON validation before updating UI state.
 6. Add persistence so generated meaning units can be inserted into `public.meaning_units`.
 7. Repeat for categories and reviewer agents.
+
+Use `LOCAL_AI_TESTING.md` for the current end-to-end test flow.
 
 ## 6. Supabase changes for local AI
 

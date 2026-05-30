@@ -51,6 +51,7 @@ const steps: Array<{
 ];
 
 interface GdiqrWorkspaceProps {
+  aiProvider?: string;
   project: Project;
   transcript: string;
   segments: TranscriptSegment[];
@@ -64,6 +65,7 @@ interface GdiqrWorkspaceProps {
 }
 
 export function GdiqrWorkspace({
+  aiProvider = "mock",
   project,
   transcript,
   segments,
@@ -128,6 +130,10 @@ export function GdiqrWorkspace({
     const response = await fetch(`/api/workspace?projectId=${project.id}`, {
       cache: "no-store"
     });
+    if (!response.ok) {
+      setApiStatus("Workspace API failed to load");
+      return;
+    }
     const workspace = (await response.json()) as WorkspaceData;
     applyWorkspace(workspace);
   }
@@ -142,6 +148,13 @@ export function GdiqrWorkspace({
       headers: { "Content-Type": "application/json" },
       method: "POST"
     });
+    if (!response.ok) {
+      const errorResult = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      setApiStatus(errorResult.error ?? "Transcript save failed");
+      return;
+    }
     const result = (await response.json()) as {
       saved?: boolean;
       reason?: string;
@@ -165,10 +178,25 @@ export function GdiqrWorkspace({
       headers: { "Content-Type": "application/json" },
       method: "POST"
     });
-    const result = (await response.json()) as { meaningUnits?: MeaningUnit[] };
+    if (!response.ok) {
+      const errorResult = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      setApiStatus(errorResult.error ?? "Meaning-unit API failed");
+      return;
+    }
+    const result = (await response.json()) as {
+      meaningUnits?: MeaningUnit[];
+      persisted?: boolean;
+      provider?: string;
+    };
     if (result.meaningUnits) {
       setUnits(result.meaningUnits);
-      setApiStatus("Meaning-unit API response applied");
+      setApiStatus(
+        `Meaning-unit API applied from ${result.provider ?? aiProvider}${
+          result.persisted ? " and saved to Supabase" : ""
+        }`
+      );
     }
   }
 
@@ -179,15 +207,28 @@ export function GdiqrWorkspace({
       headers: { "Content-Type": "application/json" },
       method: "POST"
     });
+    if (!response.ok) {
+      const errorResult = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      setApiStatus(errorResult.error ?? `Category API Mode ${mode} failed`);
+      return;
+    }
     const result = (await response.json()) as {
       categories?: CategoryNode[];
       integratedNarrative?: string;
+      persisted?: boolean;
+      provider?: string;
     };
     if (result.categories) {
       setDisplayCategories(result.categories);
     }
     setNarrative(result.integratedNarrative ?? "");
-    setApiStatus(`Category API Mode ${mode} response applied`);
+    setApiStatus(
+      `Category API Mode ${mode} applied from ${result.provider ?? aiProvider}${
+        result.persisted ? " and saved to Supabase" : ""
+      }`
+    );
   }
 
   async function runReviewer() {
@@ -197,12 +238,25 @@ export function GdiqrWorkspace({
       headers: { "Content-Type": "application/json" },
       method: "POST"
     });
+    if (!response.ok) {
+      const errorResult = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      setApiStatus(errorResult.error ?? "Reviewer API failed");
+      return;
+    }
     const result = (await response.json()) as {
       comments?: ReviewerComment[];
+      persisted?: boolean;
+      provider?: string;
     };
     setReviewerOutputs(result.comments ?? []);
     setReviewerHasRun(true);
-    setApiStatus("Reviewer API response applied");
+    setApiStatus(
+      `Reviewer API applied from ${result.provider ?? aiProvider}${
+        result.persisted ? " and saved to Supabase" : ""
+      }`
+    );
   }
 
   function updateHumanSummary(unitId: string, value: string) {
@@ -267,7 +321,7 @@ export function GdiqrWorkspace({
           </div>
         </div>
         <div className="topbar-actions">
-          <span className="badge blue">AI provider: mock</span>
+          <span className="badge blue">AI provider: {aiProvider}</span>
           <span className="badge">
             Data: {apiDataSource === "supabase" ? "Supabase" : "Mock"}
           </span>
@@ -284,10 +338,10 @@ export function GdiqrWorkspace({
             className="button soft"
             onClick={generateMeaningUnits}
             type="button"
-            title="Run mock AI"
+            title="Run configured AI provider"
           >
             <Bot size={18} />
-            Run mock AI
+            Run AI
           </button>
           <button className="button primary" type="button" title="Export demo">
             <Download size={18} />

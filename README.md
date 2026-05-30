@@ -62,3 +62,5 @@ Run `supabase/phase2_schema.sql` in the Supabase SQL Editor, then fill `.env.loc
 ## Phase 3 Local AI
 
 See `LOCAL_AI_PHASE3.md` for the Ollama setup path and the recommended order for replacing mock AI responses with a local provider.
+
+For live local testing against remote Supabase data, use `LOCAL_AI_TESTING.md`.
