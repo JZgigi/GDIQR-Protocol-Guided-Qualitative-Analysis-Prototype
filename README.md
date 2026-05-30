@@ -1,0 +1,1 @@
+# GDIQR-Protocol-Guided-Qualitative-Analysis-Prototype
