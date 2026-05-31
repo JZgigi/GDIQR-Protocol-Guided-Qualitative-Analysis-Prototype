@@ -31,6 +31,8 @@ Start the app:
 npm run dev
 ```
 
+The local dev script intentionally uses Next.js webpack mode. In this project, Turbopack dev can hang while compiling the long-running AI API routes before a run log is created.
+
 ## 2. Check the integrated health endpoint
 
 Open:

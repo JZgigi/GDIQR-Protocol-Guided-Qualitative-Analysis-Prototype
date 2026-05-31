@@ -1,10 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateMeaningUnits } from "@/lib/ai-provider";
-import {
-  defaultProjectId,
-  getWorkspace,
-  replaceMeaningUnitsFromAi
-} from "@/lib/gdiqr-repository";
 import {
   addRunEvent,
   failRunLog,
@@ -21,14 +15,18 @@ export async function POST(request: NextRequest) {
     projectId?: string;
     transcript?: string;
   };
-  const projectId = body.projectId ?? defaultProjectId;
+  const projectId =
+    body.projectId ?? process.env.GDIQR_DEFAULT_PROJECT_ID ?? "proj_student_wellbeing";
 
-  void runMeaningUnitGeneration({
-    lightInterpretation: body.lightInterpretation,
-    projectId,
-    runId,
-    transcript: body.transcript
-  });
+  addRunEvent(runId, "Queued background meaning-unit job");
+  setTimeout(() => {
+    void runMeaningUnitGeneration({
+      lightInterpretation: body.lightInterpretation,
+      projectId,
+      runId,
+      transcript: body.transcript
+    });
+  }, 0);
 
   return NextResponse.json(
     {
@@ -59,8 +57,12 @@ async function runMeaningUnitGeneration({
   transcript?: string;
 }) {
   try {
+    const [{ generateMeaningUnits }, repository] = await Promise.all([
+      import("@/lib/ai-provider"),
+      import("@/lib/gdiqr-repository")
+    ]);
     addRunEvent(runId, "Loading workspace from Supabase");
-    const workspace = await getWorkspace(projectId);
+    const workspace = await repository.getWorkspace(projectId);
     const sourceTranscript = transcript ?? workspace.transcript;
     addRunEvent(
       runId,
@@ -80,7 +82,7 @@ async function runMeaningUnitGeneration({
     );
 
     addRunEvent(runId, `Saving ${result.meaningUnits.length} meaning units`);
-    const saveResult = await replaceMeaningUnitsFromAi({
+    const saveResult = await repository.replaceMeaningUnitsFromAi({
       projectId,
       units: result.meaningUnits
     });
