@@ -12,6 +12,8 @@ import {
   startRunLog
 } from "@/lib/run-logs";
 
+export const runtime = "nodejs";
+
 export async function POST(request: NextRequest) {
   const runId = startRunLog("Meaning-unit generation");
   const body = (await request.json().catch(() => ({}))) as {
@@ -21,18 +23,56 @@ export async function POST(request: NextRequest) {
   };
   const projectId = body.projectId ?? defaultProjectId;
 
+  void runMeaningUnitGeneration({
+    lightInterpretation: body.lightInterpretation,
+    projectId,
+    runId,
+    transcript: body.transcript
+  });
+
+  return NextResponse.json(
+    {
+      runId,
+      started: true
+    },
+    { status: 202 }
+  );
+}
+
+function formatDuration(ms: number) {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+async function runMeaningUnitGeneration({
+  lightInterpretation,
+  projectId,
+  runId,
+  transcript
+}: {
+  lightInterpretation?: boolean;
+  projectId: string;
+  runId: string;
+  transcript?: string;
+}) {
   try {
     addRunEvent(runId, "Loading workspace from Supabase");
     const workspace = await getWorkspace(projectId);
-    const transcript = body.transcript ?? workspace.transcript;
-    addRunEvent(runId, `Calling Ollama for meaning units (${transcript.length} chars)`);
+    const sourceTranscript = transcript ?? workspace.transcript;
+    addRunEvent(
+      runId,
+      `Starting background meaning-unit job (${sourceTranscript.length} chars)`
+    );
     const startedAt = Date.now();
     const result = await generateMeaningUnits({
       lightInterpretation:
-        body.lightInterpretation ?? workspace.project.lightInterpretation,
+        lightInterpretation ?? workspace.project.lightInterpretation,
       project: workspace.project,
       runId,
-      transcript
+      transcript: sourceTranscript
     });
     addRunEvent(
       runId,
@@ -44,32 +84,18 @@ export async function POST(request: NextRequest) {
       projectId,
       units: result.meaningUnits
     });
+    addRunEvent(
+      runId,
+      saveResult.saved
+        ? "Meaning units saved to Supabase"
+        : saveResult.reason ?? "Meaning units were generated but not persisted"
+    );
     finishRunLog(runId);
-
-    return NextResponse.json({
-      ...result,
-      meaningUnits: saveResult.units,
-      persisted: saveResult.saved
-    });
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
         : "Meaning-unit generation failed.";
     failRunLog(runId, message);
-    return NextResponse.json(
-      {
-        error: message
-      },
-      { status: 500 }
-    );
   }
-}
-
-function formatDuration(ms: number) {
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }

@@ -7,7 +7,8 @@ AI_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434/v1
 OLLAMA_MODEL=qwen3:8b
 OLLAMA_API_TIMEOUT_MS=300000
-TRANSCRIPT_MU_CHUNK_CHARS=4500
+OLLAMA_MU_CHUNK_TIMEOUT_MS=120000
+TRANSCRIPT_MU_CHUNK_CHARS=1200
 ```
 
 ## 1. Confirm services
@@ -107,10 +108,11 @@ Meaning-unit generation replaces the current project meaning units. Reviewer gen
 ## 6. Known testing limits
 
 - The local model may occasionally return invalid JSON. The API will show an error instead of saving malformed output.
-- Long transcripts are split before meaning-unit generation. Lower `TRANSCRIPT_MU_CHUNK_CHARS` for more, smaller Ollama calls; raise it only if your model handles larger context reliably.
+- Long transcripts are split before meaning-unit generation. For `qwen3:8b`, start with `TRANSCRIPT_MU_CHUNK_CHARS=1200`; raise it only if your model handles larger context reliably.
 - In local dev, Next.js may show "Compiling /api/ai/..." the first time you hit an API route. That compile step should be brief. If the UI stays on "Calling meaning-unit API...", the wait is usually Ollama generation time, not Next.js compilation.
-- If a local AI request times out, watch the live log panel first. If a specific chunk is slow, try a faster model, increase `OLLAMA_API_TIMEOUT_MS`, or reduce `TRANSCRIPT_MU_CHUNK_CHARS`.
-- The **AI / transcription activity** panel at the bottom of the app polls `/api/run-logs` every 2 seconds and shows local step timings. The logs are kept in memory and reset when the dev server restarts.
+- Meaning-unit generation starts as a background local job, so the browser request should return quickly while Ollama continues processing.
+- If a specific chunk is slow, try a faster model, increase `OLLAMA_MU_CHUNK_TIMEOUT_MS`, or reduce `TRANSCRIPT_MU_CHUNK_CHARS`.
+- The **AI / transcription activity** panel at the bottom of the app polls `/api/run-logs` every 2 seconds and shows local step timings. Logs are written under `.next/gdiqr-run-logs.json` during local development.
 - Local transcription currently runs inside the Next.js API request. Long audio can take several minutes; a background worker is still the better production shape.
 - Chinese audio is supported through faster-whisper by selecting Chinese in the Upload step.
 

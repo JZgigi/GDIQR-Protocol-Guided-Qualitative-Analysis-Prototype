@@ -50,8 +50,9 @@ WHISPER_COMPUTE_TYPE=int8
 TRANSCRIPTION_TIMEOUT_MS=1800000
 OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS=300000
 OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS=4096
+OLLAMA_MU_CHUNK_TIMEOUT_MS=120000
 TRANSCRIPT_PROCESS_CHUNK_CHARS=6000
-TRANSCRIPT_MU_CHUNK_CHARS=4500
+TRANSCRIPT_MU_CHUNK_CHARS=1200
 ```
 
 For stronger Chinese transcription, switch later to:
@@ -111,4 +112,4 @@ The saved transcript is the Ollama-prepared version, not the raw faster-whisper 
 
 Long transcripts are split into chunks before privacy/speaker processing. If Ollama returns an empty chunk, the app records it in the live log and uses a conservative local fallback for that chunk instead of failing the entire upload.
 
-When a new transcript is imported, old meaning units, category systems, and reviewer comments are cleared so the next AI run uses the new audio-derived transcript only. Meaning-unit generation also runs in transcript chunks and reports each chunk in the live log panel.
+When a new transcript is imported, old meaning units, category systems, and reviewer comments are cleared so the next AI run uses the new audio-derived transcript only. Meaning-unit generation runs as a background local job, splits the transcript into smaller chunks, and reports each chunk in the live log panel.

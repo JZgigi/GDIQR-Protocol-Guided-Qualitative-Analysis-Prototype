@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 export type RunLogStatus = "running" | "completed" | "failed";
 
 export interface RunLogEvent {
@@ -25,9 +28,40 @@ const globalWithLogs = globalThis as typeof globalThis & {
   __gdiqrRunLogStore?: RunLogStore;
 };
 
-function getStore() {
+function getLogFilePath() {
+  return path.join(process.cwd(), ".next", "gdiqr-run-logs.json");
+}
+
+function readStoreFromDisk(): RunLogStore | undefined {
+  try {
+    const content = fs.readFileSync(getLogFilePath(), "utf8");
+    const parsed = JSON.parse(content) as RunLogStore;
+    return Array.isArray(parsed.logs) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function persistStore(store: RunLogStore) {
+  try {
+    const logFilePath = getLogFilePath();
+    fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
+    fs.writeFileSync(logFilePath, JSON.stringify(store, null, 2));
+  } catch {
+    // Logs are diagnostic only; never fail the analysis flow because logging failed.
+  }
+}
+
+function getStore({ reload = false }: { reload?: boolean } = {}) {
+  if (reload) {
+    const diskStore = readStoreFromDisk();
+    if (diskStore) {
+      globalWithLogs.__gdiqrRunLogStore = diskStore;
+    }
+  }
+
   if (!globalWithLogs.__gdiqrRunLogStore) {
-    globalWithLogs.__gdiqrRunLogStore = { logs: [] };
+    globalWithLogs.__gdiqrRunLogStore = readStoreFromDisk() ?? { logs: [] };
   }
 
   return globalWithLogs.__gdiqrRunLogStore;
@@ -49,8 +83,9 @@ export function startRunLog(label: string) {
     ]
   };
 
-  const store = getStore();
+  const store = getStore({ reload: true });
   store.logs = [log, ...store.logs].slice(0, 40);
+  persistStore(store);
   return log.id;
 }
 
@@ -59,7 +94,8 @@ export function addRunEvent(runId: string | undefined, message: string) {
     return;
   }
 
-  const log = getStore().logs.find((item) => item.id === runId);
+  const store = getStore({ reload: true });
+  const log = store.logs.find((item) => item.id === runId);
   if (!log) {
     return;
   }
@@ -69,6 +105,7 @@ export function addRunEvent(runId: string | undefined, message: string) {
     message,
     timestamp: new Date().toISOString()
   });
+  persistStore(store);
 }
 
 export function finishRunLog(runId: string | undefined) {
@@ -80,7 +117,7 @@ export function failRunLog(runId: string | undefined, error: string) {
 }
 
 export function listRunLogs() {
-  return getStore().logs;
+  return getStore({ reload: true }).logs;
 }
 
 function updateRunLogStatus(
@@ -92,7 +129,8 @@ function updateRunLogStatus(
     return;
   }
 
-  const log = getStore().logs.find((item) => item.id === runId);
+  const store = getStore({ reload: true });
+  const log = store.logs.find((item) => item.id === runId);
   if (!log) {
     return;
   }
@@ -108,4 +146,5 @@ function updateRunLogStatus(
     message: error ?? `Finished with status: ${status}`,
     timestamp: endedAt
   });
+  persistStore(store);
 }

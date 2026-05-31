@@ -136,6 +136,7 @@ export function GdiqrWorkspace({
   );
   const [isImportingTranscript, setIsImportingTranscript] = useState(false);
   const [isConfirmingTranscript, setIsConfirmingTranscript] = useState(false);
+  const [activeMeaningUnitRunId, setActiveMeaningUnitRunId] = useState("");
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
 
   useEffect(() => {
@@ -162,6 +163,31 @@ export function GdiqrWorkspace({
       window.clearInterval(interval);
     };
   }, []);
+
+  useEffect(() => {
+    if (!activeMeaningUnitRunId) {
+      return;
+    }
+
+    const activeLog = runLogs.find((log) => log.id === activeMeaningUnitRunId);
+    if (!activeLog) {
+      return;
+    }
+
+    if (activeLog.status === "completed") {
+      setIsGeneratingMeaningUnits(false);
+      setActiveMeaningUnitRunId("");
+      setApiStatus("Meaning-unit job completed; refreshing Supabase workspace...");
+      void refreshWorkspace();
+      return;
+    }
+
+    if (activeLog.status === "failed") {
+      setIsGeneratingMeaningUnits(false);
+      setActiveMeaningUnitRunId("");
+      setApiStatus(activeLog.error ?? "Meaning-unit job failed");
+    }
+  }, [activeMeaningUnitRunId, runLogs]);
 
   const completedSteps = useMemo(
     () => {
@@ -534,7 +560,7 @@ export function GdiqrWorkspace({
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 1800000
+        timeoutMs: 30000
       });
       if (!response.ok) {
         const errorResult = (await response.json().catch(() => ({}))) as {
@@ -547,9 +573,19 @@ export function GdiqrWorkspace({
         meaningUnits?: MeaningUnit[];
         persisted?: boolean;
         provider?: string;
+        runId?: string;
+        started?: boolean;
       };
+      if (result.started && result.runId) {
+        setActiveMeaningUnitRunId(result.runId);
+        setApiStatus(
+          "Meaning-unit job started in the background. Watch the live log panel for chunk timings."
+        );
+        return;
+      }
       if (result.meaningUnits) {
         setUnits(result.meaningUnits);
+        setIsGeneratingMeaningUnits(false);
         setApiStatus(
           `Meaning-unit API applied from ${result.provider ?? aiProvider}${
             result.persisted ? " and saved to Supabase" : ""
@@ -557,11 +593,10 @@ export function GdiqrWorkspace({
         );
       }
     } catch (error) {
+      setIsGeneratingMeaningUnits(false);
       setApiStatus(
         error instanceof Error ? error.message : "Meaning-unit API failed"
       );
-    } finally {
-      setIsGeneratingMeaningUnits(false);
     }
   }
 
@@ -1679,7 +1714,7 @@ function RunLogPanel({ logs }: { logs: RunLog[] }) {
           <span className="badge blue">Live local logs</span>
           <h2 className="run-log-title">AI / transcription activity</h2>
           <p className="small">
-            Polls local API every 2 seconds. Logs reset when the dev server restarts.
+            Polls local API every 2 seconds. Meaning-unit jobs run in the background.
           </p>
         </div>
       </div>
@@ -1687,7 +1722,7 @@ function RunLogPanel({ logs }: { logs: RunLog[] }) {
         {logs.length === 0 ? (
           <EmptyState text="No local runs yet. Start an audio upload, transcript import, or AI generation to see step timings here." />
         ) : (
-          logs.slice(0, 5).map((log) => (
+          logs.slice(0, 8).map((log) => (
             <article className="run-log-card" key={log.id}>
               <div className="category-header">
                 <div>
@@ -1702,7 +1737,7 @@ function RunLogPanel({ logs }: { logs: RunLog[] }) {
                 <StatusBadge label={log.status} />
               </div>
               <div className="timeline">
-                {log.events.slice(-8).map((event) => (
+                {log.events.slice(-20).map((event) => (
                   <div className="timeline-item compact" key={event.id}>
                     <span className="mono small">
                       {new Date(event.timestamp).toLocaleTimeString()}
