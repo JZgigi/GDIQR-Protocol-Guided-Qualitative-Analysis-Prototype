@@ -23,20 +23,16 @@ export async function POST(request: NextRequest) {
       transcript: body.transcript ?? workspace.transcript
     });
 
-    if (result.provider === "ollama") {
-      const saveResult = await replaceMeaningUnitsFromAi({
-        projectId,
-        units: result.meaningUnits
-      });
+    const saveResult = await replaceMeaningUnitsFromAi({
+      projectId,
+      units: result.meaningUnits
+    });
 
-      return NextResponse.json({
-        ...result,
-        meaningUnits: saveResult.units,
-        persisted: saveResult.saved
-      });
-    }
-
-    return NextResponse.json({ ...result, persisted: false });
+    return NextResponse.json({
+      ...result,
+      meaningUnits: saveResult.units,
+      persisted: saveResult.saved
+    });
   } catch (error) {
     return NextResponse.json(
       {

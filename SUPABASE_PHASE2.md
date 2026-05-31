@@ -8,7 +8,7 @@ Open the Supabase dashboard for the new project, go to **SQL Editor**, and run:
 supabase/phase2_schema.sql
 ```
 
-This creates the Phase 2 tables, enables RLS, grants Data API access to `service_role`, creates the private Storage buckets, and seeds the demo project `proj_student_wellbeing`.
+This creates the Phase 2 tables, enables RLS, grants Data API access to `service_role`, creates the private Storage buckets, and creates an empty default project `proj_student_wellbeing`.
 
 ## 2. Add local environment variables
 

@@ -1,6 +1,6 @@
 # Local AI Phase 3 Setup
 
-This phase replaces the deterministic mock AI route outputs with a local model provider while keeping the same Next.js API surface:
+This phase uses a local model provider while keeping the same Next.js API surface:
 
 ```http
 POST /api/ai/meaning-units
@@ -73,13 +73,11 @@ You should see `qwen3:8b` in the model list.
 
 Implemented first-pass sequence:
 
-1. Add a provider switch in `src/lib/ai-provider.ts`.
-2. Keep `mock` as the safe fallback provider.
-3. Add an Ollama-compatible chat completion helper using `OLLAMA_BASE_URL` and `OLLAMA_MODEL`.
-4. Update `src/app/api/ai/meaning-units/route.ts` first.
-5. Parse model output with strict JSON validation before updating UI state.
-6. Add persistence so generated meaning units can be inserted into `public.meaning_units`.
-7. Repeat for categories and reviewer agents.
+1. Use Ollama-compatible chat completion through `OLLAMA_BASE_URL` and `OLLAMA_MODEL`.
+2. Update `src/app/api/ai/meaning-units/route.ts` first.
+3. Parse model output with strict JSON validation before updating UI state.
+4. Persist generated meaning units into `public.meaning_units`.
+5. Repeat for categories and reviewer agents.
 
 Use `LOCAL_AI_TESTING.md` for the current end-to-end test flow.
 

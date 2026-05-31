@@ -21,20 +21,16 @@ export async function POST(request: NextRequest) {
       units: workspace.meaningUnits
     });
 
-    if (result.provider === "ollama") {
-      const saveResult = await replaceReviewerCommentsFromAi({
-        comments: result.comments,
-        projectId
-      });
+    const saveResult = await replaceReviewerCommentsFromAi({
+      comments: result.comments,
+      projectId
+    });
 
-      return NextResponse.json({
-        ...result,
-        comments: saveResult.comments,
-        persisted: saveResult.saved
-      });
-    }
-
-    return NextResponse.json({ ...result, persisted: false });
+    return NextResponse.json({
+      ...result,
+      comments: saveResult.comments,
+      persisted: saveResult.saved
+    });
   } catch (error) {
     return NextResponse.json(
       {

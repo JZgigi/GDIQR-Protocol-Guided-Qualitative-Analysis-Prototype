@@ -296,12 +296,63 @@ button {
   gap: 10px;
 }
 
+.upload-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.7fr);
+  gap: 16px;
+}
+
+.upload-dropzone {
+  display: grid;
+  gap: 14px;
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, var(--panel-soft) 100%);
+  padding: 20px;
+}
+
+.upload-controls {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.upload-summary {
+  align-self: stretch;
+}
+
 .upload-status {
   display: grid;
   gap: 6px;
   margin-top: 14px;
   border-top: 1px solid var(--line);
   padding-top: 14px;
+}
+
+.selected-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.audio-player {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.empty-state {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 18px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .badge {
@@ -481,7 +532,9 @@ button {
 
   .grid.two,
   .grid.three,
-  .mode-selector {
+  .mode-selector,
+  .upload-controls,
+  .upload-panel {
     grid-template-columns: 1fr;
   }
 

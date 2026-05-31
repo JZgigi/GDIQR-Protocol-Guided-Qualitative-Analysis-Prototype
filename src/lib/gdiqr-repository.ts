@@ -1,13 +1,3 @@
-import {
-  integratedNarrative,
-  mockAuditEvents,
-  mockCategories,
-  mockMeaningUnits,
-  mockProject,
-  mockReviewerComments,
-  mockSegments,
-  mockTranscript
-} from "@/lib/mock-data";
 import type {
   AudioFileRecord,
   AuditEvent,
@@ -38,26 +28,36 @@ export interface WorkspaceData {
   reviewerComments: ReviewerComment[];
   auditEvents: AuditEvent[];
   integratedNarrative: string;
-  dataSource: "mock" | "supabase";
+  dataSource: "supabase" | "unconfigured";
   supabaseConfigured: boolean;
 }
 
 export const defaultProjectId =
   process.env.GDIQR_DEFAULT_PROJECT_ID ?? "proj_student_wellbeing";
 
-export function getMockWorkspace(): WorkspaceData {
+export function getEmptyWorkspace(reason = "Supabase is not configured."): WorkspaceData {
   return {
-    project: mockProject,
-    transcript: mockTranscript,
-    segments: mockSegments,
+    project: {
+      id: defaultProjectId,
+      title: "Untitled GDIQR project",
+      researchQuestion: "",
+      studyDescription: reason,
+      language: "English",
+      protocol: "GDIQR",
+      lightInterpretation: false,
+      status: "Needs Supabase configuration",
+      updatedAt: new Date().toISOString()
+    },
+    transcript: "",
+    segments: [],
     audioFiles: [],
     transcriptionJobs: [],
-    meaningUnits: mockMeaningUnits,
-    categories: mockCategories,
-    reviewerComments: mockReviewerComments,
-    auditEvents: mockAuditEvents,
-    integratedNarrative,
-    dataSource: "mock",
+    meaningUnits: [],
+    categories: [],
+    reviewerComments: [],
+    auditEvents: [],
+    integratedNarrative: "",
+    dataSource: "unconfigured",
     supabaseConfigured: hasSupabaseConfig()
   };
 }
@@ -68,7 +68,7 @@ export async function getWorkspace(
   const supabase = createSupabaseServerClient();
 
   if (!supabase) {
-    return getMockWorkspace();
+    return getEmptyWorkspace();
   }
 
   const [
@@ -142,9 +142,23 @@ export async function getWorkspace(
     reviewerCommentsResult.error ??
     auditEventsResult.error;
 
-  if (firstError || !projectResult.data) {
-    console.warn("Falling back to mock workspace:", firstError?.message);
-    return getMockWorkspace();
+  if (firstError) {
+    console.warn("Could not load Supabase workspace:", firstError.message);
+    return getEmptyWorkspace(firstError.message);
+  }
+
+  if (!projectResult.data) {
+    const createdProject = await createDefaultProject(projectId);
+    if (!createdProject) {
+      return getEmptyWorkspace("Default project could not be created.");
+    }
+
+    return {
+      ...getEmptyWorkspace(),
+      project: mapProject(createdProject),
+      dataSource: "supabase",
+      supabaseConfigured: true
+    };
   }
 
   let categoryRows: CategoryRow[] = [];
@@ -218,6 +232,57 @@ export async function saveTranscriptVersion({
   });
 
   return { saved: true, transcript: data };
+}
+
+export async function updateProjectSettings({
+  language,
+  lightInterpretation,
+  projectId = defaultProjectId,
+  researchQuestion,
+  studyDescription,
+  title
+}: {
+  language: Project["language"];
+  lightInterpretation: boolean;
+  projectId?: string;
+  researchQuestion: string;
+  studyDescription: string;
+  title: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const updatedAt = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("projects")
+    .upsert({
+      id: projectId,
+      title: title.trim() || "Untitled GDIQR project",
+      research_question: researchQuestion.trim(),
+      study_description: studyDescription.trim(),
+      language,
+      protocol: "GDIQR",
+      light_interpretation: lightInterpretation,
+      status: "Ready for local testing",
+      updated_at: updatedAt
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: "Updated project setup",
+    target: data.title
+  });
+
+  return { saved: true, project: mapProject(data) };
 }
 
 export async function uploadAudioForTranscription({
@@ -438,6 +503,44 @@ export async function failTranscriptionJob({
   });
 
   return { saved: true, job: mapTranscriptionJob(data) };
+}
+
+export async function createAudioPreviewUrl({
+  audioFileId,
+  projectId = defaultProjectId
+}: {
+  audioFileId: string;
+  projectId?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { ok: false, reason: "Supabase is not configured." };
+  }
+
+  const { data: audioFile, error } = await supabase
+    .from("audio_files")
+    .select("*")
+    .eq("id", audioFileId)
+    .eq("project_id", projectId)
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const { data, error: signedUrlError } = await supabase.storage
+    .from(audioFile.storage_bucket)
+    .createSignedUrl(audioFile.storage_path, 60 * 10);
+
+  if (signedUrlError) {
+    throw new Error(signedUrlError.message);
+  }
+
+  return {
+    ok: true,
+    audioFile: mapAudioFile(audioFile),
+    signedUrl: data.signedUrl
+  };
 }
 
 export async function updateMeaningUnit({
@@ -700,6 +803,35 @@ function stableId(prefix: string, scope: string, number: number) {
   return `${prefix}_${scope.replace(/[^a-zA-Z0-9]/g, "_")}_${String(
     number
   ).padStart(3, "0")}`;
+}
+
+async function createDefaultProject(projectId: string) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("projects")
+    .insert({
+      id: projectId,
+      title: "Untitled GDIQR project",
+      research_question: "",
+      study_description: "",
+      language: "English",
+      protocol: "GDIQR",
+      light_interpretation: false,
+      status: "Ready for local testing"
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.warn("Could not create default project:", error.message);
+    return null;
+  }
+
+  return data;
 }
 
 function sanitizeStorageFilename(filename: string) {

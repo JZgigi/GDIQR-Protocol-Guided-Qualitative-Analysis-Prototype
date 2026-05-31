@@ -23,23 +23,19 @@ export async function POST(request: NextRequest) {
       units: workspace.meaningUnits
     });
 
-    if (result.provider === "ollama") {
-      const saveResult = await saveCategorySystemFromAi({
-        categories: result.categories,
-        integratedNarrative: result.integratedNarrative,
-        mode,
-        projectId
-      });
+    const saveResult = await saveCategorySystemFromAi({
+      categories: result.categories,
+      integratedNarrative: result.integratedNarrative,
+      mode,
+      projectId
+    });
 
-      return NextResponse.json({
-        ...result,
-        categories: saveResult.categories,
-        integratedNarrative: saveResult.integratedNarrative,
-        persisted: saveResult.saved
-      });
-    }
-
-    return NextResponse.json({ ...result, persisted: false });
+    return NextResponse.json({
+      ...result,
+      categories: saveResult.categories,
+      integratedNarrative: saveResult.integratedNarrative,
+      persisted: saveResult.saved
+    });
   } catch (error) {
     return NextResponse.json(
       {

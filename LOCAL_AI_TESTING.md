@@ -51,7 +51,7 @@ Expected signals:
 }
 ```
 
-If `supabase.dataSource` is `mock`, check `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `GDIQR_DEFAULT_PROJECT_ID`.
+If `supabase.dataSource` is `unconfigured`, check `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `GDIQR_DEFAULT_PROJECT_ID`.
 
 If `ollama.ok` is `false`, check that Ollama is running and that `OLLAMA_BASE_URL` ends in `/v1`.
 

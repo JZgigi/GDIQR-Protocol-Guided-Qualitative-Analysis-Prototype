@@ -8,7 +8,7 @@ export default async function Home() {
 
   return (
     <GdiqrWorkspace
-      aiProvider={process.env.AI_PROVIDER ?? "mock"}
+      aiProvider="ollama"
       audioFiles={workspace.audioFiles}
       auditEvents={workspace.auditEvents}
       categories={workspace.categories}

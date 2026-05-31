@@ -28,10 +28,10 @@ Copy `.env.example` to `.env.local` when you are ready to run locally:
 cp .env.example .env.local
 ```
 
-For Phase 1, keep:
+Use Ollama for local AI:
 
 ```text
-AI_PROVIDER=mock
+AI_PROVIDER=ollama
 ```
 
 For Phase 2 Supabase persistence, also fill:
@@ -43,7 +43,7 @@ SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 GDIQR_DEFAULT_PROJECT_ID=proj_student_wellbeing
 ```
 
-For the later local AI phase:
+For the local AI phase:
 
 ```text
 AI_PROVIDER=ollama
@@ -73,15 +73,9 @@ git push -u origin main
 
 1. Go to Vercel and import the GitHub repository.
 2. Choose the default Next.js settings.
-3. Add environment variable:
-
-```text
-AI_PROVIDER=mock
-```
+3. Add the same Supabase and Ollama-facing environment variables you use locally, or deploy only after you have an external AI/transcription provider.
 
 4. Deploy.
-
-The Vercel demo will use mock data, so reviewers can open it without installing Ollama or Supabase.
 
 For local AI setup after Phase 2 is stable, see `LOCAL_AI_PHASE3.md`.
 
@@ -95,7 +89,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY
 ```
 
-Then run `supabase/phase2_schema.sql` in the Supabase SQL Editor. The SQL creates the first tables, enables RLS, grants server-side Data API access, creates Storage buckets, and seeds the demo project.
+Then run `supabase/phase2_schema.sql` in the Supabase SQL Editor. The SQL creates the first tables, enables RLS, grants server-side Data API access, creates Storage buckets, and creates an empty default project.
 
 Planned storage buckets:
 

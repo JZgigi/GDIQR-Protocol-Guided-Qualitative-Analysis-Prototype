@@ -1,8 +1,3 @@
-import {
-  runMockCategories,
-  runMockMeaningUnits,
-  runMockReviewer
-} from "@/lib/mock-ai";
 import type {
   CategoryMode,
   CategoryNode,
@@ -11,7 +6,7 @@ import type {
   ReviewerComment
 } from "@/lib/types";
 
-type AiProvider = "mock" | "ollama";
+type AiProvider = "ollama";
 
 interface OllamaMessage {
   role: "system" | "user";
@@ -69,15 +64,14 @@ export interface ReviewerResult {
 }
 
 export function getAiProvider(): AiProvider {
-  return process.env.AI_PROVIDER === "ollama" ? "ollama" : "mock";
+  return "ollama";
 }
 
 export async function generateMeaningUnits(
   input: MeaningUnitInput
 ): Promise<MeaningUnitResult> {
-  if (getAiProvider() === "mock") {
-    return { ...runMockMeaningUnits(), provider: "mock" };
-  }
+  assertOllamaConfigured();
+  assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
 
   const model = getOllamaModel();
   const result = await callOllamaJson<{
@@ -146,8 +140,9 @@ ${input.transcript}`
 export async function generateCategories(
   input: CategoryInput
 ): Promise<CategoryResult> {
-  if (getAiProvider() === "mock") {
-    return { ...runMockCategories(input.mode), provider: "mock" };
+  assertOllamaConfigured();
+  if (input.units.length === 0) {
+    throw new Error("Meaning units are required before generating categories.");
   }
 
   const model = getOllamaModel();
@@ -224,9 +219,9 @@ ${input.units
 export async function generateReviewer(
   input: ReviewerInput
 ): Promise<ReviewerResult> {
-  if (getAiProvider() === "mock") {
-    const result = runMockReviewer();
-    return { ...result, provider: "mock", status: "completed" };
+  assertOllamaConfigured();
+  if (input.units.length === 0) {
+    throw new Error("Meaning units are required before running reviewer agents.");
   }
 
   const model = getOllamaModel();
@@ -374,6 +369,18 @@ function parseJsonObject<T>(content: string): T {
 
 function getOllamaModel() {
   return process.env.OLLAMA_MODEL ?? "qwen3:8b";
+}
+
+function assertOllamaConfigured() {
+  if (process.env.AI_PROVIDER && process.env.AI_PROVIDER !== "ollama") {
+    throw new Error("Local AI requires AI_PROVIDER=ollama.");
+  }
+}
+
+function assertNonEmpty(value: string, message: string) {
+  if (!value.trim()) {
+    throw new Error(message);
+  }
 }
 
 function normalizeMeaningUnits(items: Array<Partial<MeaningUnit>>) {

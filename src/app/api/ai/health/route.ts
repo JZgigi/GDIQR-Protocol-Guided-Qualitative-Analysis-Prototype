@@ -5,8 +5,7 @@ import { getWorkspace } from "@/lib/gdiqr-repository";
 export async function GET() {
   const provider = getAiProvider();
   const workspace = await getWorkspace();
-  const ollama =
-    provider === "ollama" ? await checkOllamaHealth() : { ok: true };
+  const ollama = await checkOllamaHealth();
 
   return NextResponse.json({
     aiProvider: provider,
