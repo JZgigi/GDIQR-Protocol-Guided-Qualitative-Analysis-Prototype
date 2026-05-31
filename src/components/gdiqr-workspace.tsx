@@ -118,6 +118,10 @@ export function GdiqrWorkspace({
     useState<Project["language"]>(project.language);
   const [isUploadingAudio, setIsUploadingAudio] = useState(false);
   const [isSavingProject, setIsSavingProject] = useState(false);
+  const [isGeneratingMeaningUnits, setIsGeneratingMeaningUnits] =
+    useState(false);
+  const [isRunningCategories, setIsRunningCategories] = useState(false);
+  const [isRunningReviewer, setIsRunningReviewer] = useState(false);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
 
   const completedSteps = useMemo(
@@ -249,6 +253,8 @@ export function GdiqrWorkspace({
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
+        privacyFindings?: string[];
+        speakerNotes?: string[];
         transcribed?: boolean;
         workspace?: WorkspaceData;
       };
@@ -264,7 +270,11 @@ export function GdiqrWorkspace({
 
       setApiStatus(
         result.transcribed
-          ? "Audio uploaded, transcribed locally, and saved to Supabase"
+          ? `Audio transcribed, speaker-labelled, de-identified, and saved to Supabase${
+              result.privacyFindings?.length
+                ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
+                : ""
+            }`
           : result.error ??
               "Audio uploaded to Supabase, but local transcription failed"
       );
@@ -320,95 +330,143 @@ export function GdiqrWorkspace({
   }
 
   async function generateMeaningUnits() {
-    setApiStatus("Calling meaning-unit API...");
-    const response = await fetch("/api/ai/meaning-units", {
-      body: JSON.stringify({
-        lightInterpretation,
-        projectId: currentProject.id,
-        transcript: editableTranscript
-      }),
-      headers: { "Content-Type": "application/json" },
-      method: "POST"
-    });
-    if (!response.ok) {
-      const errorResult = (await response.json().catch(() => ({}))) as {
-        error?: string;
-      };
-      setApiStatus(errorResult.error ?? "Meaning-unit API failed");
+    if (!editableTranscript.trim()) {
+      setApiStatus("Transcript is required before generating meaning units");
       return;
     }
-    const result = (await response.json()) as {
-      meaningUnits?: MeaningUnit[];
-      persisted?: boolean;
-      provider?: string;
-    };
-    if (result.meaningUnits) {
-      setUnits(result.meaningUnits);
+
+    setIsGeneratingMeaningUnits(true);
+    setApiStatus(
+      "Calling meaning-unit API... Ollama may take 1-5 minutes on a local model."
+    );
+
+    try {
+      const response = await fetchWithTimeout("/api/ai/meaning-units", {
+        body: JSON.stringify({
+          lightInterpretation,
+          projectId: currentProject.id,
+          transcript: editableTranscript
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+        timeoutMs: 330000
+      });
+      if (!response.ok) {
+        const errorResult = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        setApiStatus(errorResult.error ?? "Meaning-unit API failed");
+        return;
+      }
+      const result = (await response.json()) as {
+        meaningUnits?: MeaningUnit[];
+        persisted?: boolean;
+        provider?: string;
+      };
+      if (result.meaningUnits) {
+        setUnits(result.meaningUnits);
+        setApiStatus(
+          `Meaning-unit API applied from ${result.provider ?? aiProvider}${
+            result.persisted ? " and saved to Supabase" : ""
+          }`
+        );
+      }
+    } catch (error) {
       setApiStatus(
-        `Meaning-unit API applied from ${result.provider ?? aiProvider}${
-          result.persisted ? " and saved to Supabase" : ""
-        }`
+        error instanceof Error ? error.message : "Meaning-unit API failed"
       );
+    } finally {
+      setIsGeneratingMeaningUnits(false);
     }
   }
 
   async function runCategories() {
-    setApiStatus(`Calling category API Mode ${mode}...`);
-    const response = await fetch("/api/ai/categories", {
-      body: JSON.stringify({ mode, projectId: currentProject.id, units }),
-      headers: { "Content-Type": "application/json" },
-      method: "POST"
-    });
-    if (!response.ok) {
-      const errorResult = (await response.json().catch(() => ({}))) as {
-        error?: string;
-      };
-      setApiStatus(errorResult.error ?? `Category API Mode ${mode} failed`);
+    if (units.length === 0) {
+      setApiStatus("Meaning units are required before generating categories");
       return;
     }
-    const result = (await response.json()) as {
-      categories?: CategoryNode[];
-      integratedNarrative?: string;
-      persisted?: boolean;
-      provider?: string;
-    };
-    if (result.categories) {
-      setDisplayCategories(result.categories);
+
+    setIsRunningCategories(true);
+    setApiStatus(`Calling category API Mode ${mode}...`);
+
+    try {
+      const response = await fetchWithTimeout("/api/ai/categories", {
+        body: JSON.stringify({ mode, projectId: currentProject.id, units }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+        timeoutMs: 330000
+      });
+      if (!response.ok) {
+        const errorResult = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        setApiStatus(errorResult.error ?? `Category API Mode ${mode} failed`);
+        return;
+      }
+      const result = (await response.json()) as {
+        categories?: CategoryNode[];
+        integratedNarrative?: string;
+        persisted?: boolean;
+        provider?: string;
+      };
+      if (result.categories) {
+        setDisplayCategories(result.categories);
+      }
+      setNarrative(result.integratedNarrative ?? "");
+      setApiStatus(
+        `Category API Mode ${mode} applied from ${result.provider ?? aiProvider}${
+          result.persisted ? " and saved to Supabase" : ""
+        }`
+      );
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error ? error.message : `Category API Mode ${mode} failed`
+      );
+    } finally {
+      setIsRunningCategories(false);
     }
-    setNarrative(result.integratedNarrative ?? "");
-    setApiStatus(
-      `Category API Mode ${mode} applied from ${result.provider ?? aiProvider}${
-        result.persisted ? " and saved to Supabase" : ""
-      }`
-    );
   }
 
   async function runReviewer() {
-    setApiStatus("Calling reviewer API...");
-    const response = await fetch("/api/ai/reviewer", {
-      body: JSON.stringify({ projectId: currentProject.id, units }),
-      headers: { "Content-Type": "application/json" },
-      method: "POST"
-    });
-    if (!response.ok) {
-      const errorResult = (await response.json().catch(() => ({}))) as {
-        error?: string;
-      };
-      setApiStatus(errorResult.error ?? "Reviewer API failed");
+    if (units.length === 0) {
+      setApiStatus("Meaning units are required before running reviewer agents");
       return;
     }
-    const result = (await response.json()) as {
-      comments?: ReviewerComment[];
-      persisted?: boolean;
-      provider?: string;
-    };
-    setReviewerOutputs(result.comments ?? []);
-    setReviewerHasRun(true);
-    setApiStatus(
-      `Reviewer API applied from ${result.provider ?? aiProvider}${
-        result.persisted ? " and saved to Supabase" : ""
-      }`
-    );
+
+    setIsRunningReviewer(true);
+    setApiStatus("Calling reviewer API...");
+
+    try {
+      const response = await fetchWithTimeout("/api/ai/reviewer", {
+        body: JSON.stringify({ projectId: currentProject.id, units }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+        timeoutMs: 330000
+      });
+      if (!response.ok) {
+        const errorResult = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        setApiStatus(errorResult.error ?? "Reviewer API failed");
+        return;
+      }
+      const result = (await response.json()) as {
+        comments?: ReviewerComment[];
+        persisted?: boolean;
+        provider?: string;
+      };
+      setReviewerOutputs(result.comments ?? []);
+      setReviewerHasRun(true);
+      setApiStatus(
+        `Reviewer API applied from ${result.provider ?? aiProvider}${
+          result.persisted ? " and saved to Supabase" : ""
+        }`
+      );
+    } catch (error) {
+      setApiStatus(error instanceof Error ? error.message : "Reviewer API failed");
+    } finally {
+      setIsRunningReviewer(false);
+    }
   }
 
   function updateHumanSummary(unitId: string, value: string) {
@@ -611,13 +669,13 @@ export function GdiqrWorkspace({
           </button>
           <button
             className="button soft"
-            disabled={!canGenerateMeaningUnits}
+            disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
             onClick={generateMeaningUnits}
             type="button"
             title="Run configured AI provider"
           >
             <Bot size={18} />
-            Run AI
+            {isGeneratingMeaningUnits ? "Running AI..." : "Run AI"}
           </button>
           <button
             className="button primary"
@@ -997,16 +1055,18 @@ export function GdiqrWorkspace({
                 <div className="button-row">
                   <button
                     className="button primary"
-                    disabled={!canGenerateMeaningUnits}
+                    disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
                     onClick={generateMeaningUnits}
                     type="button"
                   >
                     <Bot size={18} />
-                    Generate draft MUs
+                    {isGeneratingMeaningUnits
+                      ? "Generating MUs..."
+                      : "Generate draft MUs"}
                   </button>
                   <button
                     className="button"
-                    disabled={!canRunReviewer}
+                    disabled={!canRunReviewer || isRunningReviewer}
                     onClick={runReviewer}
                     type="button"
                   >
@@ -1103,12 +1163,12 @@ export function GdiqrWorkspace({
                 <div className="button-row">
                   <button
                     className="button primary"
-                    disabled={!canRunCategories}
+                    disabled={!canRunCategories || isRunningCategories}
                     onClick={runCategories}
                     type="button"
                   >
                     <Bot size={18} />
-                    Run Mode {mode}
+                    {isRunningCategories ? `Running Mode ${mode}...` : `Run Mode ${mode}`}
                   </button>
                   {mode === "C" && (
                     <span className="badge warning">
@@ -1139,12 +1199,12 @@ export function GdiqrWorkspace({
                 <div className="button-row">
                   <button
                     className="button primary"
-                    disabled={!canRunReviewer}
+                    disabled={!canRunReviewer || isRunningReviewer}
                     onClick={runReviewer}
                     type="button"
                   >
                     <SearchCheck size={18} />
-                    Run reviewer agents
+                    {isRunningReviewer ? "Running reviewers..." : "Run reviewer agents"}
                   </button>
                   <span className="badge">
                     {reviewerHasRun ? "Reviewer output ready" : "Not run"}
@@ -1255,6 +1315,31 @@ function StatusBadge({ label }: { label: string }) {
 
 function EmptyState({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeoutMs: number }
+) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs);
+
+  try {
+    const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
+    return await fetch(url, {
+      ...fetchOptions,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        "Local AI request timed out. Try a shorter transcript, a smaller Ollama model, or increase OLLAMA_API_TIMEOUT_MS."
+      );
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function downloadFile(filename: string, content: string, type: string) {

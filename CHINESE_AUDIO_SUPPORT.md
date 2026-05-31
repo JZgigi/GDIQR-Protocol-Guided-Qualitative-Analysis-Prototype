@@ -10,11 +10,12 @@ Chinese audio file
   -> public.audio_files
   -> public.transcription_jobs
   -> local faster-whisper with language=zh
+  -> Ollama speaker labelling and de-identification
   -> public.transcripts and public.segments
   -> Ollama GDIQR analysis routes
 ```
 
-In the Upload step, choose **Chinese** before selecting the audio file. The app sends `zh` to the transcription script and updates the project language to `Chinese` after a successful transcription.
+In the Upload step, choose **Chinese** before selecting the audio file. The app sends `zh` to the transcription script, then asks Ollama to label turns as `Interviewer:` and `Participant:` and replace specific names, locations, organizations, and contact details with bracket placeholders.
 
 ## Recommended Chinese Transcription Model
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { processTranscriptForPrivacyAndSpeakers } from "@/lib/ai-provider";
 import {
   completeTranscriptionJob,
   defaultProjectId,
@@ -69,12 +70,17 @@ export async function POST(request: NextRequest) {
       language,
       originalFilename: file.name
     });
+    const preparedTranscript = await processTranscriptForPrivacyAndSpeakers({
+      language,
+      transcript: transcription.text,
+      transcriptionSegments: transcription.segments
+    });
     const result = await completeTranscriptionJob({
       jobId: uploadResult.job.id,
       language,
       projectId,
-      transcript: transcription.text,
-      versionLabel: `Local transcription: ${file.name}`
+      transcript: preparedTranscript.sanitizedTranscript,
+      versionLabel: `Local transcription + privacy review: ${file.name}`
     });
     const workspace = await getWorkspace(projectId);
 
@@ -83,6 +89,8 @@ export async function POST(request: NextRequest) {
       transcribed: true,
       audioFile: uploadResult.audioFile,
       job: result.job,
+      privacyFindings: preparedTranscript.privacyFindings,
+      speakerNotes: preparedTranscript.speakerNotes,
       workspace
     });
   } catch (error) {

@@ -48,6 +48,8 @@ WHISPER_MODEL=small
 WHISPER_DEVICE=auto
 WHISPER_COMPUTE_TYPE=int8
 TRANSCRIPTION_TIMEOUT_MS=1800000
+OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS=300000
+OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS=4096
 ```
 
 For stronger Chinese transcription, switch later to:
@@ -82,8 +84,8 @@ http://localhost:3000
 2. Select **English** or **Chinese**.
 3. Choose an audio file: mp3, m4a, wav, mp4, webm, ogg, or aac.
 4. Click **Upload and transcribe**.
-5. Wait for the status to say the transcript was saved to Supabase.
-6. Open **Transcript** and review the generated text.
+5. Wait for the status to say the transcript was speaker-labelled, de-identified, and saved to Supabase.
+6. Open **Transcript** and review the generated text. It should use `Interviewer:` and `Participant:` labels.
 7. Run **Generate draft MUs**, then Categories and Reviewers.
 
 If transcription fails, the audio still remains in Supabase Storage and the failed job is recorded in `public.transcription_jobs` with the error message.
@@ -98,5 +100,7 @@ Successful upload creates:
 - one new transcript row in `public.transcripts`
 - one replacement segment in `public.segments`
 - one audit event
+
+The saved transcript is the Ollama-prepared version, not the raw faster-whisper output. The preparation step detects likely person names, places, organizations, contact details, IDs, and other identifying details, replacing them with bracket placeholders such as `[PERSON_1]` or `[LOCATION_1]`.
 
 When a new transcript is imported, old meaning units, category systems, and reviewer comments are cleared so the next AI run uses the new audio-derived transcript only.

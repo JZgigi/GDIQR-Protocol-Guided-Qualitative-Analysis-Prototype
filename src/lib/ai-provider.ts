@@ -32,6 +32,16 @@ interface ReviewerInput {
   integratedNarrative: string;
 }
 
+interface TranscriptProcessingInput {
+  language: Project["language"];
+  transcript: string;
+  transcriptionSegments?: Array<{
+    start: number;
+    end: number;
+    text: string;
+  }>;
+}
+
 export interface MeaningUnitResult {
   provider: AiProvider;
   model?: string;
@@ -63,6 +73,14 @@ export interface ReviewerResult {
   comments: ReviewerComment[];
 }
 
+export interface TranscriptProcessingResult {
+  provider: AiProvider;
+  model?: string;
+  sanitizedTranscript: string;
+  privacyFindings: string[];
+  speakerNotes: string[];
+}
+
 export function getAiProvider(): AiProvider {
   return "ollama";
 }
@@ -79,11 +97,12 @@ export async function generateMeaningUnits(
     segmentId?: string;
     meaningUnits?: Array<Partial<MeaningUnit>>;
     uncertainties?: Array<{ unit?: number; note?: string }>;
-  }>([
-    systemMessage(),
-    {
-      role: "user",
-      content: `/no_think
+  }>(
+    [
+      systemMessage(),
+      {
+        role: "user",
+        content: `/no_think
 Create GDIQR meaning units from this transcript.
 
 Rules:
@@ -118,8 +137,13 @@ Light interpretation: ${input.lightInterpretation ? "on" : "off"}
 
 Transcript:
 ${input.transcript}`
+      }
+    ],
+    {
+      maxTokens: Number(process.env.OLLAMA_MU_MAX_TOKENS ?? 1800),
+      timeoutMs: getOllamaTimeoutMs()
     }
-  ]);
+  );
 
   const meaningUnits = normalizeMeaningUnits(result.meaningUnits ?? []);
 
@@ -152,11 +176,12 @@ export async function generateCategories(
     structuralModel?: string;
     integratedNarrative?: string;
     uncertainties?: string[];
-  }>([
-    systemMessage(),
-    {
-      role: "user",
-      content: `/no_think
+  }>(
+    [
+      systemMessage(),
+      {
+        role: "user",
+        content: `/no_think
 Construct a compact GDIQR category system for Mode ${input.mode}.
 
 Rules:
@@ -199,8 +224,13 @@ ${input.units
       `MU ${unit.number}: ${unit.excerpt}\nSummary: ${unit.humanSummary || unit.aiSummary}`
   )
   .join("\n\n")}`
+      }
+    ],
+    {
+      maxTokens: Number(process.env.OLLAMA_CATEGORY_MAX_TOKENS ?? 1800),
+      timeoutMs: getOllamaTimeoutMs()
     }
-  ]);
+  );
 
   return {
     provider: "ollama",
@@ -225,11 +255,12 @@ export async function generateReviewer(
   }
 
   const model = getOllamaModel();
-  const result = await callOllamaJson<{ comments?: Array<Partial<ReviewerComment>> }>([
-    systemMessage(),
-    {
-      role: "user",
-      content: `/no_think
+  const result = await callOllamaJson<{ comments?: Array<Partial<ReviewerComment>> }>(
+    [
+      systemMessage(),
+      {
+        role: "user",
+        content: `/no_think
 Review this GDIQR analysis.
 
 Rules:
@@ -268,14 +299,84 @@ ${JSON.stringify(input.categories, null, 2)}
 
 Integrated narrative:
 ${input.integratedNarrative}`
+      }
+    ],
+    {
+      maxTokens: Number(process.env.OLLAMA_REVIEWER_MAX_TOKENS ?? 1200),
+      timeoutMs: getOllamaTimeoutMs()
     }
-  ]);
+  );
 
   return {
     provider: "ollama",
     model,
     status: "completed",
     comments: normalizeReviewerComments(result.comments ?? [])
+  };
+}
+
+export async function processTranscriptForPrivacyAndSpeakers(
+  input: TranscriptProcessingInput
+): Promise<TranscriptProcessingResult> {
+  assertOllamaConfigured();
+  assertNonEmpty(input.transcript, "Transcript is required before privacy review.");
+
+  const model = getOllamaModel();
+  const result = await callOllamaJson<{
+    sanitizedTranscript?: string;
+    privacyFindings?: string[];
+    speakerNotes?: string[];
+  }>(
+    [
+      {
+        role: "system",
+        content:
+          "You are a careful research transcript preparation assistant. Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought."
+      },
+      {
+        role: "user",
+        content: `/no_think
+Prepare this raw interview transcript for qualitative analysis.
+
+Tasks:
+1. Separate speech into turns labelled exactly "Interviewer:" and "Participant:".
+2. Infer speakers conservatively from questions, answers, greetings, and interview flow. If uncertain, choose the most likely label and add a short speakerNotes item.
+3. Detect and anonymize privacy-sensitive information, including specific person names, exact addresses, local place names, workplaces, schools, organizations, phone numbers, emails, IDs, social handles, URLs, and highly identifying rare details.
+4. Replace private details with stable bracket placeholders, for example [PERSON_1], [LOCATION_1], [ORGANIZATION_1], [CONTACT_1], [IDENTIFIER_1], [DATE_1], [OTHER_PRIVATE_DETAIL_1].
+5. Do not summarize, translate, add new content, or remove research meaning.
+6. Preserve the original interview language: ${input.language}.
+7. Return only JSON matching this shape:
+{
+  "sanitizedTranscript": "Interviewer: ...\\nParticipant: ...",
+  "privacyFindings": ["[PERSON_1] replaced a specific person name"],
+  "speakerNotes": ["optional uncertainty note"]
+}
+
+Raw transcript:
+${input.transcript}
+
+Timestamped transcription segments for reference:
+${JSON.stringify(input.transcriptionSegments?.slice(0, 80) ?? [], null, 2)}`
+      }
+    ],
+    {
+      maxTokens: Number(process.env.OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS ?? 4096),
+      timeoutMs: Number(process.env.OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS ?? 300000)
+    }
+  );
+
+  const sanitizedTranscript = cleanText(result.sanitizedTranscript);
+  assertNonEmpty(
+    sanitizedTranscript,
+    "Privacy/speaker transcript processing returned an empty transcript."
+  );
+
+  return {
+    provider: "ollama",
+    model,
+    sanitizedTranscript,
+    privacyFindings: stringArray(result.privacyFindings),
+    speakerNotes: stringArray(result.speakerNotes)
   };
 }
 
@@ -287,8 +388,13 @@ function systemMessage(): OllamaMessage {
   };
 }
 
-async function callOllamaJson<T>(messages: OllamaMessage[]): Promise<T> {
-  const content = await callOllamaContent(messages, 300000, 1600);
+async function callOllamaJson<T>(
+  messages: OllamaMessage[],
+  options: { maxTokens?: number; timeoutMs?: number } = {}
+): Promise<T> {
+  const maxTokens = options.maxTokens ?? 1600;
+  const timeoutMs = options.timeoutMs ?? getOllamaTimeoutMs();
+  const content = await callOllamaContent(messages, timeoutMs, maxTokens);
 
   try {
     return parseJsonObject<T>(content);
@@ -304,8 +410,8 @@ Invalid JSON-like content:
 ${content}`
         }
       ],
-      120000,
-      1600
+      Math.min(timeoutMs, 120000),
+      Math.min(maxTokens, 1600)
     );
 
     return parseJsonObject<T>(repaired);
@@ -369,6 +475,10 @@ function parseJsonObject<T>(content: string): T {
 
 function getOllamaModel() {
   return process.env.OLLAMA_MODEL ?? "qwen3:8b";
+}
+
+function getOllamaTimeoutMs() {
+  return Number(process.env.OLLAMA_API_TIMEOUT_MS ?? 300000);
 }
 
 function assertOllamaConfigured() {

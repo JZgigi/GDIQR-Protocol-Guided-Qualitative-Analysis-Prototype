@@ -6,6 +6,7 @@ Use this checklist after setting:
 AI_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434/v1
 OLLAMA_MODEL=qwen3:8b
+OLLAMA_API_TIMEOUT_MS=300000
 ```
 
 ## 1. Confirm services
@@ -65,7 +66,7 @@ If you want to test from audio instead of an existing transcript:
 4. Choose your audio file and click **Upload and transcribe**.
 5. Confirm the generated transcript appears in **Transcript**.
 
-The upload route uses real Supabase Storage and records the transcription job in Supabase. It does not fall back to mock data.
+The upload route uses real Supabase Storage and records the transcription job in Supabase. It then asks Ollama to label speakers and de-identify private details before saving the transcript.
 
 ## 4. Test the UI flow
 
@@ -105,6 +106,8 @@ Meaning-unit generation replaces the current project meaning units. Reviewer gen
 
 - The local model may occasionally return invalid JSON. The API will show an error instead of saving malformed output.
 - Long transcripts may exceed the useful context window for `qwen3:8b`; test one segment at a time first.
+- In local dev, Next.js may show "Compiling /api/ai/..." the first time you hit an API route. That compile step should be brief. If the UI stays on "Calling meaning-unit API...", the wait is usually Ollama generation time, not Next.js compilation.
+- If a local AI request times out, try a shorter transcript, a faster model, or increase `OLLAMA_API_TIMEOUT_MS`.
 - Local transcription currently runs inside the Next.js API request. Long audio can take several minutes; a background worker is still the better production shape.
 - Chinese audio is supported through faster-whisper by selecting Chinese in the Upload step.
 
