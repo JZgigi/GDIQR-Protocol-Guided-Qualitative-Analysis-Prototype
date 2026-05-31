@@ -15,7 +15,7 @@ Chinese audio file
   -> Ollama GDIQR analysis routes
 ```
 
-In the Upload step, choose **Chinese** before selecting the audio file. The app sends `zh` to the transcription script, then asks Ollama to label turns as `Interviewer:` and `Participant:` and replace specific names, locations, organizations, and contact details with bracket placeholders.
+In the Upload step, choose **Chinese** before selecting the audio file. The app sends `zh` to the transcription script, then asks Ollama to label turns as `Interviewer:` and `Participant:`. High-confidence private details are replaced with bracket placeholders, and uncertain names or places are kept as review markers such as `[[PRIVACY_REVIEW:PERSON:Sam]]` for manual review.
 
 ## Recommended Chinese Transcription Model
 
@@ -63,8 +63,9 @@ brew install ffmpeg
 Once transcription succeeds:
 
 1. Open the **Transcript** step and review/edit the transcript.
-2. Save a transcript version if you make manual edits.
-3. Open **Meaning Units** and run the local AI flow.
-4. Continue to **Categories** and **Reviewers**.
+2. Resolve privacy review markers and save a transcript version if you make manual edits.
+3. Click **Confirm transcript for analysis**.
+4. Open **Meaning Units** and run the local AI flow.
+5. Continue to **Categories** and **Reviewers**.
 
 Old meaning units, categories, and reviewer comments are cleared when a new audio transcript is imported, because they belong to the previous transcript.

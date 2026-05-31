@@ -7,6 +7,7 @@ AI_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434/v1
 OLLAMA_MODEL=qwen3:8b
 OLLAMA_API_TIMEOUT_MS=300000
+TRANSCRIPT_MU_CHUNK_CHARS=4500
 ```
 
 ## 1. Confirm services
@@ -79,13 +80,14 @@ http://localhost:3000
 Then test in this order:
 
 1. Click **Refresh API** and confirm the status says data loaded from Supabase.
-2. Go to **Meaning Units** and click **Generate draft MUs**.
-3. Confirm the status says the result was saved to Supabase.
-4. Click **Refresh API** and confirm the generated meaning units remain.
-5. Go to **Categories** and click **Run Mode A**, **Run Mode B**, or **Run Mode C**.
-6. Click **Refresh API** and confirm the latest category system remains.
-7. Go to **Reviewers** and click **Run reviewer agents**.
-8. Click **Refresh API** and confirm reviewer comments remain.
+2. Go to **Transcript**, review speaker labels and privacy markers, edit the text if needed, then click **Confirm transcript for analysis**.
+3. Go to **Meaning Units** and click **Generate draft MUs**.
+4. Confirm the status says the result was saved to Supabase.
+5. Click **Refresh API** and confirm the generated meaning units remain.
+6. Go to **Categories** and click **Run Mode A**, **Run Mode B**, or **Run Mode C**.
+7. Click **Refresh API** and confirm the latest category system remains.
+8. Go to **Reviewers** and click **Run reviewer agents**.
+9. Click **Refresh API** and confirm reviewer comments remain.
 
 ## 5. What is persisted
 
@@ -105,9 +107,10 @@ Meaning-unit generation replaces the current project meaning units. Reviewer gen
 ## 6. Known testing limits
 
 - The local model may occasionally return invalid JSON. The API will show an error instead of saving malformed output.
-- Long transcripts may exceed the useful context window for `qwen3:8b`; test one segment at a time first.
+- Long transcripts are split before meaning-unit generation. Lower `TRANSCRIPT_MU_CHUNK_CHARS` for more, smaller Ollama calls; raise it only if your model handles larger context reliably.
 - In local dev, Next.js may show "Compiling /api/ai/..." the first time you hit an API route. That compile step should be brief. If the UI stays on "Calling meaning-unit API...", the wait is usually Ollama generation time, not Next.js compilation.
-- If a local AI request times out, try a shorter transcript, a faster model, or increase `OLLAMA_API_TIMEOUT_MS`.
+- If a local AI request times out, watch the live log panel first. If a specific chunk is slow, try a faster model, increase `OLLAMA_API_TIMEOUT_MS`, or reduce `TRANSCRIPT_MU_CHUNK_CHARS`.
+- The **AI / transcription activity** panel at the bottom of the app polls `/api/run-logs` every 2 seconds and shows local step timings. The logs are kept in memory and reset when the dev server restarts.
 - Local transcription currently runs inside the Next.js API request. Long audio can take several minutes; a background worker is still the better production shape.
 - Chinese audio is supported through faster-whisper by selecting Chinese in the Upload step.
 

@@ -5,6 +5,7 @@ import type {
   Project,
   ReviewerComment
 } from "@/lib/types";
+import { addRunEvent } from "@/lib/run-logs";
 
 type AiProvider = "ollama";
 
@@ -16,6 +17,7 @@ interface OllamaMessage {
 interface MeaningUnitInput {
   lightInterpretation: boolean;
   project: Project;
+  runId?: string;
   transcript: string;
 }
 
@@ -34,6 +36,7 @@ interface ReviewerInput {
 
 interface TranscriptProcessingInput {
   language: Project["language"];
+  runId?: string;
   transcript: string;
   transcriptionSegments?: Array<{
     start: number;
@@ -92,6 +95,62 @@ export async function generateMeaningUnits(
   assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
 
   const model = getOllamaModel();
+  const chunks = chunkTranscript(
+    input.transcript,
+    Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 4500)
+  );
+  const allUnits: MeaningUnit[] = [];
+  const allUncertainties: Array<{ unit: number; note: string }> = [];
+
+  addRunEvent(
+    input.runId,
+    `Meaning-unit generation split transcript into ${chunks.length} chunk${chunks.length === 1 ? "" : "s"}`
+  );
+
+  for (const [index, chunk] of chunks.entries()) {
+    const startedAt = Date.now();
+    const startingNumber = allUnits.length + 1;
+    addRunEvent(
+      input.runId,
+      `Calling Ollama for MU chunk ${index + 1}/${chunks.length} (${chunk.length} chars)`
+    );
+    const result = await generateMeaningUnitsForChunk({
+      chunk,
+      chunkIndex: index,
+      input,
+      startingNumber
+    });
+    addRunEvent(
+      input.runId,
+      `MU chunk ${index + 1}/${chunks.length} finished in ${formatDuration(Date.now() - startedAt)} with ${result.meaningUnits.length} units`
+    );
+    allUnits.push(...result.meaningUnits);
+    allUncertainties.push(...result.uncertainties);
+  }
+
+  return {
+    provider: "ollama",
+    model,
+    caseId: "CASE-001",
+    segmentId: "SEG-001",
+    lightInterpretation: input.lightInterpretation,
+    meaningUnits: allUnits,
+    uncertainties: allUncertainties,
+    nextInstruction: "Review and accept or edit the generated meaning units."
+  };
+}
+
+async function generateMeaningUnitsForChunk({
+  chunk,
+  chunkIndex,
+  input,
+  startingNumber
+}: {
+  chunk: string;
+  chunkIndex: number;
+  input: MeaningUnitInput;
+  startingNumber: number;
+}) {
   const result = await callOllamaJson<{
     caseId?: string;
     segmentId?: string;
@@ -111,6 +170,8 @@ Rules:
 - Keep summaries concise and descriptive.
 - Set humanSummary equal to aiSummary.
 - Use reviewerStatus "Not run" unless there is a clear concern, then use "Warning".
+- Start numbering at ${startingNumber}.
+- Use caseId "CASE-001" and segmentId "SEG-001".
 - Return only JSON matching this shape:
 {
   "caseId": "CASE-001",
@@ -134,9 +195,10 @@ Project title: ${input.project.title}
 Research question: ${input.project.researchQuestion}
 Interview language: ${input.project.language}
 Light interpretation: ${input.lightInterpretation ? "on" : "off"}
+Transcript chunk: ${chunkIndex + 1}
 
 Transcript:
-${input.transcript}`
+${chunk}`
       }
     ],
     {
@@ -145,19 +207,14 @@ ${input.transcript}`
     }
   );
 
-  const meaningUnits = normalizeMeaningUnits(result.meaningUnits ?? []);
-
   return {
-    provider: "ollama",
-    model,
-    caseId: result.caseId ?? "CASE-001",
-    segmentId: result.segmentId ?? "SEG-001",
-    lightInterpretation: input.lightInterpretation,
-    meaningUnits,
+    meaningUnits: normalizeMeaningUnits(
+      result.meaningUnits ?? [],
+      startingNumber
+    ),
     uncertainties: (result.uncertainties ?? [])
       .filter((item) => item.unit && item.note)
       .map((item) => ({ unit: item.unit ?? 0, note: item.note ?? "" })),
-    nextInstruction: "Review and accept or edit the generated meaning units."
   };
 }
 
@@ -322,50 +379,43 @@ export async function processTranscriptForPrivacyAndSpeakers(
   assertNonEmpty(input.transcript, "Transcript is required before privacy review.");
 
   const model = getOllamaModel();
-  const result = await callOllamaJson<{
-    sanitizedTranscript?: string;
-    privacyFindings?: string[];
-    speakerNotes?: string[];
-  }>(
-    [
-      {
-        role: "system",
-        content:
-          "You are a careful research transcript preparation assistant. Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought."
-      },
-      {
-        role: "user",
-        content: `/no_think
-Prepare this raw interview transcript for qualitative analysis.
+  const chunks = chunkTranscript(
+    input.transcript,
+    Number(process.env.TRANSCRIPT_PROCESS_CHUNK_CHARS ?? 6000)
+  );
+  const results: TranscriptProcessingResult[] = [];
 
-Tasks:
-1. Separate speech into turns labelled exactly "Interviewer:" and "Participant:".
-2. Infer speakers conservatively from questions, answers, greetings, and interview flow. If uncertain, choose the most likely label and add a short speakerNotes item.
-3. Detect and anonymize privacy-sensitive information, including specific person names, exact addresses, local place names, workplaces, schools, organizations, phone numbers, emails, IDs, social handles, URLs, and highly identifying rare details.
-4. Replace private details with stable bracket placeholders, for example [PERSON_1], [LOCATION_1], [ORGANIZATION_1], [CONTACT_1], [IDENTIFIER_1], [DATE_1], [OTHER_PRIVATE_DETAIL_1].
-5. Do not summarize, translate, add new content, or remove research meaning.
-6. Preserve the original interview language: ${input.language}.
-7. Return only JSON matching this shape:
-{
-  "sanitizedTranscript": "Interviewer: ...\\nParticipant: ...",
-  "privacyFindings": ["[PERSON_1] replaced a specific person name"],
-  "speakerNotes": ["optional uncertainty note"]
-}
-
-Raw transcript:
-${input.transcript}
-
-Timestamped transcription segments for reference:
-${JSON.stringify(input.transcriptionSegments?.slice(0, 80) ?? [], null, 2)}`
-      }
-    ],
-    {
-      maxTokens: Number(process.env.OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS ?? 4096),
-      timeoutMs: Number(process.env.OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS ?? 300000)
-    }
+  addRunEvent(
+    input.runId,
+    `Privacy/speaker processing split transcript into ${chunks.length} chunk${chunks.length === 1 ? "" : "s"}`
   );
 
-  const sanitizedTranscript = cleanText(result.sanitizedTranscript);
+  for (const [index, chunk] of chunks.entries()) {
+    const startedAt = Date.now();
+    addRunEvent(
+      input.runId,
+      `Processing transcript chunk ${index + 1}/${chunks.length} (${chunk.length} chars)`
+    );
+    const result = await processTranscriptChunk({
+      chunk,
+      chunkIndex: index,
+      language: input.language,
+      runId: input.runId,
+      transcriptionSegments:
+        chunks.length === 1 ? input.transcriptionSegments : undefined
+    });
+    addRunEvent(
+      input.runId,
+      `Finished transcript chunk ${index + 1}/${chunks.length} in ${formatDuration(Date.now() - startedAt)}`
+    );
+    results.push(result);
+  }
+
+  const sanitizedTranscript = results
+    .map((result) => result.sanitizedTranscript)
+    .join("\n\n")
+    .trim();
+
   assertNonEmpty(
     sanitizedTranscript,
     "Privacy/speaker transcript processing returned an empty transcript."
@@ -375,9 +425,107 @@ ${JSON.stringify(input.transcriptionSegments?.slice(0, 80) ?? [], null, 2)}`
     provider: "ollama",
     model,
     sanitizedTranscript,
-    privacyFindings: stringArray(result.privacyFindings),
-    speakerNotes: stringArray(result.speakerNotes)
+    privacyFindings: results.flatMap((result) => result.privacyFindings),
+    speakerNotes: results.flatMap((result) => result.speakerNotes)
   };
+}
+
+async function processTranscriptChunk({
+  chunk,
+  chunkIndex,
+  language,
+  runId,
+  transcriptionSegments
+}: {
+  chunk: string;
+  chunkIndex: number;
+  language: Project["language"];
+  runId?: string;
+  transcriptionSegments?: TranscriptProcessingInput["transcriptionSegments"];
+}): Promise<TranscriptProcessingResult> {
+  const model = getOllamaModel();
+
+  try {
+    const result = await callOllamaJson<{
+      sanitizedTranscript?: string;
+      privacyFindings?: string[];
+      speakerNotes?: string[];
+    }>(
+      [
+        {
+          role: "system",
+          content:
+            "You are a careful research transcript preparation assistant. Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought."
+        },
+        {
+          role: "user",
+          content: `/no_think
+Prepare this raw interview transcript chunk for qualitative analysis.
+
+Tasks:
+1. Separate speech into turns labelled exactly "Interviewer:" and "Participant:".
+2. Infer speakers conservatively from questions, answers, greetings, and interview flow. If uncertain, choose the most likely label and add a short speakerNotes item.
+3. Detect privacy-sensitive information, including specific person names, exact addresses, local place names, workplaces, schools, organizations, phone numbers, emails, IDs, social handles, URLs, and highly identifying rare details.
+4. For high-confidence direct identifiers, replace with stable bracket placeholders, for example [PERSON_1], [LOCATION_1], [ORGANIZATION_1], [CONTACT_1], [IDENTIFIER_1], [DATE_1], [OTHER_PRIVATE_DETAIL_1].
+5. For uncertain possible names or details that may need human review, keep the text but wrap it inline as [[PRIVACY_REVIEW:TYPE:original text]], for example "谢谢[[PRIVACY_REVIEW:PERSON:Sam]]". Add a privacyFindings note for each marker.
+6. Do not summarize, translate, add new content, or remove research meaning.
+7. Preserve the original interview language: ${language}.
+8. Return only JSON matching this shape:
+{
+  "sanitizedTranscript": "Interviewer: ...\\nParticipant: ... [[PRIVACY_REVIEW:PERSON:Sam]]",
+  "privacyFindings": ["[[PRIVACY_REVIEW:PERSON:Sam]] may be a specific person name"],
+  "speakerNotes": ["optional uncertainty note"]
+}
+
+Raw transcript chunk ${chunkIndex + 1}:
+${chunk}
+
+Timestamped transcription segments for reference:
+${JSON.stringify(transcriptionSegments?.slice(0, 60) ?? [], null, 2)}`
+        }
+      ],
+      {
+        maxTokens: Number(
+          process.env.OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS ?? 4096
+        ),
+        timeoutMs: Number(
+          process.env.OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS ?? 300000
+        )
+      }
+    );
+
+    const sanitizedTranscript = cleanText(result.sanitizedTranscript);
+    if (!sanitizedTranscript) {
+      throw new Error("Ollama returned an empty prepared transcript chunk.");
+    }
+
+    return {
+      provider: "ollama",
+      model,
+      sanitizedTranscript,
+      privacyFindings: stringArray(result.privacyFindings),
+      speakerNotes: stringArray(result.speakerNotes)
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Transcript chunk processing failed.";
+    addRunEvent(
+      runId,
+      `Chunk ${chunkIndex + 1} privacy/speaker AI failed; using local fallback. ${message}`
+    );
+
+    return {
+      provider: "ollama",
+      model,
+      sanitizedTranscript: fallbackPrepareTranscript(chunk),
+      privacyFindings: [
+        `Chunk ${chunkIndex + 1}: local fallback masked contact/identifier patterns only`
+      ],
+      speakerNotes: [
+        `Chunk ${chunkIndex + 1}: speaker labels were inferred by local fallback because Ollama returned an unusable chunk`
+      ]
+    };
+  }
 }
 
 function systemMessage(): OllamaMessage {
@@ -493,10 +641,100 @@ function assertNonEmpty(value: string, message: string) {
   }
 }
 
-function normalizeMeaningUnits(items: Array<Partial<MeaningUnit>>) {
+function chunkTranscript(transcript: string, maxChars: number) {
+  const chunks: string[] = [];
+  const paragraphs = transcript.split(/\n{2,}/);
+  let current = "";
+
+  for (const paragraph of paragraphs) {
+    const trimmed = paragraph.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (trimmed.length > maxChars) {
+      if (current) {
+        chunks.push(current.trim());
+        current = "";
+      }
+      chunks.push(...splitLongText(trimmed, maxChars));
+      continue;
+    }
+
+    const candidate = current ? `${current}\n\n${trimmed}` : trimmed;
+    if (candidate.length > maxChars && current) {
+      chunks.push(current.trim());
+      current = trimmed;
+    } else {
+      current = candidate;
+    }
+  }
+
+  if (current.trim()) {
+    chunks.push(current.trim());
+  }
+
+  return chunks.length > 0 ? chunks : [transcript.trim()];
+}
+
+function splitLongText(text: string, maxChars: number) {
+  const chunks: string[] = [];
+  for (let index = 0; index < text.length; index += maxChars) {
+    chunks.push(text.slice(index, index + maxChars));
+  }
+  return chunks;
+}
+
+function fallbackPrepareTranscript(transcript: string) {
+  const masked = transcript
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[CONTACT_1]")
+    .replace(/https?:\/\/\S+/gi, "[URL_1]")
+    .replace(/\b\+?\d[\d\s().-]{7,}\d\b/g, "[CONTACT_1]")
+    .replace(/\b[A-Z]{1,3}\d{5,}[A-Z0-9]*\b/g, "[IDENTIFIER_1]")
+    .replace(/\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b/g, "[DATE_1]");
+
+  const lines = masked
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.some((line) => /^(interviewer|participant)\s*:/i.test(line))) {
+    return lines.join("\n");
+  }
+
+  return lines
+    .map((line, index) => {
+      const isQuestion =
+        /[?？]\s*$/.test(line) ||
+        /^(can|could|would|what|when|where|why|how|tell me|请问|你能|可以|能否)/i.test(
+          line
+        );
+      const speaker = isQuestion || index === 0 ? "Interviewer" : "Participant";
+      return `${speaker}: ${line}`;
+    })
+    .join("\n");
+}
+
+function formatDuration(ms: number) {
+  if (ms < 1000) {
+    return `${ms} ms`;
+  }
+
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function normalizeMeaningUnits(
+  items: Array<Partial<MeaningUnit>>,
+  startingNumber = 1
+) {
   return items
     .map((item, index) => {
-      const number = toNumber(item.number, index + 1);
+      const number = startingNumber + index;
       const aiSummary = cleanText(item.aiSummary);
 
       return {

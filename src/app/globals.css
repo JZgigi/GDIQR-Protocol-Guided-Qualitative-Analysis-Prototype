@@ -178,6 +178,10 @@ button {
   padding: 22px;
 }
 
+.section-header.compact {
+  padding: 16px 22px;
+}
+
 .section-title {
   margin: 0;
   font-size: clamp(24px, 3vw, 38px);
@@ -219,6 +223,19 @@ button {
 
 .mini-card.soft {
   background: var(--panel-soft);
+}
+
+.mini-card.review-required {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.privacy-review-list {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+  border-top: 1px solid rgba(154, 91, 18, 0.25);
+  padding-top: 12px;
 }
 
 .label {
@@ -319,6 +336,19 @@ button {
 
 .upload-summary {
   align-self: stretch;
+}
+
+.transcript-import-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 18px;
+}
+
+.transcript-import {
+  min-height: 220px;
 }
 
 .upload-status {
@@ -465,9 +495,32 @@ button {
   padding-bottom: 12px;
 }
 
+.timeline-item.compact {
+  grid-template-columns: 110px 1fr;
+  padding-bottom: 8px;
+}
+
 .timeline-item:last-child {
   border-bottom: 0;
   padding-bottom: 0;
+}
+
+.run-log-section {
+  box-shadow: none;
+}
+
+.run-log-title {
+  margin: 6px 0 0;
+  font-size: 20px;
+}
+
+.run-log-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
 }
 
 .mode-selector {

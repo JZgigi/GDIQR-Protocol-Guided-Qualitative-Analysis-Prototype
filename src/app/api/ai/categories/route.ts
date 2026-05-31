@@ -5,30 +5,46 @@ import {
   getWorkspace,
   saveCategorySystemFromAi
 } from "@/lib/gdiqr-repository";
+import {
+  addRunEvent,
+  failRunLog,
+  finishRunLog,
+  startRunLog
+} from "@/lib/run-logs";
 import type { CategoryMode } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
+  const runId = startRunLog("Category generation");
   const body = (await request.json().catch(() => ({}))) as {
     mode?: CategoryMode;
     projectId?: string;
   };
   const mode = body.mode ?? "A";
   const projectId = body.projectId ?? defaultProjectId;
-  const workspace = await getWorkspace(projectId);
 
   try {
+    addRunEvent(runId, "Loading workspace from Supabase");
+    const workspace = await getWorkspace(projectId);
+    addRunEvent(runId, `Calling Ollama for Mode ${mode} categories (${workspace.meaningUnits.length} MUs)`);
+    const startedAt = Date.now();
     const result = await generateCategories({
       mode,
       project: workspace.project,
       units: workspace.meaningUnits
     });
+    addRunEvent(
+      runId,
+      `Ollama category generation finished in ${formatDuration(Date.now() - startedAt)}`
+    );
 
+    addRunEvent(runId, `Saving ${result.categories.length} top-level categories`);
     const saveResult = await saveCategorySystemFromAi({
       categories: result.categories,
       integratedNarrative: result.integratedNarrative,
       mode,
       projectId
     });
+    finishRunLog(runId);
 
     return NextResponse.json({
       ...result,
@@ -37,12 +53,22 @@ export async function POST(request: NextRequest) {
       persisted: saveResult.saved
     });
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Category generation failed.";
+    failRunLog(runId, message);
     return NextResponse.json(
       {
-        error:
-          error instanceof Error ? error.message : "Category generation failed."
+        error: message
       },
       { status: 500 }
     );
   }
+}
+
+function formatDuration(ms: number) {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }

@@ -50,6 +50,8 @@ WHISPER_COMPUTE_TYPE=int8
 TRANSCRIPTION_TIMEOUT_MS=1800000
 OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS=300000
 OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS=4096
+TRANSCRIPT_PROCESS_CHUNK_CHARS=6000
+TRANSCRIPT_MU_CHUNK_CHARS=4500
 ```
 
 For stronger Chinese transcription, switch later to:
@@ -84,9 +86,13 @@ http://localhost:3000
 2. Select **English** or **Chinese**.
 3. Choose an audio file: mp3, m4a, wav, mp4, webm, ogg, or aac.
 4. Click **Upload and transcribe**.
-5. Wait for the status to say the transcript was speaker-labelled, de-identified, and saved to Supabase.
-6. Open **Transcript** and review the generated text. It should use `Interviewer:` and `Participant:` labels.
-7. Run **Generate draft MUs**, then Categories and Reviewers.
+5. Watch **AI / transcription activity** at the bottom of the page to see upload, faster-whisper, transcript chunk processing, and Supabase save timings.
+6. Wait for the status to say the transcript was speaker-labelled, de-identified, and saved to Supabase.
+7. Open **Transcript** and review the generated text. It should use `Interviewer:` and `Participant:` labels.
+8. Resolve privacy review markers such as `[[PRIVACY_REVIEW:PERSON:Sam]]`, edit recognition errors, then click **Confirm transcript for analysis**.
+9. Run **Generate draft MUs**, then Categories and Reviewers.
+
+If you already have a transcript, use **Import existing transcript** on the same Upload page. Paste text or choose a `.txt`, `.md`, `.vtt`, or `.srt` file, then click **Import transcript**. The same speaker labelling and de-identification step runs before saving to Supabase.
 
 If transcription fails, the audio still remains in Supabase Storage and the failed job is recorded in `public.transcription_jobs` with the error message.
 
@@ -101,6 +107,8 @@ Successful upload creates:
 - one replacement segment in `public.segments`
 - one audit event
 
-The saved transcript is the Ollama-prepared version, not the raw faster-whisper output. The preparation step detects likely person names, places, organizations, contact details, IDs, and other identifying details, replacing them with bracket placeholders such as `[PERSON_1]` or `[LOCATION_1]`.
+The saved transcript is the Ollama-prepared version, not the raw faster-whisper output. The preparation step detects likely person names, places, organizations, contact details, IDs, and other identifying details. High-confidence identifiers are replaced with bracket placeholders such as `[PERSON_1]` or `[LOCATION_1]`; uncertain items are kept inline as review markers such as `[[PRIVACY_REVIEW:PERSON:Sam]]` so you can manually decide whether to remove them.
 
-When a new transcript is imported, old meaning units, category systems, and reviewer comments are cleared so the next AI run uses the new audio-derived transcript only.
+Long transcripts are split into chunks before privacy/speaker processing. If Ollama returns an empty chunk, the app records it in the live log and uses a conservative local fallback for that chunk instead of failing the entire upload.
+
+When a new transcript is imported, old meaning units, category systems, and reviewer comments are cleared so the next AI run uses the new audio-derived transcript only. Meaning-unit generation also runs in transcript chunks and reports each chunk in the live log panel.

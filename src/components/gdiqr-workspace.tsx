@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Archive,
   Bot,
@@ -34,6 +34,7 @@ import type {
   WorkflowStep
 } from "@/lib/types";
 import type { WorkspaceData } from "@/lib/gdiqr-repository";
+import type { RunLog } from "@/lib/run-logs";
 
 const steps: Array<{
   id: WorkflowStep;
@@ -97,6 +98,12 @@ export function GdiqrWorkspace({
     project.lightInterpretation
   );
   const [editableTranscript, setEditableTranscript] = useState(transcript);
+  const [transcriptConfirmed, setTranscriptConfirmed] = useState(
+    isTranscriptConfirmed(project)
+  );
+  const [aiPrivacyFindings, setAiPrivacyFindings] = useState<string[]>(
+    extractPrivacyReviewMarkers(transcript)
+  );
   const [displaySegments, setDisplaySegments] = useState(segments);
   const [displayAudioFiles, setDisplayAudioFiles] = useState(audioFiles);
   const [displayTranscriptionJobs, setDisplayTranscriptionJobs] =
@@ -123,6 +130,38 @@ export function GdiqrWorkspace({
   const [isRunningCategories, setIsRunningCategories] = useState(false);
   const [isRunningReviewer, setIsRunningReviewer] = useState(false);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
+  const [transcriptImportText, setTranscriptImportText] = useState("");
+  const [transcriptImportName, setTranscriptImportName] = useState(
+    "Imported transcript"
+  );
+  const [isImportingTranscript, setIsImportingTranscript] = useState(false);
+  const [isConfirmingTranscript, setIsConfirmingTranscript] = useState(false);
+  const [runLogs, setRunLogs] = useState<RunLog[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRunLogs() {
+      const response = await fetch("/api/run-logs", { cache: "no-store" });
+      if (!response.ok) {
+        return;
+      }
+      const result = (await response.json().catch(() => ({}))) as {
+        logs?: RunLog[];
+      };
+      if (!cancelled) {
+        setRunLogs(result.logs ?? []);
+      }
+    }
+
+    void loadRunLogs();
+    const interval = window.setInterval(loadRunLogs, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const completedSteps = useMemo(
     () => {
@@ -160,7 +199,19 @@ export function GdiqrWorkspace({
   const selectedTitle = steps.find((step) => step.id === activeStep)?.label;
   const latestAudioFile = displayAudioFiles[0];
   const latestTranscriptionJob = displayTranscriptionJobs[0];
-  const canGenerateMeaningUnits = Boolean(editableTranscript.trim());
+  const privacyReviewNotes = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...extractPrivacyReviewMarkers(editableTranscript),
+          ...aiPrivacyFindings
+        ])
+      ),
+    [aiPrivacyFindings, editableTranscript]
+  );
+  const canGenerateMeaningUnits = Boolean(
+    editableTranscript.trim() && transcriptConfirmed
+  );
   const canRunCategories = units.length > 0;
   const canRunReviewer = units.length > 0;
   const canExport = Boolean(
@@ -179,6 +230,8 @@ export function GdiqrWorkspace({
     setLightInterpretation(workspace.project.lightInterpretation);
     setUploadLanguage(workspace.project.language);
     setEditableTranscript(workspace.transcript);
+    setTranscriptConfirmed(isTranscriptConfirmed(workspace.project));
+    setAiPrivacyFindings(extractPrivacyReviewMarkers(workspace.transcript));
     setDisplaySegments(workspace.segments);
     setDisplayAudioFiles(workspace.audioFiles);
     setDisplayTranscriptionJobs(workspace.transcriptionJobs);
@@ -267,6 +320,12 @@ export function GdiqrWorkspace({
       if (result.workspace) {
         applyWorkspace(result.workspace);
       }
+      setTranscriptConfirmed(false);
+      setAiPrivacyFindings(
+        result.privacyFindings?.length
+          ? result.privacyFindings
+          : extractPrivacyReviewMarkers(result.workspace?.transcript ?? "")
+      );
 
       setApiStatus(
         result.transcribed
@@ -287,6 +346,79 @@ export function GdiqrWorkspace({
     }
   }
 
+  async function loadTranscriptFile(file: File | null) {
+    if (!file) {
+      return;
+    }
+
+    const text = await file.text();
+    setTranscriptImportText(text);
+    setTranscriptImportName(file.name);
+    setApiStatus(`Loaded transcript file: ${file.name}`);
+  }
+
+  async function importTranscript() {
+    if (!transcriptImportText.trim()) {
+      setApiStatus("Paste or choose a transcript before importing");
+      return;
+    }
+
+    setIsImportingTranscript(true);
+    setApiStatus(
+      "Importing transcript... Ollama will label speakers and de-identify private details."
+    );
+
+    try {
+      const response = await fetchWithTimeout("/api/transcripts/import", {
+        body: JSON.stringify({
+          language: uploadLanguage,
+          projectId: currentProject.id,
+          sourceLabel: `${transcriptImportName} + privacy review`,
+          transcript: transcriptImportText
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+        timeoutMs: 600000
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        imported?: boolean;
+        privacyFindings?: string[];
+        workspace?: WorkspaceData;
+      };
+
+      if (!response.ok || !result.imported) {
+        setApiStatus(result.error ?? "Transcript import failed");
+        return;
+      }
+
+      if (result.workspace) {
+        applyWorkspace(result.workspace);
+      }
+      setTranscriptConfirmed(false);
+      setAiPrivacyFindings(
+        result.privacyFindings?.length
+          ? result.privacyFindings
+          : extractPrivacyReviewMarkers(result.workspace?.transcript ?? "")
+      );
+
+      setTranscriptImportText("");
+      setApiStatus(
+        `Transcript imported, speaker-labelled, and de-identified${
+          result.privacyFindings?.length
+            ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
+            : ""
+        }`
+      );
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error ? error.message : "Transcript import failed"
+      );
+    } finally {
+      setIsImportingTranscript(false);
+    }
+  }
+
   async function refreshWorkspace() {
     setApiStatus("Loading workspace API...");
     const response = await fetch(`/api/workspace?projectId=${currentProject.id}`, {
@@ -302,6 +434,7 @@ export function GdiqrWorkspace({
 
   async function saveTranscriptVersion() {
     setApiStatus("Saving transcript version...");
+    setTranscriptConfirmed(false);
     const response = await fetch("/api/transcript-versions", {
       body: JSON.stringify({
         content: editableTranscript,
@@ -329,15 +462,67 @@ export function GdiqrWorkspace({
     );
   }
 
+  async function confirmTranscriptForAnalysis() {
+    if (!editableTranscript.trim()) {
+      setApiStatus("Transcript is required before confirmation");
+      return;
+    }
+
+    setIsConfirmingTranscript(true);
+    setApiStatus("Confirming transcript and clearing derived analysis...");
+
+    try {
+      const response = await fetch("/api/transcripts/confirm", {
+        body: JSON.stringify({
+          content: editableTranscript,
+          language: projectLanguage,
+          projectId: currentProject.id
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        saved?: boolean;
+        workspace?: WorkspaceData;
+      };
+
+      if (!response.ok || !result.saved) {
+        setApiStatus(result.error ?? "Transcript confirmation failed");
+        return;
+      }
+
+      if (result.workspace) {
+        applyWorkspace(result.workspace);
+      }
+      setTranscriptConfirmed(true);
+      setApiStatus(
+        "Transcript confirmed. You can now generate meaning units from this reviewed text."
+      );
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error ? error.message : "Transcript confirmation failed"
+      );
+    } finally {
+      setIsConfirmingTranscript(false);
+    }
+  }
+
   async function generateMeaningUnits() {
     if (!editableTranscript.trim()) {
       setApiStatus("Transcript is required before generating meaning units");
       return;
     }
+    if (!transcriptConfirmed) {
+      setApiStatus(
+        "Review and confirm the transcript before generating meaning units"
+      );
+      return;
+    }
 
     setIsGeneratingMeaningUnits(true);
     setApiStatus(
-      "Calling meaning-unit API... Ollama may take 1-5 minutes on a local model."
+      "Calling meaning-unit API... Watch the live log panel for chunk timings."
     );
 
     try {
@@ -349,7 +534,7 @@ export function GdiqrWorkspace({
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 330000
+        timeoutMs: 1800000
       });
       if (!response.ok) {
         const errorResult = (await response.json().catch(() => ({}))) as {
@@ -394,7 +579,7 @@ export function GdiqrWorkspace({
         body: JSON.stringify({ mode, projectId: currentProject.id, units }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 330000
+        timeoutMs: 900000
       });
       if (!response.ok) {
         const errorResult = (await response.json().catch(() => ({}))) as {
@@ -441,7 +626,7 @@ export function GdiqrWorkspace({
         body: JSON.stringify({ projectId: currentProject.id, units }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 330000
+        timeoutMs: 900000
       });
       if (!response.ok) {
         const errorResult = (await response.json().catch(() => ({}))) as {
@@ -487,6 +672,8 @@ export function GdiqrWorkspace({
       .replace(/\n{3,}/g, "\n\n")
       .trim();
     setEditableTranscript(cleaned);
+    setTranscriptConfirmed(false);
+    setAiPrivacyFindings(extractPrivacyReviewMarkers(cleaned));
     setApiStatus("Transcript whitespace cleaned locally; save a version when ready");
   }
 
@@ -672,10 +859,18 @@ export function GdiqrWorkspace({
             disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
             onClick={generateMeaningUnits}
             type="button"
-            title="Run configured AI provider"
+            title={
+              transcriptConfirmed
+                ? "Run configured AI provider"
+                : "Confirm the transcript before running AI analysis"
+            }
           >
             <Bot size={18} />
-            {isGeneratingMeaningUnits ? "Running AI..." : "Run AI"}
+            {isGeneratingMeaningUnits
+              ? "Running AI..."
+              : transcriptConfirmed
+                ? "Run AI"
+                : "Confirm transcript first"}
           </button>
           <button
             className="button primary"
@@ -967,11 +1162,135 @@ export function GdiqrWorkspace({
                     )}
                   </div>
                 </div>
+                <div className="transcript-import-panel">
+                  <div>
+                    <FileText size={28} />
+                    <h3>Import existing transcript</h3>
+                    <p className="small">
+                      Paste or upload a transcript file when you already have
+                      text. The app will still run speaker labelling and privacy
+                      de-identification before saving it to Supabase.
+                    </p>
+                  </div>
+                  <div className="upload-controls">
+                    <div>
+                      <label className="label" htmlFor="transcript-language">
+                        Transcript language
+                      </label>
+                      <select
+                        className="select"
+                        id="transcript-language"
+                        onChange={(event) =>
+                          setUploadLanguage(
+                            event.target.value === "Chinese"
+                              ? "Chinese"
+                              : "English"
+                          )
+                        }
+                        value={uploadLanguage}
+                      >
+                        <option value="English">English</option>
+                        <option value="Chinese">Chinese</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="transcript-file">
+                        Transcript file
+                      </label>
+                      <input
+                        accept=".txt,.md,.vtt,.srt,text/plain,text/markdown"
+                        className="field"
+                        id="transcript-file"
+                        onChange={(event) =>
+                          void loadTranscriptFile(event.target.files?.[0] ?? null)
+                        }
+                        type="file"
+                      />
+                    </div>
+                  </div>
+                  <label className="label" htmlFor="transcript-import-text">
+                    Paste transcript
+                  </label>
+                  <textarea
+                    className="textarea transcript-import"
+                    id="transcript-import-text"
+                    onChange={(event) =>
+                      setTranscriptImportText(event.target.value)
+                    }
+                    placeholder="Paste an existing transcript here. It can already include speaker labels, or the app will infer Interviewer/Participant turns."
+                    value={transcriptImportText}
+                  />
+                  <button
+                    className="button primary"
+                    disabled={isImportingTranscript || !transcriptImportText.trim()}
+                    onClick={importTranscript}
+                    type="button"
+                  >
+                    <Upload size={18} />
+                    {isImportingTranscript
+                      ? "Importing transcript..."
+                      : "Import transcript"}
+                  </button>
+                </div>
               </div>
             )}
 
             {activeStep === "transcript" && (
               <div className="section-body grid">
+                <div
+                  className={`mini-card ${
+                    transcriptConfirmed ? "soft" : "review-required"
+                  }`}
+                >
+                  <div className="category-header">
+                    <div>
+                      <span className="label">Researcher review gate</span>
+                      <h3>
+                        {transcriptConfirmed
+                          ? "Transcript confirmed for analysis"
+                          : "Review transcript before analysis"}
+                      </h3>
+                      <p className="small">
+                        Check speaker labels, edit any recognition errors, and
+                        resolve privacy markers such as
+                        {" [[PRIVACY_REVIEW:PERSON:Sam]] "}before generating
+                        meaning units.
+                      </p>
+                    </div>
+                    <StatusBadge
+                      label={transcriptConfirmed ? "Confirmed" : "Needs review"}
+                    />
+                  </div>
+                  {privacyReviewNotes.length > 0 && (
+                    <div className="privacy-review-list">
+                      <span className="label">Privacy review items</span>
+                      {privacyReviewNotes.slice(0, 8).map((item) => (
+                        <p className="small mono" key={item}>
+                          {item}
+                        </p>
+                      ))}
+                      {privacyReviewNotes.length > 8 && (
+                        <p className="small">
+                          +{privacyReviewNotes.length - 8} more item
+                          {privacyReviewNotes.length - 8 === 1 ? "" : "s"}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    className="button primary"
+                    disabled={
+                      isConfirmingTranscript || !editableTranscript.trim()
+                    }
+                    onClick={confirmTranscriptForAnalysis}
+                    type="button"
+                  >
+                    <Check size={18} />
+                    {isConfirmingTranscript
+                      ? "Confirming..."
+                      : "Confirm transcript for analysis"}
+                  </button>
+                </div>
                 <div className="button-row">
                   <button
                     className="button soft"
@@ -1007,7 +1326,14 @@ export function GdiqrWorkspace({
                 <textarea
                   className="textarea transcript"
                   id="transcript-editor"
-                  onChange={(event) => setEditableTranscript(event.target.value)}
+                  onChange={(event) => {
+                    const nextTranscript = event.target.value;
+                    setEditableTranscript(nextTranscript);
+                    setTranscriptConfirmed(false);
+                    setAiPrivacyFindings(
+                      extractPrivacyReviewMarkers(nextTranscript)
+                    );
+                  }}
                   placeholder="Your uploaded audio transcript will appear here after local transcription."
                   value={editableTranscript}
                 />
@@ -1058,11 +1384,18 @@ export function GdiqrWorkspace({
                     disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
                     onClick={generateMeaningUnits}
                     type="button"
+                    title={
+                      transcriptConfirmed
+                        ? "Generate meaning units from the confirmed transcript"
+                        : "Confirm the transcript before generating meaning units"
+                    }
                   >
                     <Bot size={18} />
                     {isGeneratingMeaningUnits
                       ? "Generating MUs..."
-                      : "Generate draft MUs"}
+                      : transcriptConfirmed
+                        ? "Generate draft MUs"
+                        : "Confirm transcript first"}
                   </button>
                   <button
                     className="button"
@@ -1078,7 +1411,13 @@ export function GdiqrWorkspace({
                   </span>
                 </div>
                 {units.length === 0 ? (
-                  <EmptyState text="No meaning units yet. Add or generate a transcript first, then run local AI." />
+                  <EmptyState
+                    text={
+                      transcriptConfirmed
+                        ? "No meaning units yet. Run local AI to generate draft MUs."
+                        : "No meaning units yet. Review and confirm the transcript first, then run local AI."
+                    }
+                  />
                 ) : (
                   <div className="table-wrap">
                     <table className="table">
@@ -1291,6 +1630,7 @@ export function GdiqrWorkspace({
               </div>
             )}
           </section>
+          <RunLogPanel logs={runLogs} />
         </main>
       </div>
     </div>
@@ -1313,8 +1653,83 @@ function StatusBadge({ label }: { label: string }) {
   return <span className={className}>{label}</span>;
 }
 
+function isTranscriptConfirmed(project: Project) {
+  return project.status === "Transcript confirmed for analysis";
+}
+
+function extractPrivacyReviewMarkers(transcript: string) {
+  return Array.from(
+    new Set(
+      transcript.match(/\[\[PRIVACY_REVIEW:[^\]]+\]\]/g)?.map((item) =>
+        item.trim()
+      ) ?? []
+    )
+  );
+}
+
 function EmptyState({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>;
+}
+
+function RunLogPanel({ logs }: { logs: RunLog[] }) {
+  return (
+    <section className="section run-log-section">
+      <div className="section-header compact">
+        <div>
+          <span className="badge blue">Live local logs</span>
+          <h2 className="run-log-title">AI / transcription activity</h2>
+          <p className="small">
+            Polls local API every 2 seconds. Logs reset when the dev server restarts.
+          </p>
+        </div>
+      </div>
+      <div className="section-body grid">
+        {logs.length === 0 ? (
+          <EmptyState text="No local runs yet. Start an audio upload, transcript import, or AI generation to see step timings here." />
+        ) : (
+          logs.slice(0, 5).map((log) => (
+            <article className="run-log-card" key={log.id}>
+              <div className="category-header">
+                <div>
+                  <h3>{log.label}</h3>
+                  <p className="small">
+                    Started {new Date(log.startedAt).toLocaleTimeString()}
+                    {log.durationMs
+                      ? ` · ${formatMs(log.durationMs)} total`
+                      : ""}
+                  </p>
+                </div>
+                <StatusBadge label={log.status} />
+              </div>
+              <div className="timeline">
+                {log.events.slice(-8).map((event) => (
+                  <div className="timeline-item compact" key={event.id}>
+                    <span className="mono small">
+                      {new Date(event.timestamp).toLocaleTimeString()}
+                    </span>
+                    <p className="small">{event.message}</p>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function formatMs(ms: number) {
+  if (ms < 1000) {
+    return `${ms} ms`;
+  }
+
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 async function fetchWithTimeout(
@@ -1333,7 +1748,7 @@ async function fetchWithTimeout(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(
-        "Local AI request timed out. Try a shorter transcript, a smaller Ollama model, or increase OLLAMA_API_TIMEOUT_MS."
+        "Local AI request timed out in the browser. Check the live log panel to see whether the server is still processing chunks, or increase OLLAMA_API_TIMEOUT_MS / reduce TRANSCRIPT_MU_CHUNK_CHARS."
       );
     }
     throw error;

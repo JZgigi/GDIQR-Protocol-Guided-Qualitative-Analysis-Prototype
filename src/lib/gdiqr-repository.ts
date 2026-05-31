@@ -466,6 +466,168 @@ export async function completeTranscriptionJob({
   };
 }
 
+export async function importTranscriptForAnalysis({
+  language,
+  projectId = defaultProjectId,
+  sourceLabel,
+  transcript
+}: {
+  language: Project["language"];
+  projectId?: string;
+  sourceLabel: string;
+  transcript: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const { data: transcriptRow, error: transcriptError } = await supabase
+    .from("transcripts")
+    .insert({
+      project_id: projectId,
+      content: transcript,
+      version_label: sourceLabel
+    })
+    .select()
+    .single();
+
+  if (transcriptError) {
+    throw new Error(transcriptError.message);
+  }
+
+  await Promise.all([
+    supabase.from("segments").delete().eq("project_id", projectId),
+    supabase.from("meaning_units").delete().eq("project_id", projectId),
+    supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId)
+  ]);
+
+  const segmentId = stableId("seg", projectId, Date.now());
+  const { error: segmentError } = await supabase.from("segments").insert({
+    id: segmentId,
+    project_id: projectId,
+    case_id: "CASE-001",
+    segment_id: "SEG-001",
+    speaker_info: "Imported transcript",
+    start_timestamp: "00:00",
+    end_timestamp: "00:00",
+    starting_mu_number: 1,
+    status: "Ready",
+    text: transcript
+  });
+
+  if (segmentError) {
+    throw new Error(segmentError.message);
+  }
+
+  const importedAt = new Date().toISOString();
+  await Promise.all([
+    supabase
+      .from("projects")
+      .update({
+        language,
+        status: "Transcript imported",
+        updated_at: importedAt
+      })
+      .eq("id", projectId),
+    supabase.from("audit_events").insert({
+      project_id: projectId,
+      actor: "Researcher",
+      action: "Imported transcript for analysis",
+      target: transcriptRow.id
+    })
+  ]);
+
+  return {
+    saved: true,
+    transcript: transcriptRow
+  };
+}
+
+export async function confirmTranscriptForAnalysis({
+  content,
+  language,
+  projectId = defaultProjectId
+}: {
+  content: string;
+  language: Project["language"];
+  projectId?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const { data: transcriptRow, error: transcriptError } = await supabase
+    .from("transcripts")
+    .insert({
+      project_id: projectId,
+      content,
+      version_label: "Researcher-confirmed transcript"
+    })
+    .select()
+    .single();
+
+  if (transcriptError) {
+    throw new Error(transcriptError.message);
+  }
+
+  await Promise.all([
+    supabase.from("segments").delete().eq("project_id", projectId),
+    supabase.from("meaning_units").delete().eq("project_id", projectId),
+    supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId)
+  ]);
+
+  const segmentId = stableId("seg", projectId, Date.now());
+  const { error: segmentError } = await supabase.from("segments").insert({
+    id: segmentId,
+    project_id: projectId,
+    case_id: "CASE-001",
+    segment_id: "SEG-001",
+    speaker_info: "Researcher-confirmed transcript",
+    start_timestamp: "00:00",
+    end_timestamp: "00:00",
+    starting_mu_number: 1,
+    status: "Ready",
+    text: content
+  });
+
+  if (segmentError) {
+    throw new Error(segmentError.message);
+  }
+
+  const confirmedAt = new Date().toISOString();
+  const { data: projectRow, error: projectError } = await supabase
+    .from("projects")
+    .update({
+      language,
+      status: "Transcript confirmed for analysis",
+      updated_at: confirmedAt
+    })
+    .eq("id", projectId)
+    .select()
+    .single();
+
+  if (projectError) {
+    throw new Error(projectError.message);
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: "Confirmed transcript for analysis",
+    target: transcriptRow.id
+  });
+
+  return {
+    saved: true,
+    project: mapProject(projectRow),
+    transcript: transcriptRow
+  };
+}
+
 export async function failTranscriptionJob({
   errorMessage,
   jobId,
