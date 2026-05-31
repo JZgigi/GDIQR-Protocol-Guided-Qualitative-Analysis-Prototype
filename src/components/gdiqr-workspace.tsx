@@ -24,12 +24,14 @@ import {
   Upload
 } from "lucide-react";
 import type {
+  AudioFileRecord,
   AuditEvent,
   CategoryMode,
   CategoryNode,
   MeaningUnit,
   Project,
   ReviewerComment,
+  TranscriptionJobRecord,
   TranscriptSegment,
   WorkflowStep
 } from "@/lib/types";
@@ -55,6 +57,8 @@ interface GdiqrWorkspaceProps {
   project: Project;
   transcript: string;
   segments: TranscriptSegment[];
+  audioFiles: AudioFileRecord[];
+  transcriptionJobs: TranscriptionJobRecord[];
   meaningUnits: MeaningUnit[];
   categories: CategoryNode[];
   reviewerComments: ReviewerComment[];
@@ -69,6 +73,8 @@ export function GdiqrWorkspace({
   project,
   transcript,
   segments,
+  audioFiles,
+  transcriptionJobs,
   meaningUnits,
   categories,
   reviewerComments,
@@ -84,6 +90,9 @@ export function GdiqrWorkspace({
   );
   const [editableTranscript, setEditableTranscript] = useState(transcript);
   const [displaySegments, setDisplaySegments] = useState(segments);
+  const [displayAudioFiles, setDisplayAudioFiles] = useState(audioFiles);
+  const [displayTranscriptionJobs, setDisplayTranscriptionJobs] =
+    useState(transcriptionJobs);
   const [units, setUnits] = useState(meaningUnits);
   const [displayCategories, setDisplayCategories] = useState(categories);
   const [reviewerOutputs, setReviewerOutputs] = useState(reviewerComments);
@@ -96,6 +105,10 @@ export function GdiqrWorkspace({
       : "Supabase env missing; using mock data"
   );
   const [reviewerHasRun, setReviewerHasRun] = useState(true);
+  const [selectedAudioFile, setSelectedAudioFile] = useState<File | null>(null);
+  const [uploadLanguage, setUploadLanguage] =
+    useState<Project["language"]>(project.language);
+  const [isUploadingAudio, setIsUploadingAudio] = useState(false);
 
   const completedSteps = useMemo(
     () =>
@@ -112,10 +125,14 @@ export function GdiqrWorkspace({
   );
 
   const selectedTitle = steps.find((step) => step.id === activeStep)?.label;
+  const latestAudioFile = displayAudioFiles[0];
+  const latestTranscriptionJob = displayTranscriptionJobs[0];
 
   function applyWorkspace(workspace: WorkspaceData) {
     setEditableTranscript(workspace.transcript);
     setDisplaySegments(workspace.segments);
+    setDisplayAudioFiles(workspace.audioFiles);
+    setDisplayTranscriptionJobs(workspace.transcriptionJobs);
     setUnits(workspace.meaningUnits);
     setDisplayCategories(workspace.categories);
     setReviewerOutputs(workspace.reviewerComments);
@@ -123,6 +140,55 @@ export function GdiqrWorkspace({
     setNarrative(workspace.integratedNarrative);
     setApiDataSource(workspace.dataSource);
     setApiStatus(`Loaded from ${workspace.dataSource}`);
+  }
+
+  async function uploadAndTranscribeAudio() {
+    if (!selectedAudioFile) {
+      setApiStatus("Choose an audio file first");
+      return;
+    }
+
+    setIsUploadingAudio(true);
+    setApiStatus("Uploading audio to Supabase and running local transcription...");
+
+    const formData = new FormData();
+    formData.append("file", selectedAudioFile);
+    formData.append("projectId", project.id);
+    formData.append("language", uploadLanguage);
+
+    try {
+      const response = await fetch("/api/audio/transcribe", {
+        body: formData,
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        transcribed?: boolean;
+        workspace?: WorkspaceData;
+      };
+
+      if (!response.ok) {
+        setApiStatus(result.error ?? "Audio upload failed");
+        return;
+      }
+
+      if (result.workspace) {
+        applyWorkspace(result.workspace);
+      }
+
+      setApiStatus(
+        result.transcribed
+          ? "Audio uploaded, transcribed locally, and saved to Supabase"
+          : result.error ??
+              "Audio uploaded to Supabase, but local transcription failed"
+      );
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error ? error.message : "Audio upload failed"
+      );
+    } finally {
+      setIsUploadingAudio(false);
+    }
   }
 
   async function refreshWorkspace() {
@@ -480,25 +546,89 @@ export function GdiqrWorkspace({
                 <div className="grid two">
                   <div className="mini-card">
                     <FileAudio size={28} />
-                    <h3>Audio upload</h3>
+                    <h3>Audio upload and local transcription</h3>
                     <p className="small">
-                      Audio files can be stored in Supabase Storage. Local
-                      transcription is the next worker step; Chinese transcripts
-                      can already be analyzed after transcription.
+                      Upload your own interview audio to Supabase Storage, then
+                      transcribe it with the local faster-whisper worker. Chinese
+                      audio is supported by selecting Chinese before upload.
                     </p>
-                    <button className="button primary" type="button">
+                    <label className="label" htmlFor="audio-language">
+                      Audio language
+                    </label>
+                    <select
+                      className="select"
+                      id="audio-language"
+                      onChange={(event) =>
+                        setUploadLanguage(
+                          event.target.value === "Chinese"
+                            ? "Chinese"
+                            : "English"
+                        )
+                      }
+                      value={uploadLanguage}
+                    >
+                      <option value="English">English</option>
+                      <option value="Chinese">Chinese</option>
+                    </select>
+                    <label className="label" htmlFor="audio-file">
+                      Audio file
+                    </label>
+                    <input
+                      accept="audio/*,.m4a,.mp3,.mp4,.wav,.webm,.ogg,.aac"
+                      className="field"
+                      id="audio-file"
+                      onChange={(event) =>
+                        setSelectedAudioFile(event.target.files?.[0] ?? null)
+                      }
+                      type="file"
+                    />
+                    <button
+                      className="button primary"
+                      disabled={isUploadingAudio || !selectedAudioFile}
+                      onClick={uploadAndTranscribeAudio}
+                      type="button"
+                    >
                       <Upload size={18} />
-                      Mock upload complete
+                      {isUploadingAudio
+                        ? "Uploading and transcribing..."
+                        : "Upload and transcribe"}
                     </button>
                   </div>
                   <div className="mini-card">
                     <Database size={28} />
                     <h3>Storage target</h3>
                     <p className="small">
-                      Planned buckets: interview-audio, exports, transcript
-                      versions. Demo mode keeps all data local in the app.
+                      Files are stored in the private interview-audio bucket.
+                      Successful transcription replaces the working transcript,
+                      clears old derived analysis, and prepares the next Run AI
+                      step against real data.
                     </p>
-                    <span className="badge blue">Supabase in next phase</span>
+                    <span className="badge blue">
+                      {apiDataSource === "supabase"
+                        ? "Supabase connected"
+                        : "Supabase not connected"}
+                    </span>
+                    {latestAudioFile && (
+                      <div className="upload-status">
+                        <span className="label">Latest audio</span>
+                        <strong>{latestAudioFile.originalFilename}</strong>
+                        <p className="small">
+                          {latestAudioFile.language} ·{" "}
+                          {formatBytes(latestAudioFile.sizeBytes)}
+                        </p>
+                      </div>
+                    )}
+                    {latestTranscriptionJob && (
+                      <div className="upload-status">
+                        <span className="label">Latest transcription job</span>
+                        <StatusBadge label={latestTranscriptionJob.status} />
+                        {latestTranscriptionJob.errorMessage && (
+                          <p className="small">
+                            {latestTranscriptionJob.errorMessage}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -777,12 +907,32 @@ function StatusBadge({ label }: { label: string }) {
   const lowered = label.toLowerCase();
   const className = lowered.includes("warning")
     ? "badge warning"
-    : lowered.includes("major") || lowered.includes("needs")
+    : lowered.includes("major") ||
+        lowered.includes("needs") ||
+        lowered.includes("failed")
       ? "badge danger"
-      : lowered.includes("pass") || lowered.includes("accepted")
+      : lowered.includes("pass") ||
+          lowered.includes("accepted") ||
+          lowered.includes("completed")
         ? "badge"
         : "badge blue";
   return <span className={className}>{label}</span>;
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 function ModeButton({

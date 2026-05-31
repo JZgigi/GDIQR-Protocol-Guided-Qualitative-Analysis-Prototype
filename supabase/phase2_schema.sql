@@ -33,6 +33,31 @@ create table if not exists public.segments (
   text text not null
 );
 
+create table if not exists public.audio_files (
+  id text primary key default ('audio_' || replace(gen_random_uuid()::text, '-', '')),
+  project_id text not null references public.projects(id) on delete cascade,
+  storage_bucket text not null default 'interview-audio',
+  storage_path text not null,
+  original_filename text not null,
+  content_type text not null default 'application/octet-stream',
+  size_bytes bigint not null default 0,
+  language text not null default 'English' check (language in ('English', 'Chinese')),
+  uploaded_at timestamptz not null default now()
+);
+
+create table if not exists public.transcription_jobs (
+  id text primary key default ('txjob_' || replace(gen_random_uuid()::text, '-', '')),
+  project_id text not null references public.projects(id) on delete cascade,
+  audio_file_id text not null references public.audio_files(id) on delete cascade,
+  status text not null default 'queued' check (status in ('queued', 'processing', 'completed', 'failed')),
+  provider text not null default 'local-faster-whisper',
+  language text not null default 'English' check (language in ('English', 'Chinese')),
+  transcript_id text references public.transcripts(id) on delete set null,
+  error_message text,
+  created_at timestamptz not null default now(),
+  completed_at timestamptz
+);
+
 create table if not exists public.meaning_units (
   id text primary key default ('mu_' || replace(gen_random_uuid()::text, '-', '')),
   project_id text not null references public.projects(id) on delete cascade,
@@ -93,6 +118,9 @@ create table if not exists public.audit_events (
 
 create index if not exists transcripts_project_created_idx on public.transcripts(project_id, created_at desc);
 create index if not exists segments_project_segment_idx on public.segments(project_id, segment_id);
+create index if not exists audio_files_project_uploaded_idx on public.audio_files(project_id, uploaded_at desc);
+create index if not exists transcription_jobs_project_created_idx on public.transcription_jobs(project_id, created_at desc);
+create index if not exists transcription_jobs_audio_file_idx on public.transcription_jobs(audio_file_id);
 create index if not exists meaning_units_project_number_idx on public.meaning_units(project_id, unit_number);
 create index if not exists category_systems_project_created_idx on public.category_systems(project_id, created_at desc);
 create index if not exists categories_system_parent_idx on public.categories(category_system_id, parent_category_id);
@@ -102,6 +130,8 @@ create index if not exists audit_events_project_time_idx on public.audit_events(
 alter table public.projects enable row level security;
 alter table public.transcripts enable row level security;
 alter table public.segments enable row level security;
+alter table public.audio_files enable row level security;
+alter table public.transcription_jobs enable row level security;
 alter table public.meaning_units enable row level security;
 alter table public.category_systems enable row level security;
 alter table public.categories enable row level security;
@@ -113,6 +143,8 @@ grant select, insert, update, delete on
   public.projects,
   public.transcripts,
   public.segments,
+  public.audio_files,
+  public.transcription_jobs,
   public.meaning_units,
   public.category_systems,
   public.categories,
@@ -122,7 +154,7 @@ to service_role;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values
-  ('interview-audio', 'interview-audio', false, 524288000, array['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/x-m4a']),
+  ('interview-audio', 'interview-audio', false, 524288000, array['audio/aac', 'audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/x-m4a', 'video/mp4', 'application/octet-stream']),
   ('exports', 'exports', false, 104857600, array['application/json', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']),
   ('transcript-versions', 'transcript-versions', false, 10485760, array['text/plain', 'application/json'])
 on conflict (id) do update set

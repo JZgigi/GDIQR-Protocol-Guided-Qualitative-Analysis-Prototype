@@ -2,60 +2,68 @@
 
 ## Current Support
 
-The app can support Chinese analysis once a Chinese transcript is available in Supabase.
-
-Current tested path:
+Chinese audio is now wired through the local test flow:
 
 ```text
-Chinese transcript text -> Supabase transcript row -> Ollama AI routes -> meaning units/categories/reviewer comments
+Chinese audio file
+  -> Supabase Storage interview-audio bucket
+  -> public.audio_files
+  -> public.transcription_jobs
+  -> local faster-whisper with language=zh
+  -> public.transcripts and public.segments
+  -> Ollama GDIQR analysis routes
 ```
 
-The local AI prompts pass the project language to the model, and the project schema now allows:
+In the Upload step, choose **Chinese** before selecting the audio file. The app sends `zh` to the transcription script and updates the project language to `Chinese` after a successful transcription.
+
+## Recommended Chinese Transcription Model
+
+For a quick first test:
 
 ```text
-English
-Chinese
+WHISPER_MODEL=small
 ```
 
-## What Is Not Wired Yet
-
-Direct audio-to-text transcription is not implemented in the Next.js app yet.
-
-That means Chinese audio files can be stored later, but the app does not yet automatically turn audio into transcript rows.
-
-## Recommended Next Step
-
-Add a local transcription worker:
+For better Chinese accuracy, especially with longer interviews:
 
 ```text
-Supabase Storage interview-audio bucket
-  -> transcription_jobs table
-  -> local faster-whisper worker
-  -> transcripts table
-  -> existing Ollama analysis routes
+WHISPER_MODEL=large-v3-turbo
 ```
 
-Recommended model:
+The first run downloads the model locally, so it may take several minutes.
+
+## Required Local Tools
+
+Install the local transcription dependency:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install faster-whisper
+```
+
+Set this in `.env.local`:
 
 ```text
-faster-whisper large-v3-turbo
+PYTHON_BIN=.venv/bin/python
+WHISPER_MODEL=small
+WHISPER_DEVICE=auto
+WHISPER_COMPUTE_TYPE=int8
 ```
 
-Recommended language mode for Chinese:
+On macOS, install ffmpeg if your audio format fails to decode:
 
-```text
-language=zh
-task=transcribe
+```bash
+brew install ffmpeg
 ```
 
-## Manual Testing Before Worker Is Built
+## After Transcription
 
-To test Chinese analysis now:
+Once transcription succeeds:
 
-1. Put a Chinese transcript into `public.transcripts` for the current project.
-2. Set `public.projects.language` to `Chinese`.
-3. Open `http://localhost:3000`.
-4. Click **Refresh API**.
-5. Use **Generate draft MUs**, **Run Mode A/B/C**, and **Run reviewer agents**.
+1. Open the **Transcript** step and review/edit the transcript.
+2. Save a transcript version if you make manual edits.
+3. Open **Meaning Units** and run the local AI flow.
+4. Continue to **Categories** and **Reviewers**.
 
-The generated outputs are saved back to Supabase.
+Old meaning units, categories, and reviewer comments are cleared when a new audio transcript is imported, because they belong to the previous transcript.

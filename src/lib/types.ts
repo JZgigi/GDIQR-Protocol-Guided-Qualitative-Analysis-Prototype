@@ -36,6 +36,31 @@ export interface TranscriptSegment {
   text: string;
 }
 
+export interface AudioFileRecord {
+  id: string;
+  projectId: string;
+  storageBucket: string;
+  storagePath: string;
+  originalFilename: string;
+  contentType: string;
+  sizeBytes: number;
+  language: Project["language"];
+  uploadedAt: string;
+}
+
+export interface TranscriptionJobRecord {
+  id: string;
+  projectId: string;
+  audioFileId: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  provider: string;
+  language: Project["language"];
+  transcriptId?: string;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
 export interface MeaningUnit {
   id: string;
   segmentId: string;

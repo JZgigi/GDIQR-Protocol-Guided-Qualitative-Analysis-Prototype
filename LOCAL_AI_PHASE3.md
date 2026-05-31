@@ -91,16 +91,16 @@ The next useful Supabase additions are:
 
 - `ai_runs`: store prompt, provider, model, route, status, latency, and token estimates.
 - `prompt_templates`: version prompts for GDIQR meaning units, category construction, and reviewers.
-- `transcription_jobs`: track audio-to-text work when local Whisper is added.
+- `audio_files` and `transcription_jobs`: track audio upload and local Whisper work.
 
 Do not store raw service-role keys, local model logs, or sensitive transcript snippets in public client state.
 
 ## 7. Local transcription after text AI
 
-For audio transcription, including Chinese audio, use a separate local service rather than blocking the Next.js request:
+Audio transcription, including Chinese audio, is now implemented for local testing:
 
 ```text
-audio upload -> Supabase Storage -> transcription job -> local faster-whisper worker -> transcript row
+audio upload -> Supabase Storage -> transcription job -> local faster-whisper script -> transcript row
 ```
 
 Recommended first local transcription model:
@@ -109,6 +109,6 @@ Recommended first local transcription model:
 Whisper large-v3-turbo through faster-whisper
 ```
 
-This should be treated as a later Phase 3 subtask after the text-only Ollama flow is stable.
+The current implementation runs during the Next.js API request. For production or long interviews, move the transcription step to a background worker or queue.
 
 For Chinese audio specifics, see `CHINESE_AUDIO_SUPPORT.md`.

@@ -9,6 +9,7 @@ export default async function Home() {
   return (
     <GdiqrWorkspace
       aiProvider={process.env.AI_PROVIDER ?? "mock"}
+      audioFiles={workspace.audioFiles}
       auditEvents={workspace.auditEvents}
       categories={workspace.categories}
       dataSource={workspace.dataSource}
@@ -19,6 +20,7 @@ export default async function Home() {
       segments={workspace.segments}
       supabaseConfigured={workspace.supabaseConfigured}
       transcript={workspace.transcript}
+      transcriptionJobs={workspace.transcriptionJobs}
     />
   );
 }

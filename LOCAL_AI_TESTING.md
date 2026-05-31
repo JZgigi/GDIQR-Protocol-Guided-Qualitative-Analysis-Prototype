@@ -55,7 +55,19 @@ If `supabase.dataSource` is `mock`, check `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_
 
 If `ollama.ok` is `false`, check that Ollama is running and that `OLLAMA_BASE_URL` ends in `/v1`.
 
-## 3. Test the UI flow
+## 3. Optional: Upload your own audio first
+
+If you want to test from audio instead of an existing transcript:
+
+1. Install the local transcription dependency in `LOCAL_AUDIO_TESTING.md`.
+2. Open **Upload**.
+3. Select **English** or **Chinese**.
+4. Choose your audio file and click **Upload and transcribe**.
+5. Confirm the generated transcript appears in **Transcript**.
+
+The upload route uses real Supabase Storage and records the transcription job in Supabase. It does not fall back to mock data.
+
+## 4. Test the UI flow
 
 Open:
 
@@ -74,10 +86,14 @@ Then test in this order:
 7. Go to **Reviewers** and click **Run reviewer agents**.
 8. Click **Refresh API** and confirm reviewer comments remain.
 
-## 4. What is persisted
+## 5. What is persisted
 
 The current implementation persists:
 
+- Uploaded audio file metadata into `public.audio_files`
+- Local transcription job state into `public.transcription_jobs`
+- Generated transcripts into `public.transcripts`
+- Replacement working segment into `public.segments`
 - Generated meaning units into `public.meaning_units`
 - Generated category systems into `public.category_systems` and `public.categories`
 - Generated reviewer comments into `public.reviewer_comments`
@@ -85,18 +101,18 @@ The current implementation persists:
 
 Meaning-unit generation replaces the current project meaning units. Reviewer generation replaces the current project reviewer comments. Category generation creates a new category system, and the app loads the latest one.
 
-## 5. Known testing limits
+## 6. Known testing limits
 
 - The local model may occasionally return invalid JSON. The API will show an error instead of saving malformed output.
 - Long transcripts may exceed the useful context window for `qwen3:8b`; test one segment at a time first.
-- Local transcription is not wired yet. This test path starts from an existing transcript row in Supabase.
-- Chinese transcripts are supported; direct Chinese audio transcription is the next worker step.
+- Local transcription currently runs inside the Next.js API request. Long audio can take several minutes; a background worker is still the better production shape.
+- Chinese audio is supported through faster-whisper by selecting Chinese in the Upload step.
 
-## 6. Next development step
+## 7. Next development step
 
 After this test passes, add:
 
 - `ai_runs` table for model run history and latency
 - prompt versioning in `prompt_templates`
 - segment-level batch processing for long interviews
-- local faster-whisper transcription worker
+- background transcription worker or job queue for long audio

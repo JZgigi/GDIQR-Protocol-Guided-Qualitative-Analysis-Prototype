@@ -9,6 +9,62 @@ export type Json =
 export interface Database {
   public: {
     Tables: {
+      audio_files: {
+        Row: {
+          id: string;
+          project_id: string;
+          storage_bucket: string;
+          storage_path: string;
+          original_filename: string;
+          content_type: string;
+          size_bytes: number;
+          language: "English" | "Chinese";
+          uploaded_at: string;
+        };
+        Insert: {
+          id?: string;
+          project_id: string;
+          storage_bucket?: string;
+          storage_path: string;
+          original_filename: string;
+          content_type?: string;
+          size_bytes?: number;
+          language?: "English" | "Chinese";
+          uploaded_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["audio_files"]["Insert"]>;
+        Relationships: [];
+      };
+      transcription_jobs: {
+        Row: {
+          id: string;
+          project_id: string;
+          audio_file_id: string;
+          status: "queued" | "processing" | "completed" | "failed";
+          provider: string;
+          language: "English" | "Chinese";
+          transcript_id: string | null;
+          error_message: string | null;
+          created_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          project_id: string;
+          audio_file_id: string;
+          status?: "queued" | "processing" | "completed" | "failed";
+          provider?: string;
+          language?: "English" | "Chinese";
+          transcript_id?: string | null;
+          error_message?: string | null;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Update: Partial<
+          Database["public"]["Tables"]["transcription_jobs"]["Insert"]
+        >;
+        Relationships: [];
+      };
       projects: {
         Row: {
           id: string;

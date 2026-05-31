@@ -9,23 +9,30 @@ import {
   mockTranscript
 } from "@/lib/mock-data";
 import type {
+  AudioFileRecord,
   AuditEvent,
   CategoryMode,
   CategoryNode,
   MeaningUnit,
   Project,
   ReviewerComment,
+  TranscriptionJobRecord,
   TranscriptSegment
 } from "@/lib/types";
 import { createSupabaseServerClient, hasSupabaseConfig } from "./supabase/server";
 import type { Database } from "./supabase/database.types";
 
+type AudioFileRow = Database["public"]["Tables"]["audio_files"]["Row"];
 type CategoryRow = Database["public"]["Tables"]["categories"]["Row"];
+type TranscriptionJobRow =
+  Database["public"]["Tables"]["transcription_jobs"]["Row"];
 
 export interface WorkspaceData {
   project: Project;
   transcript: string;
   segments: TranscriptSegment[];
+  audioFiles: AudioFileRecord[];
+  transcriptionJobs: TranscriptionJobRecord[];
   meaningUnits: MeaningUnit[];
   categories: CategoryNode[];
   reviewerComments: ReviewerComment[];
@@ -43,6 +50,8 @@ export function getMockWorkspace(): WorkspaceData {
     project: mockProject,
     transcript: mockTranscript,
     segments: mockSegments,
+    audioFiles: [],
+    transcriptionJobs: [],
     meaningUnits: mockMeaningUnits,
     categories: mockCategories,
     reviewerComments: mockReviewerComments,
@@ -66,6 +75,8 @@ export async function getWorkspace(
     projectResult,
     transcriptResult,
     segmentsResult,
+    audioFilesResult,
+    transcriptionJobsResult,
     meaningUnitsResult,
     categorySystemResult,
     reviewerCommentsResult,
@@ -84,6 +95,18 @@ export async function getWorkspace(
       .select("*")
       .eq("project_id", projectId)
       .order("segment_id", { ascending: true }),
+    supabase
+      .from("audio_files")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("uploaded_at", { ascending: false })
+      .limit(10),
+    supabase
+      .from("transcription_jobs")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(10),
     supabase
       .from("meaning_units")
       .select("*")
@@ -112,6 +135,8 @@ export async function getWorkspace(
     projectResult.error ??
     transcriptResult.error ??
     segmentsResult.error ??
+    audioFilesResult.error ??
+    transcriptionJobsResult.error ??
     meaningUnitsResult.error ??
     categorySystemResult.error ??
     reviewerCommentsResult.error ??
@@ -141,6 +166,10 @@ export async function getWorkspace(
     project: mapProject(projectResult.data),
     transcript: transcriptResult.data?.content ?? "",
     segments: (segmentsResult.data ?? []).map(mapSegment),
+    audioFiles: (audioFilesResult.data ?? []).map(mapAudioFile),
+    transcriptionJobs: (transcriptionJobsResult.data ?? []).map(
+      mapTranscriptionJob
+    ),
     meaningUnits: (meaningUnitsResult.data ?? []).map(mapMeaningUnit),
     categories: buildCategoryTree(categoryRows),
     reviewerComments: (reviewerCommentsResult.data ?? []).map(
@@ -189,6 +218,226 @@ export async function saveTranscriptVersion({
   });
 
   return { saved: true, transcript: data };
+}
+
+export async function uploadAudioForTranscription({
+  bytes,
+  contentType,
+  language,
+  originalFilename,
+  projectId = defaultProjectId,
+  sizeBytes
+}: {
+  bytes: ArrayBuffer;
+  contentType: string;
+  language: Project["language"];
+  originalFilename: string;
+  projectId?: string;
+  sizeBytes: number;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { uploaded: false, reason: "Supabase is not configured." };
+  }
+
+  const bucket = "interview-audio";
+  const safeFilename = sanitizeStorageFilename(originalFilename);
+  const storagePath = `${projectId}/${Date.now()}-${safeFilename}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(bucket)
+    .upload(storagePath, bytes, {
+      contentType,
+      upsert: false
+    });
+
+  if (uploadError) {
+    throw new Error(uploadError.message);
+  }
+
+  const { data: audioRow, error: audioError } = await supabase
+    .from("audio_files")
+    .insert({
+      project_id: projectId,
+      storage_bucket: bucket,
+      storage_path: storagePath,
+      original_filename: originalFilename,
+      content_type: contentType,
+      size_bytes: sizeBytes,
+      language
+    })
+    .select()
+    .single();
+
+  if (audioError) {
+    throw new Error(audioError.message);
+  }
+
+  const { data: jobRow, error: jobError } = await supabase
+    .from("transcription_jobs")
+    .insert({
+      project_id: projectId,
+      audio_file_id: audioRow.id,
+      status: "processing",
+      provider: "local-faster-whisper",
+      language
+    })
+    .select()
+    .single();
+
+  if (jobError) {
+    throw new Error(jobError.message);
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: "Uploaded audio for local transcription",
+    target: originalFilename
+  });
+
+  return {
+    uploaded: true,
+    audioFile: mapAudioFile(audioRow),
+    job: mapTranscriptionJob(jobRow)
+  };
+}
+
+export async function completeTranscriptionJob({
+  jobId,
+  language,
+  projectId = defaultProjectId,
+  transcript,
+  versionLabel
+}: {
+  jobId: string;
+  language: Project["language"];
+  projectId?: string;
+  transcript: string;
+  versionLabel: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const { data: transcriptRow, error: transcriptError } = await supabase
+    .from("transcripts")
+    .insert({
+      project_id: projectId,
+      content: transcript,
+      version_label: versionLabel
+    })
+    .select()
+    .single();
+
+  if (transcriptError) {
+    throw new Error(transcriptError.message);
+  }
+
+  await Promise.all([
+    supabase.from("segments").delete().eq("project_id", projectId),
+    supabase.from("meaning_units").delete().eq("project_id", projectId),
+    supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId)
+  ]);
+
+  const segmentId = stableId("seg", projectId, Date.now());
+  const { error: segmentError } = await supabase.from("segments").insert({
+    id: segmentId,
+    project_id: projectId,
+    case_id: "CASE-001",
+    segment_id: "SEG-001",
+    speaker_info: "Auto-transcribed audio",
+    start_timestamp: "00:00",
+    end_timestamp: "00:00",
+    starting_mu_number: 1,
+    status: "Ready",
+    text: transcript
+  });
+
+  if (segmentError) {
+    throw new Error(segmentError.message);
+  }
+
+  const completedAt = new Date().toISOString();
+  const { data: jobRow, error: jobError } = await supabase
+    .from("transcription_jobs")
+    .update({
+      status: "completed",
+      transcript_id: transcriptRow.id,
+      error_message: null,
+      completed_at: completedAt
+    })
+    .eq("id", jobId)
+    .select()
+    .single();
+
+  if (jobError) {
+    throw new Error(jobError.message);
+  }
+
+  await Promise.all([
+    supabase
+      .from("projects")
+      .update({
+        language,
+        status: "Transcript imported from audio",
+        updated_at: completedAt
+      })
+      .eq("id", projectId),
+    supabase.from("audit_events").insert({
+      project_id: projectId,
+      actor: "AI",
+      action: "Completed local audio transcription",
+      target: transcriptRow.id
+    })
+  ]);
+
+  return {
+    saved: true,
+    transcript: transcriptRow,
+    job: mapTranscriptionJob(jobRow)
+  };
+}
+
+export async function failTranscriptionJob({
+  errorMessage,
+  jobId,
+  projectId = defaultProjectId
+}: {
+  errorMessage: string;
+  jobId: string;
+  projectId?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const { data, error } = await supabase
+    .from("transcription_jobs")
+    .update({
+      status: "failed",
+      error_message: errorMessage,
+      completed_at: new Date().toISOString()
+    })
+    .eq("id", jobId)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "AI",
+    action: "Local transcription failed",
+    target: errorMessage.slice(0, 180)
+  });
+
+  return { saved: true, job: mapTranscriptionJob(data) };
 }
 
 export async function updateMeaningUnit({
@@ -451,6 +700,44 @@ function stableId(prefix: string, scope: string, number: number) {
   return `${prefix}_${scope.replace(/[^a-zA-Z0-9]/g, "_")}_${String(
     number
   ).padStart(3, "0")}`;
+}
+
+function sanitizeStorageFilename(filename: string) {
+  const cleaned = filename
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_+/g, "_");
+
+  return cleaned.length > 0 ? cleaned : "audio-upload";
+}
+
+function mapAudioFile(row: AudioFileRow) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    storageBucket: row.storage_bucket,
+    storagePath: row.storage_path,
+    originalFilename: row.original_filename,
+    contentType: row.content_type,
+    sizeBytes: row.size_bytes,
+    language: row.language,
+    uploadedAt: row.uploaded_at
+  } satisfies AudioFileRecord;
+}
+
+function mapTranscriptionJob(row: TranscriptionJobRow) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    audioFileId: row.audio_file_id,
+    status: row.status,
+    provider: row.provider,
+    language: row.language,
+    transcriptId: row.transcript_id ?? undefined,
+    errorMessage: row.error_message ?? undefined,
+    createdAt: row.created_at,
+    completedAt: row.completed_at ?? undefined
+  } satisfies TranscriptionJobRecord;
 }
 
 function mapSegment(row: Database["public"]["Tables"]["segments"]["Row"]) {
