@@ -55,6 +55,12 @@ TRANSCRIPT_PROCESS_CHUNK_CHARS=6000
 TRANSCRIPT_MU_CHUNK_CHARS=1200
 ```
 
+To import PDF transcripts, install a local PDF text parser in the same Python environment:
+
+```bash
+.venv/bin/pip install pypdf
+```
+
 For stronger Chinese transcription, switch later to:
 
 ```text
@@ -93,7 +99,7 @@ http://localhost:3000
 8. Resolve privacy review markers such as `[[PRIVACY_REVIEW:PERSON:Sam]]`, edit recognition errors, then click **Confirm transcript for analysis**.
 9. Run **Generate draft MUs**, then Categories and Reviewers.
 
-If you already have a transcript, use **Import existing transcript** on the same Upload page. Paste text or choose a `.txt`, `.md`, `.vtt`, or `.srt` file, then click **Import transcript**. The same speaker labelling and de-identification step runs before saving to Supabase.
+If you already have a transcript, use **Import existing transcript** on the same Upload page. Paste text or choose a `.txt`, `.md`, `.vtt`, `.srt`, `.docx`, or `.pdf` file, then click **Import transcript**. The same speaker labelling and de-identification step runs before saving to Supabase.
 
 If transcription fails, the audio still remains in Supabase Storage and the failed job is recorded in `public.transcription_jobs` with the error message.
 

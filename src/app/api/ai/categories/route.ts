@@ -14,12 +14,13 @@ import {
 import type { CategoryMode } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
-  const runId = startRunLog("Category generation");
   const body = (await request.json().catch(() => ({}))) as {
     mode?: CategoryMode;
     projectId?: string;
   };
-  const mode = body.mode ?? "A";
+  const mode: CategoryMode =
+    body.mode === "B" || body.mode === "C" ? body.mode : "A";
+  const runId = startRunLog(`Category generation · Mode ${mode}`);
   const projectId = body.projectId ?? defaultProjectId;
 
   try {

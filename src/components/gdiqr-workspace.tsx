@@ -377,10 +377,37 @@ export function GdiqrWorkspace({
       return;
     }
 
-    const text = await file.text();
-    setTranscriptImportText(text);
-    setTranscriptImportName(file.name);
-    setApiStatus(`Loaded transcript file: ${file.name}`);
+    setApiStatus(`Extracting transcript text from ${file.name}...`);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/transcripts/extract", {
+        body: formData,
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        filename?: string;
+        transcript?: string;
+      };
+
+      if (!response.ok || !result.transcript) {
+        setApiStatus(result.error ?? "Transcript file extraction failed");
+        return;
+      }
+
+      setTranscriptImportText(result.transcript);
+      setTranscriptImportName(result.filename ?? file.name);
+      setApiStatus(`Loaded transcript file: ${result.filename ?? file.name}`);
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error
+          ? error.message
+          : "Transcript file extraction failed"
+      );
+    }
   }
 
   async function importTranscript() {
@@ -1233,7 +1260,7 @@ export function GdiqrWorkspace({
                         Transcript file
                       </label>
                       <input
-                        accept=".txt,.md,.vtt,.srt,text/plain,text/markdown"
+                        accept=".txt,.md,.vtt,.srt,.docx,.pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
                         className="field"
                         id="transcript-file"
                         onChange={(event) =>
