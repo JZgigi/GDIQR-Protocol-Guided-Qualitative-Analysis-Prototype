@@ -26,12 +26,20 @@ export async function POST(request: NextRequest) {
   try {
     addRunEvent(runId, "Loading workspace from Supabase");
     const workspace = await getWorkspace(projectId);
-    addRunEvent(runId, `Calling Ollama for Mode ${mode} categories (${workspace.meaningUnits.length} MUs)`);
+    const confirmedUnits = workspace.meaningUnits.filter(
+      (unit) => unit.humanStatus === "Accepted" || unit.humanStatus === "Edited"
+    );
+    if (confirmedUnits.length === 0) {
+      throw new Error(
+        "No accepted or edited meaning-unit summaries are available yet."
+      );
+    }
+    addRunEvent(runId, `Calling Ollama for Mode ${mode} categories (${confirmedUnits.length} confirmed MUs)`);
     const startedAt = Date.now();
     const result = await generateCategories({
       mode,
       project: workspace.project,
-      units: workspace.meaningUnits
+      units: confirmedUnits
     });
     addRunEvent(
       runId,
@@ -54,8 +62,9 @@ export async function POST(request: NextRequest) {
       persisted: saveResult.saved
     });
   } catch (error) {
-    const message =
+    const detail =
       error instanceof Error ? error.message : "Category generation failed.";
+    const message = `Mode ${mode} could not finish because the local AI did not return a usable category result. Review accepted meaning units, try Mode A first, or retry with a smaller/faster model. Details: ${detail}`;
     failRunLog(runId, message);
     return NextResponse.json(
       {

@@ -708,10 +708,12 @@ export async function createAudioPreviewUrl({
 export async function updateMeaningUnit({
   humanStatus,
   humanSummary,
+  speaker,
   unitId
 }: {
   humanStatus?: MeaningUnit["humanStatus"];
   humanSummary?: string;
+  speaker?: string;
   unitId: string;
 }) {
   const supabase = createSupabaseServerClient();
@@ -719,13 +721,22 @@ export async function updateMeaningUnit({
     return { saved: false, reason: "Supabase is not configured." };
   }
 
+  const updates: Database["public"]["Tables"]["meaning_units"]["Update"] = {
+    updated_at: new Date().toISOString()
+  };
+  if (humanStatus) {
+    updates.human_status = humanStatus;
+  }
+  if (humanSummary !== undefined) {
+    updates.human_summary = humanSummary;
+  }
+  if (speaker !== undefined) {
+    updates.speaker = speaker;
+  }
+
   const { data, error } = await supabase
     .from("meaning_units")
-    .update({
-      human_status: humanStatus,
-      human_summary: humanSummary,
-      updated_at: new Date().toISOString()
-    })
+    .update(updates)
     .eq("id", unitId)
     .select()
     .single();
@@ -742,6 +753,317 @@ export async function updateMeaningUnit({
   });
 
   return { saved: true, meaningUnit: mapMeaningUnit(data) };
+}
+
+export async function updateSegment({
+  projectId = defaultProjectId,
+  segmentId,
+  status,
+  text,
+  topicLabel
+}: {
+  projectId?: string;
+  segmentId: string;
+  status?: TranscriptSegment["status"];
+  text?: string;
+  topicLabel?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const updates: Database["public"]["Tables"]["segments"]["Update"] = {};
+  if (text !== undefined) {
+    updates.text = text;
+  }
+  if (topicLabel !== undefined) {
+    updates.speaker_info = topicLabel;
+  }
+  if (status !== undefined) {
+    updates.status = toStoredSegmentStatus(status);
+  }
+
+  const { data, error } = await supabase
+    .from("segments")
+    .update(updates)
+    .eq("project_id", projectId)
+    .eq("id", segmentId)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: `Updated segment ${data.segment_id}`,
+    target: data.id
+  });
+
+  return { saved: true, segment: mapSegment(data) };
+}
+
+export async function splitSegment({
+  afterText,
+  beforeText,
+  projectId = defaultProjectId,
+  segmentId
+}: {
+  afterText: string;
+  beforeText: string;
+  projectId?: string;
+  segmentId: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const { data: segment, error: loadError } = await supabase
+    .from("segments")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("id", segmentId)
+    .single();
+  if (loadError) {
+    throw new Error(loadError.message);
+  }
+
+  const { data: existingSegments, error: existingError } = await supabase
+    .from("segments")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("segment_id", { ascending: true });
+  if (existingError) {
+    throw new Error(existingError.message);
+  }
+
+  const insertIndex =
+    (existingSegments ?? []).findIndex((item) => item.id === segmentId) + 1;
+  const newSegmentDbId = stableId("seg", projectId, Date.now());
+  const newSegment = {
+    id: newSegmentDbId,
+    project_id: projectId,
+    case_id: segment.case_id,
+    segment_id: `SEG-${String(insertIndex + 1).padStart(3, "0")}`,
+    speaker_info: `${segment.speaker_info || segment.segment_id} (continued)`,
+    start_timestamp: segment.start_timestamp,
+    end_timestamp: segment.end_timestamp,
+    starting_mu_number: segment.starting_mu_number,
+    status: "Needs review" as const,
+    text: afterText.trim()
+  };
+
+  const { error: updateError } = await supabase
+    .from("segments")
+    .update({
+      status: "Needs review",
+      text: beforeText.trim()
+    })
+    .eq("id", segmentId);
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+
+  const { error: insertError } = await supabase.from("segments").insert(newSegment);
+  if (insertError) {
+    throw new Error(insertError.message);
+  }
+
+  await renumberSegments(projectId);
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: `Split segment ${segment.segment_id}`,
+    target: segment.id
+  });
+
+  return { saved: true, segments: await loadSegments(projectId) };
+}
+
+export async function mergeSegment({
+  direction,
+  projectId = defaultProjectId,
+  segmentId
+}: {
+  direction: "previous" | "next";
+  projectId?: string;
+  segmentId: string;
+}) {
+  const segments = await loadRawSegments(projectId);
+  const index = segments.findIndex((segment) => segment.id === segmentId);
+  const neighborIndex = direction === "previous" ? index - 1 : index + 1;
+  const segment = segments[index];
+  const neighbor = segments[neighborIndex];
+  if (!segment || !neighbor) {
+    return { saved: false, reason: "No segment is available to merge." };
+  }
+
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const target = direction === "previous" ? neighbor : segment;
+  const remove = direction === "previous" ? segment : neighbor;
+  const mergedText =
+    direction === "previous"
+      ? `${neighbor.text.trim()}\n\n${segment.text.trim()}`
+      : `${segment.text.trim()}\n\n${neighbor.text.trim()}`;
+
+  const { error: updateError } = await supabase
+    .from("segments")
+    .update({
+      speaker_info: target.speaker_info || target.segment_id,
+      status: "Needs review",
+      text: mergedText
+    })
+    .eq("id", target.id);
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+
+  const { error: deleteError } = await supabase
+    .from("segments")
+    .delete()
+    .eq("id", remove.id);
+  if (deleteError) {
+    throw new Error(deleteError.message);
+  }
+
+  await renumberSegments(projectId);
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: `Merged segment ${segment.segment_id}`,
+    target: target.id
+  });
+
+  return { saved: true, segments: await loadSegments(projectId) };
+}
+
+export async function deleteSegment({
+  projectId = defaultProjectId,
+  segmentId
+}: {
+  projectId?: string;
+  segmentId: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const { error } = await supabase
+    .from("segments")
+    .delete()
+    .eq("project_id", projectId)
+    .eq("id", segmentId);
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await renumberSegments(projectId);
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: "Deleted segment",
+    target: segmentId
+  });
+
+  return { saved: true, segments: await loadSegments(projectId) };
+}
+
+export async function moveSegment({
+  direction,
+  projectId = defaultProjectId,
+  segmentId
+}: {
+  direction: "up" | "down";
+  projectId?: string;
+  segmentId: string;
+}) {
+  const segments = await loadRawSegments(projectId);
+  const index = segments.findIndex((segment) => segment.id === segmentId);
+  const targetIndex = direction === "up" ? index - 1 : index + 1;
+  if (index < 0 || targetIndex < 0 || targetIndex >= segments.length) {
+    return { saved: false, reason: "Segment cannot be moved further." };
+  }
+
+  const reordered = [...segments];
+  const [moved] = reordered.splice(index, 1);
+  reordered.splice(targetIndex, 0, moved);
+  await renumberSegments(projectId, reordered.map((segment) => segment.id));
+
+  return { saved: true, segments: await loadSegments(projectId) };
+}
+
+export async function replaceMeaningUnitsForSegment({
+  projectId = defaultProjectId,
+  segmentId,
+  units
+}: {
+  projectId?: string;
+  segmentId: string;
+  units: MeaningUnit[];
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured.", units };
+  }
+
+  await supabase
+    .from("meaning_units")
+    .delete()
+    .eq("project_id", projectId)
+    .eq("segment_id", segmentId);
+
+  const rows: Array<Database["public"]["Tables"]["meaning_units"]["Insert"]> =
+    units.map((unit) => ({
+      id: stableId("mu", `${projectId}_${segmentId}`, unit.number),
+      project_id: projectId,
+      segment_id: segmentId,
+      case_id: unit.caseId,
+      speaker: unit.speaker,
+      unit_number: unit.number,
+      excerpt: unit.excerpt,
+      ai_summary: unit.aiSummary,
+      human_summary: unit.humanSummary,
+      tentative_interpretation: unit.tentativeInterpretation ?? null,
+      uncertainty: unit.uncertainty ?? null,
+      human_status: unit.humanStatus,
+      reviewer_status: unit.reviewerStatus
+    }));
+
+  const { data, error } = await supabase
+    .from("meaning_units")
+    .insert(rows)
+    .select()
+    .order("unit_number", { ascending: true });
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await supabase
+    .from("segments")
+    .update({ status: "Processed" })
+    .eq("project_id", projectId)
+    .eq("segment_id", segmentId);
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "AI",
+    action: `Generated ${units.length} meaning units for ${segmentId}`,
+    target: segmentId
+  });
+
+  return {
+    saved: true,
+    units: (data ?? []).map(mapMeaningUnit)
+  };
 }
 
 export async function replaceMeaningUnitsFromAi({
@@ -967,6 +1289,54 @@ function stableId(prefix: string, scope: string, number: number) {
   ).padStart(3, "0")}`;
 }
 
+async function loadRawSegments(projectId: string) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("segments")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("segment_id", { ascending: true });
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
+}
+
+async function loadSegments(projectId: string) {
+  return (await loadRawSegments(projectId)).map(mapSegment);
+}
+
+async function renumberSegments(projectId: string, orderedIds?: string[]) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return;
+  }
+
+  const segments = await loadRawSegments(projectId);
+  const ordered = orderedIds
+    ? orderedIds
+        .map((id) => segments.find((segment) => segment.id === id))
+        .filter((segment): segment is NonNullable<typeof segment> => Boolean(segment))
+    : segments;
+
+  await Promise.all(
+    ordered.map((segment, index) =>
+      supabase
+        .from("segments")
+        .update({
+          segment_id: `SEG-${String(index + 1).padStart(3, "0")}`,
+          starting_mu_number: index * 100 + 1
+        })
+        .eq("id", segment.id)
+    )
+  );
+}
+
 async function createDefaultProject(projectId: string) {
   const supabase = createSupabaseServerClient();
   if (!supabase) {
@@ -1039,13 +1409,44 @@ function mapSegment(row: Database["public"]["Tables"]["segments"]["Row"]) {
     id: row.id,
     caseId: row.case_id,
     segmentId: row.segment_id,
+    segmentNumber: segmentNumberFromId(row.segment_id),
+    topicLabel: row.speaker_info || row.segment_id,
     speakerInfo: row.speaker_info,
     startTimestamp: row.start_timestamp,
     endTimestamp: row.end_timestamp,
     startingMuNumber: row.starting_mu_number,
-    status: row.status,
+    status: mapStoredSegmentStatus(row.status),
     text: row.text
   } satisfies TranscriptSegment;
+}
+
+function segmentNumberFromId(segmentId: string) {
+  const match = segmentId.match(/(\d+)/);
+  return match ? Number(match[1]) : 1;
+}
+
+function mapStoredSegmentStatus(
+  status: Database["public"]["Tables"]["segments"]["Row"]["status"]
+): TranscriptSegment["status"] {
+  if (status === "Processed") {
+    return "Analysed";
+  }
+  if (status === "Needs review") {
+    return "Needs Review";
+  }
+  return "Ready for MU Analysis";
+}
+
+function toStoredSegmentStatus(
+  status: TranscriptSegment["status"]
+): Database["public"]["Tables"]["segments"]["Row"]["status"] {
+  if (status === "Analysed" || status === "Completed") {
+    return "Processed";
+  }
+  if (status === "Draft" || status === "Needs Review" || status === "Needs Revision") {
+    return "Needs review";
+  }
+  return "Ready";
 }
 
 function mapMeaningUnit(

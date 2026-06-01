@@ -15,9 +15,12 @@ interface OllamaMessage {
 }
 
 interface MeaningUnitInput {
+  caseId?: string;
   lightInterpretation: boolean;
   project: Project;
   runId?: string;
+  segmentId?: string;
+  startingNumber?: number;
   transcript: string;
 }
 
@@ -99,6 +102,9 @@ export async function generateMeaningUnits(
     input.transcript,
     Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 1200)
   );
+  const caseId = input.caseId ?? "CASE-001";
+  const segmentId = input.segmentId ?? "SEG-001";
+  const initialNumber = input.startingNumber ?? 1;
   const allUnits: MeaningUnit[] = [];
   const allUncertainties: Array<{ unit: number; note: string }> = [];
 
@@ -109,7 +115,7 @@ export async function generateMeaningUnits(
 
   for (const [index, chunk] of chunks.entries()) {
     const startedAt = Date.now();
-    const startingNumber = allUnits.length + 1;
+    const startingNumber = initialNumber + allUnits.length;
     addRunEvent(
       input.runId,
       `Calling Ollama for MU chunk ${index + 1}/${chunks.length} (${chunk.length} chars)`
@@ -131,8 +137,8 @@ export async function generateMeaningUnits(
   return {
     provider: "ollama",
     model,
-    caseId: "CASE-001",
-    segmentId: "SEG-001",
+    caseId,
+    segmentId,
     lightInterpretation: input.lightInterpretation,
     meaningUnits: allUnits,
     uncertainties: allUncertainties,
@@ -162,28 +168,30 @@ async function generateMeaningUnitsForChunk({
       {
         role: "user",
         content: `/no_think
-Create GDIQR meaning units from this transcript.
+Create GDIQR meaning units from this reviewed transcript segment.
 
 Rules:
 - Preserve participant meaning closely.
 - Do not create categories in this step.
+- Do not compare this segment with other transcripts or segments.
 - Keep summaries concise and descriptive.
+- Write aiSummary and humanSummary in the same language as the interview transcript.
 - Produce at most 5 meaning units for this chunk; combine adjacent short turns when they express the same point.
-- Set humanSummary equal to aiSummary.
+- Set humanSummary to the exact same summary text as aiSummary.
 - Use reviewerStatus "Not run" unless there is a clear concern, then use "Warning".
 - Start numbering at ${startingNumber}.
-- Use caseId "CASE-001" and segmentId "SEG-001".
+- Use caseId "${input.caseId ?? "CASE-001"}" and segmentId "${input.segmentId ?? "SEG-001"}".
 - Return only JSON matching this shape:
 {
-  "caseId": "CASE-001",
-  "segmentId": "SEG-001",
+  "caseId": "${input.caseId ?? "CASE-001"}",
+  "segmentId": "${input.segmentId ?? "SEG-001"}",
   "meaningUnits": [
     {
       "speaker": "Participant",
       "number": 1,
       "excerpt": "short verbatim excerpt",
       "aiSummary": "concise summary",
-      "humanSummary": "same as aiSummary",
+      "humanSummary": "concise summary",
       "tentativeInterpretation": "",
       "uncertainty": "",
       "reviewerStatus": "Not run"
@@ -211,7 +219,11 @@ ${chunk}`
   return {
     meaningUnits: normalizeMeaningUnits(
       result.meaningUnits ?? [],
-      startingNumber
+      startingNumber,
+      {
+        caseId: input.caseId ?? result.caseId ?? "CASE-001",
+        segmentId: input.segmentId ?? result.segmentId ?? "SEG-001"
+      }
     ),
     uncertainties: (result.uncertainties ?? [])
       .filter((item) => item.unit && item.note)
@@ -246,7 +258,10 @@ async function generateMeaningUnitsForChunkWithFallback({
     );
 
     return {
-      meaningUnits: fallbackMeaningUnitsFromChunk(chunk, startingNumber),
+      meaningUnits: fallbackMeaningUnitsFromChunk(chunk, startingNumber, {
+        caseId: input.caseId ?? "CASE-001",
+        segmentId: input.segmentId ?? "SEG-001"
+      }),
       uncertainties: [
         {
           note: `Local fallback used because Ollama failed for chunk ${chunkIndex + 1}: ${message}`,
@@ -281,7 +296,8 @@ export async function generateCategories(
 Construct a compact GDIQR category system for Mode ${input.mode}.
 
 Rules:
-- Use only the provided meaning units.
+- Use only the provided confirmed meaning-unit summaries.
+- Do not use raw transcript text or unconfirmed draft summaries.
 - Category includedUnitIds must refer to MU numbers only.
 - Preserve tensions and uncertainty rather than over-interpreting.
 - Produce 2 to 4 top-level categories.
@@ -313,11 +329,11 @@ Rules:
 
 Research question: ${input.project.researchQuestion}
 Interview language: ${input.project.language}
-Meaning units:
+Confirmed meaning-unit summaries:
 ${input.units
   .map(
     (unit) =>
-      `MU ${unit.number}: ${unit.excerpt}\nSummary: ${unit.humanSummary || unit.aiSummary}`
+      `MU ${unit.number} (${unit.caseId}, ${unit.segmentId})\nSummary: ${unit.humanSummary || unit.aiSummary}`
   )
   .join("\n\n")}`
       }
@@ -550,7 +566,7 @@ ${JSON.stringify(transcriptionSegments?.slice(0, 60) ?? [], null, 2)}`
       error instanceof Error ? error.message : "Transcript chunk processing failed.";
     addRunEvent(
       runId,
-      `Chunk ${chunkIndex + 1} privacy/speaker AI failed; using local fallback. ${message}`
+      `Chunk ${chunkIndex + 1}: AI transcript preparation did not return usable text, so a conservative local cleanup was used. Please review this transcript carefully before confirming. ${message}`
     );
 
     return {
@@ -638,7 +654,9 @@ async function callOllamaContent(
   const content = body.choices?.[0]?.message?.content;
 
   if (!content) {
-    throw new Error("Ollama returned an empty response.");
+    throw new Error(
+      "Local AI did not return usable text. Try again, use a smaller/faster model, or reduce the amount of text in this step."
+    );
   }
 
   return content;
@@ -760,7 +778,11 @@ function fallbackPrepareTranscript(transcript: string) {
     .join("\n");
 }
 
-function fallbackMeaningUnitsFromChunk(chunk: string, startingNumber: number) {
+function fallbackMeaningUnitsFromChunk(
+  chunk: string,
+  startingNumber: number,
+  defaults: { caseId: string; segmentId: string }
+) {
   const lines = chunk
     .split(/\n+/)
     .map((line) => line.trim())
@@ -784,8 +806,8 @@ function fallbackMeaningUnitsFromChunk(chunk: string, startingNumber: number) {
 
       return {
         id: `mu_ai_${String(number).padStart(3, "0")}`,
-        segmentId: "SEG-001",
-        caseId: "CASE-001",
+        segmentId: defaults.segmentId,
+        caseId: defaults.caseId,
         speaker: group.some((line) => /^interviewer\s*:/i.test(line))
           ? "Interviewer"
           : "Participant",
@@ -830,22 +852,30 @@ function formatDuration(ms: number) {
 
 function normalizeMeaningUnits(
   items: Array<Partial<MeaningUnit>>,
-  startingNumber = 1
+  startingNumber = 1,
+  defaults: { caseId: string; segmentId: string } = {
+    caseId: "CASE-001",
+    segmentId: "SEG-001"
+  }
 ) {
   return items
     .map((item, index) => {
       const number = startingNumber + index;
       const aiSummary = cleanText(item.aiSummary);
+      const humanSummary = cleanText(item.humanSummary);
 
       return {
         id: `mu_ai_${String(number).padStart(3, "0")}`,
-        segmentId: cleanText(item.segmentId) || "SEG-001",
-        caseId: cleanText(item.caseId) || "CASE-001",
+        segmentId: cleanText(item.segmentId) || defaults.segmentId,
+        caseId: cleanText(item.caseId) || defaults.caseId,
         speaker: cleanText(item.speaker) || "Participant",
         number,
         excerpt: cleanText(item.excerpt),
         aiSummary,
-        humanSummary: cleanText(item.humanSummary) || aiSummary,
+        humanSummary:
+          humanSummary.toLowerCase() === "same as aisummary"
+            ? aiSummary
+            : humanSummary || aiSummary,
         tentativeInterpretation:
           cleanText(item.tentativeInterpretation) || undefined,
         uncertainty: cleanText(item.uncertainty) || undefined,

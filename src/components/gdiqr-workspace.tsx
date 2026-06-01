@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   Bot,
@@ -29,6 +29,7 @@ import type {
   MeaningUnit,
   Project,
   ReviewerComment,
+  SegmentStatus,
   TranscriptionJobRecord,
   TranscriptSegment,
   WorkflowStep
@@ -116,8 +117,8 @@ export function GdiqrWorkspace({
   const [apiDataSource, setApiDataSource] = useState(dataSource);
   const [apiStatus, setApiStatus] = useState(
     supabaseConfigured
-      ? `Loaded from ${dataSource}`
-      : "Supabase env missing; configure Supabase before testing"
+      ? "Workspace ready. Start by uploading audio or importing a transcript."
+      : "Supabase is not connected yet. Add your Supabase settings before testing with real data."
   );
   const [reviewerHasRun, setReviewerHasRun] = useState(true);
   const [selectedAudioFile, setSelectedAudioFile] = useState<File | null>(null);
@@ -138,25 +139,52 @@ export function GdiqrWorkspace({
   const [isConfirmingTranscript, setIsConfirmingTranscript] = useState(false);
   const [activeMeaningUnitRunId, setActiveMeaningUnitRunId] = useState("");
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
+  const [selectedSegmentId, setSelectedSegmentId] = useState(
+    segments[0]?.id ?? ""
+  );
+  const [segmentDraftTitle, setSegmentDraftTitle] = useState(
+    segments[0]?.topicLabel ?? ""
+  );
+  const [segmentDraftText, setSegmentDraftText] = useState(
+    segments[0]?.text ?? ""
+  );
+  const [isSavingSegment, setIsSavingSegment] = useState(false);
+  const segmentTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  async function loadRunLogs() {
+    const response = await fetch("/api/run-logs", { cache: "no-store" });
+    if (!response.ok) {
+      return;
+    }
+    const result = (await response.json().catch(() => ({}))) as {
+      logs?: RunLog[];
+    };
+    setRunLogs(result.logs ?? []);
+  }
+
+  async function clearFinishedRunLogs() {
+    const response = await fetch("/api/run-logs", {
+      method: "DELETE"
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      logs?: RunLog[];
+    };
+    if (response.ok) {
+      setRunLogs(result.logs ?? []);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
 
-    async function loadRunLogs() {
-      const response = await fetch("/api/run-logs", { cache: "no-store" });
-      if (!response.ok) {
-        return;
-      }
-      const result = (await response.json().catch(() => ({}))) as {
-        logs?: RunLog[];
-      };
+    async function loadIfActive() {
       if (!cancelled) {
-        setRunLogs(result.logs ?? []);
+        await loadRunLogs();
       }
     }
 
-    void loadRunLogs();
-    const interval = window.setInterval(loadRunLogs, 2000);
+    void loadIfActive();
+    const interval = window.setInterval(loadIfActive, 2000);
 
     return () => {
       cancelled = true;
@@ -188,6 +216,24 @@ export function GdiqrWorkspace({
       setApiStatus(activeLog.error ?? "Meaning-unit job failed");
     }
   }, [activeMeaningUnitRunId, runLogs]);
+
+  useEffect(() => {
+    if (displaySegments.length === 0) {
+      setSelectedSegmentId("");
+      setSegmentDraftTitle("");
+      setSegmentDraftText("");
+      return;
+    }
+
+    const segment =
+      displaySegments.find((item) => item.id === selectedSegmentId) ??
+      displaySegments[0];
+    if (segment.id !== selectedSegmentId) {
+      setSelectedSegmentId(segment.id);
+    }
+    setSegmentDraftTitle(segment.topicLabel || segment.speakerInfo);
+    setSegmentDraftText(segment.text);
+  }, [displaySegments, selectedSegmentId]);
 
   const completedSteps = useMemo(
     () => {
@@ -235,10 +281,40 @@ export function GdiqrWorkspace({
       ),
     [aiPrivacyFindings, editableTranscript]
   );
-  const canGenerateMeaningUnits = Boolean(
-    editableTranscript.trim() && transcriptConfirmed
+  const selectedSegment = useMemo(
+    () =>
+      displaySegments.find((segment) => segment.id === selectedSegmentId) ??
+      displaySegments[0],
+    [displaySegments, selectedSegmentId]
   );
-  const canRunCategories = units.length > 0;
+  const selectedSegmentIndex = selectedSegment
+    ? displaySegments.findIndex((segment) => segment.id === selectedSegment.id)
+    : -1;
+  const previousSegment =
+    selectedSegmentIndex > 0 ? displaySegments[selectedSegmentIndex - 1] : null;
+  const nextSegment =
+    selectedSegmentIndex >= 0 && selectedSegmentIndex < displaySegments.length - 1
+      ? displaySegments[selectedSegmentIndex + 1]
+      : null;
+  const readySegments = useMemo(
+    () =>
+      displaySegments.filter((segment) =>
+        canRunMeaningUnitsForSegment(segment)
+      ),
+    [displaySegments]
+  );
+  const activeMeaningUnitSegment =
+    selectedSegment && canRunMeaningUnitsForSegment(selectedSegment)
+      ? selectedSegment
+      : readySegments[0];
+  const canGenerateMeaningUnits = Boolean(
+    transcriptConfirmed && readySegments.length > 0
+  );
+  const confirmedMeaningUnits = useMemo(
+    () => units.filter((unit) => isConfirmedMeaningUnit(unit)),
+    [units]
+  );
+  const canRunCategories = confirmedMeaningUnits.length > 0;
   const canRunReviewer = units.length > 0;
   const canExport = Boolean(
     editableTranscript.trim() ||
@@ -267,7 +343,7 @@ export function GdiqrWorkspace({
     setDisplayAuditEvents(workspace.auditEvents);
     setNarrative(workspace.integratedNarrative);
     setApiDataSource(workspace.dataSource);
-    setApiStatus(`Loaded from ${workspace.dataSource}`);
+    setApiStatus("Workspace refreshed.");
   }
 
   async function saveProjectSetup() {
@@ -313,12 +389,12 @@ export function GdiqrWorkspace({
 
   async function uploadAndTranscribeAudio() {
     if (!selectedAudioFile) {
-      setApiStatus("Choose an audio file first");
+      setApiStatus("Choose an audio file before starting transcription.");
       return;
     }
 
     setIsUploadingAudio(true);
-    setApiStatus("Uploading audio to Supabase and running local transcription...");
+    setApiStatus("Uploading and transcribing. You can follow progress in the activity panel below.");
 
     const formData = new FormData();
     formData.append("file", selectedAudioFile);
@@ -355,7 +431,7 @@ export function GdiqrWorkspace({
 
       setApiStatus(
         result.transcribed
-          ? `Audio transcribed, speaker-labelled, de-identified, and saved to Supabase${
+          ? `Transcript prepared and saved. Please review the transcript before analysis${
               result.privacyFindings?.length
                 ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
                 : ""
@@ -377,7 +453,7 @@ export function GdiqrWorkspace({
       return;
     }
 
-    setApiStatus(`Extracting transcript text from ${file.name}...`);
+    setApiStatus(`Reading transcript text from ${file.name}...`);
 
     try {
       const formData = new FormData();
@@ -400,7 +476,7 @@ export function GdiqrWorkspace({
 
       setTranscriptImportText(result.transcript);
       setTranscriptImportName(result.filename ?? file.name);
-      setApiStatus(`Loaded transcript file: ${result.filename ?? file.name}`);
+      setApiStatus(`Transcript loaded from ${result.filename ?? file.name}. Review it before importing.`);
     } catch (error) {
       setApiStatus(
         error instanceof Error
@@ -412,13 +488,13 @@ export function GdiqrWorkspace({
 
   async function importTranscript() {
     if (!transcriptImportText.trim()) {
-      setApiStatus("Paste or choose a transcript before importing");
+      setApiStatus("Paste text or choose a transcript file before importing.");
       return;
     }
 
     setIsImportingTranscript(true);
     setApiStatus(
-      "Importing transcript... Ollama will label speakers and de-identify private details."
+      "Preparing transcript. The app will label speakers and flag possible private details for your review."
     );
 
     try {
@@ -457,7 +533,7 @@ export function GdiqrWorkspace({
 
       setTranscriptImportText("");
       setApiStatus(
-        `Transcript imported, speaker-labelled, and de-identified${
+        `Transcript imported. Please review speaker labels, privacy markers, and wording before confirming${
           result.privacyFindings?.length
             ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
             : ""
@@ -473,12 +549,12 @@ export function GdiqrWorkspace({
   }
 
   async function refreshWorkspace() {
-    setApiStatus("Loading workspace API...");
+    setApiStatus("Refreshing workspace...");
     const response = await fetch(`/api/workspace?projectId=${currentProject.id}`, {
       cache: "no-store"
     });
     if (!response.ok) {
-      setApiStatus("Workspace API failed to load");
+      setApiStatus("Could not refresh the workspace. Check Supabase connection and try again.");
       return;
     }
     const workspace = (await response.json()) as WorkspaceData;
@@ -486,7 +562,7 @@ export function GdiqrWorkspace({
   }
 
   async function saveTranscriptVersion() {
-    setApiStatus("Saving transcript version...");
+    setApiStatus("Saving a transcript version...");
     setTranscriptConfirmed(false);
     const response = await fetch("/api/transcript-versions", {
       body: JSON.stringify({
@@ -510,19 +586,19 @@ export function GdiqrWorkspace({
     };
     setApiStatus(
       result.saved
-        ? "Transcript version saved"
+        ? "Transcript version saved. Please confirm again before analysis."
         : result.reason ?? result.error ?? "Transcript save failed"
     );
   }
 
   async function confirmTranscriptForAnalysis() {
     if (!editableTranscript.trim()) {
-      setApiStatus("Transcript is required before confirmation");
+      setApiStatus("Add or import a transcript before confirming it for analysis.");
       return;
     }
 
     setIsConfirmingTranscript(true);
-    setApiStatus("Confirming transcript and clearing derived analysis...");
+    setApiStatus("Confirming transcript. Previous derived analysis will be cleared so the next analysis uses this reviewed text.");
 
     try {
       const response = await fetch("/api/transcripts/confirm", {
@@ -550,7 +626,7 @@ export function GdiqrWorkspace({
       }
       setTranscriptConfirmed(true);
       setApiStatus(
-        "Transcript confirmed. You can now generate meaning units from this reviewed text."
+        "Transcript confirmed. You can now generate meaning units from the reviewed text."
       );
     } catch (error) {
       setApiStatus(
@@ -561,29 +637,186 @@ export function GdiqrWorkspace({
     }
   }
 
-  async function generateMeaningUnits() {
-    if (!editableTranscript.trim()) {
-      setApiStatus("Transcript is required before generating meaning units");
+  async function saveSelectedSegment(status?: SegmentStatus) {
+    if (!selectedSegment) {
+      setApiStatus("Select a segment before saving.");
+      return;
+    }
+
+    setIsSavingSegment(true);
+    setApiStatus("Saving segment changes...");
+
+    try {
+      const response = await fetch(`/api/segments/${selectedSegment.id}`, {
+        body: JSON.stringify({
+          projectId: currentProject.id,
+          status,
+          text: segmentDraftText,
+          topicLabel: segmentDraftTitle
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "PATCH"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        saved?: boolean;
+        segment?: TranscriptSegment;
+      };
+      if (!response.ok || !result.saved || !result.segment) {
+        setApiStatus(result.error ?? "Segment save failed.");
+        return;
+      }
+      setDisplaySegments((current) =>
+        current.map((segment) =>
+          segment.id === result.segment?.id ? result.segment : segment
+        )
+      );
+      setSelectedSegmentId(result.segment.id);
+      setApiStatus(
+        status === "Ready for MU Analysis"
+          ? "Segment marked ready. You can now run meaning-unit analysis for this segment."
+          : "Segment saved."
+      );
+    } catch (error) {
+      setApiStatus(error instanceof Error ? error.message : "Segment save failed.");
+    } finally {
+      setIsSavingSegment(false);
+    }
+  }
+
+  async function runSegmentAction(
+    action: "split" | "merge" | "move",
+    direction?: "previous" | "next" | "up" | "down"
+  ) {
+    if (!selectedSegment) {
+      setApiStatus("Select a segment first.");
+      return;
+    }
+
+    let beforeText = "";
+    let afterText = "";
+    if (action === "split") {
+      const splitIndex = getSegmentSplitIndex(
+        segmentDraftText,
+        segmentTextAreaRef.current?.selectionStart
+      );
+      beforeText = segmentDraftText.slice(0, splitIndex).trim();
+      afterText = segmentDraftText.slice(splitIndex).trim();
+      if (!beforeText || !afterText) {
+        setApiStatus("Place the cursor where this segment should split, then try again.");
+        return;
+      }
+    }
+
+    setIsSavingSegment(true);
+    setApiStatus(
+      action === "split"
+        ? "Splitting segment..."
+        : action === "merge"
+          ? "Merging segments..."
+          : "Reordering segment..."
+    );
+
+    try {
+      const response = await fetch(`/api/segments/${selectedSegment.id}`, {
+        body: JSON.stringify({
+          action,
+          afterText,
+          beforeText,
+          direction,
+          projectId: currentProject.id
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        reason?: string;
+        saved?: boolean;
+        segments?: TranscriptSegment[];
+      };
+      if (!response.ok || !result.saved || !result.segments) {
+        setApiStatus(result.error ?? result.reason ?? "Segment action failed.");
+        return;
+      }
+      setDisplaySegments(result.segments);
+      const selected =
+        result.segments.find((segment) => segment.id === selectedSegment.id) ??
+        result.segments[Math.max(0, selectedSegmentIndex)];
+      setSelectedSegmentId(selected?.id ?? "");
+      setApiStatus("Segment list updated. Review boundaries before running meaning-unit analysis.");
+    } catch (error) {
+      setApiStatus(error instanceof Error ? error.message : "Segment action failed.");
+    } finally {
+      setIsSavingSegment(false);
+    }
+  }
+
+  async function deleteSelectedSegment() {
+    if (!selectedSegment) {
+      setApiStatus("Select a segment first.");
+      return;
+    }
+
+    setIsSavingSegment(true);
+    setApiStatus("Deleting segment...");
+
+    try {
+      const response = await fetch(
+        `/api/segments/${selectedSegment.id}?projectId=${currentProject.id}`,
+        { method: "DELETE" }
+      );
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        saved?: boolean;
+        segments?: TranscriptSegment[];
+      };
+      if (!response.ok || !result.saved || !result.segments) {
+        setApiStatus(result.error ?? "Segment delete failed.");
+        return;
+      }
+      setDisplaySegments(result.segments);
+      setSelectedSegmentId(result.segments[0]?.id ?? "");
+      setApiStatus("Segment deleted.");
+    } catch (error) {
+      setApiStatus(error instanceof Error ? error.message : "Segment delete failed.");
+    } finally {
+      setIsSavingSegment(false);
+    }
+  }
+
+  async function generateMeaningUnits(segment = selectedSegment) {
+    if (!segment) {
+      setApiStatus("Create and review a segment before generating meaning units.");
       return;
     }
     if (!transcriptConfirmed) {
       setApiStatus(
-        "Review and confirm the transcript before generating meaning units"
+        "Review and confirm the transcript before generating meaning units."
+      );
+      return;
+    }
+    if (!canRunMeaningUnitsForSegment(segment)) {
+      setApiStatus(
+        "Mark this segment as Ready for MU Analysis before running local AI."
       );
       return;
     }
 
     setIsGeneratingMeaningUnits(true);
     setApiStatus(
-      "Calling meaning-unit API... Watch the live log panel for chunk timings."
+      `Generating meaning units for ${segment.segmentId}. The activity panel will show each chunk.`
     );
 
     try {
       const response = await fetchWithTimeout("/api/ai/meaning-units", {
         body: JSON.stringify({
+          caseId: segment.caseId,
           lightInterpretation,
           projectId: currentProject.id,
-          transcript: editableTranscript
+          segmentId: segment.segmentId,
+          startingNumber: segment.startingMuNumber,
+          transcript: segment.text
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
@@ -606,7 +839,7 @@ export function GdiqrWorkspace({
       if (result.started && result.runId) {
         setActiveMeaningUnitRunId(result.runId);
         setApiStatus(
-          "Meaning-unit job started in the background. Watch the live log panel for chunk timings."
+          `Meaning-unit generation started for ${segment.segmentId}. Leave this page open and watch the activity panel for progress.`
         );
         return;
       }
@@ -628,17 +861,23 @@ export function GdiqrWorkspace({
   }
 
   async function runCategories() {
-    if (units.length === 0) {
-      setApiStatus("Meaning units are required before generating categories");
+    if (confirmedMeaningUnits.length === 0) {
+      setApiStatus(
+        "Accept or edit meaning-unit summaries before creating categories. Categories only use confirmed summaries."
+      );
       return;
     }
 
     setIsRunningCategories(true);
-    setApiStatus(`Calling category API Mode ${mode}...`);
+    setApiStatus(`Running category construction Mode ${mode}. This may take a few minutes.`);
 
     try {
       const response = await fetchWithTimeout("/api/ai/categories", {
-        body: JSON.stringify({ mode, projectId: currentProject.id, units }),
+        body: JSON.stringify({
+          mode,
+          projectId: currentProject.id,
+          units: confirmedMeaningUnits
+        }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
         timeoutMs: 900000
@@ -676,12 +915,12 @@ export function GdiqrWorkspace({
 
   async function runReviewer() {
     if (units.length === 0) {
-      setApiStatus("Meaning units are required before running reviewer agents");
+      setApiStatus("Generate meaning units before running reviewer checks.");
       return;
     }
 
     setIsRunningReviewer(true);
-    setApiStatus("Calling reviewer API...");
+    setApiStatus("Running reviewer checks on the current analysis...");
 
     try {
       const response = await fetchWithTimeout("/api/ai/reviewer", {
@@ -726,6 +965,38 @@ export function GdiqrWorkspace({
     );
   }
 
+  async function updateMeaningUnitSpeaker(unitId: string, speaker: string) {
+    setUnits((current) =>
+      current.map((unit) =>
+        unit.id === unitId
+          ? { ...unit, speaker, humanStatus: "Edited" }
+          : unit
+      )
+    );
+
+    const response = await fetch(`/api/meaning-units/${unitId}`, {
+      body: JSON.stringify({
+        humanStatus: "Edited",
+        speaker
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH"
+    });
+    if (!response.ok) {
+      setApiStatus("Speaker change could not be saved. Try again.");
+      return;
+    }
+    setApiStatus("Speaker correction saved for this meaning unit.");
+  }
+
+  function returnToTranscriptForUnit(unit: MeaningUnit) {
+    setActiveStep("transcript");
+    setTranscriptConfirmed(false);
+    setApiStatus(
+      `Check the transcript around MU #${unit.number}. After editing, save/confirm the transcript and regenerate meaning units.`
+    );
+  }
+
   function cleanTranscript() {
     const cleaned = editableTranscript
       .split("\n")
@@ -736,7 +1007,7 @@ export function GdiqrWorkspace({
     setEditableTranscript(cleaned);
     setTranscriptConfirmed(false);
     setAiPrivacyFindings(extractPrivacyReviewMarkers(cleaned));
-    setApiStatus("Transcript whitespace cleaned locally; save a version when ready");
+    setApiStatus("Transcript spacing cleaned. Review the text, save a version, then confirm before analysis.");
   }
 
   async function loadAudioPreview() {
@@ -919,11 +1190,11 @@ export function GdiqrWorkspace({
           <button
             className="button soft"
             disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
-            onClick={generateMeaningUnits}
+            onClick={() => void generateMeaningUnits(activeMeaningUnitSegment)}
             type="button"
             title={
               transcriptConfirmed
-                ? "Run configured AI provider"
+                ? "Run local AI for the selected ready segment"
                 : "Confirm the transcript before running AI analysis"
             }
           >
@@ -986,9 +1257,7 @@ export function GdiqrWorkspace({
                 <span className="badge">Current view</span>
                 <h2 className="section-title">{selectedTitle}</h2>
                 <p className="section-copy">
-                  This workspace keeps the analysis stages separate: transcript
-                  work, meaning unit summaries, category construction, reviewer
-                  checks, and audit export. GDIQR is used as the default method.
+                  {getStepCopy(activeStep)}
                 </p>
                 <p className="small">{apiStatus}</p>
               </div>
@@ -1106,9 +1375,9 @@ export function GdiqrWorkspace({
                     <FileAudio size={32} />
                     <h3>Upload interview audio</h3>
                     <p className="small">
-                      The file is stored in Supabase Storage first, then
-                      transcribed by your local faster-whisper setup. No mock
-                      or sample transcript is inserted.
+                      Supported audio: MP3, M4A, WAV, MP4, WebM, OGG, AAC.
+                      Your file is stored privately, transcribed locally, then
+                      shown for review before analysis.
                     </p>
                     <div className="upload-controls">
                       <div>
@@ -1181,10 +1450,9 @@ export function GdiqrWorkspace({
                     <Database size={28} />
                     <h3>Storage target</h3>
                     <p className="small">
-                      Files are stored in the private interview-audio bucket.
-                      Successful transcription replaces the working transcript,
-                      clears old derived analysis, and prepares the next Run AI
-                      step against real data.
+                      Each new audio upload or transcript import becomes the
+                      active working transcript. Review and confirm it before
+                      generating meaning units.
                     </p>
                     <span className="badge blue">
                       {apiDataSource === "supabase"
@@ -1229,9 +1497,9 @@ export function GdiqrWorkspace({
                     <FileText size={28} />
                     <h3>Import existing transcript</h3>
                     <p className="small">
-                      Paste or upload a transcript file when you already have
-                      text. The app will still run speaker labelling and privacy
-                      de-identification before saving it to Supabase.
+                      Supported transcript files: TXT, MD, VTT, SRT, DOCX, and
+                      PDF. You can also paste text below. The app will prepare
+                      the text, then ask you to review it before analysis.
                     </p>
                   </div>
                   <div className="upload-controls">
@@ -1279,7 +1547,7 @@ export function GdiqrWorkspace({
                     onChange={(event) =>
                       setTranscriptImportText(event.target.value)
                     }
-                    placeholder="Paste an existing transcript here. It can already include speaker labels, or the app will infer Interviewer/Participant turns."
+                    placeholder="Paste transcript text here. Speaker labels can already be included; otherwise the app will infer Interviewer and Participant turns for your review."
                     value={transcriptImportText}
                   />
                   <button
@@ -1290,9 +1558,63 @@ export function GdiqrWorkspace({
                   >
                     <Upload size={18} />
                     {isImportingTranscript
-                      ? "Importing transcript..."
-                      : "Import transcript"}
+                      ? "Preparing transcript..."
+                      : "Prepare transcript"}
                   </button>
+                </div>
+                <div className="mini-card">
+                  <span className="label">Project interviews/documents</span>
+                  <h3>Current project data</h3>
+                  <p className="small">
+                    This prototype keeps one active working transcript at a
+                    time. The Supabase hierarchy migration prepares the app for
+                    preserving multiple interview analyses in one project.
+                  </p>
+                  <div className="grid three">
+                    <p className="small">
+                      <strong>Stored uploads:</strong>{" "}
+                      {displayAudioFiles.length}
+                    </p>
+                    <p className="small">
+                      <strong>Segments:</strong> {displaySegments.length} total,{" "}
+                      {
+                        displaySegments.filter(
+                          (segment) =>
+                            segment.status === "Analysed" ||
+                            segment.status === "Completed"
+                        ).length
+                      }{" "}
+                      analysed
+                    </p>
+                    <p className="small">
+                      <strong>Confirmed MUs:</strong>{" "}
+                      {confirmedMeaningUnits.length}
+                    </p>
+                  </div>
+                  {displayAudioFiles.length === 0 ? (
+                    <EmptyState text="No interview uploads yet. Audio uploads and transcript imports will appear in the workflow once they become the active transcript." />
+                  ) : (
+                    <div className="table-wrap">
+                      <table className="table compact-table">
+                        <thead>
+                          <tr>
+                            <th>File</th>
+                            <th>Language</th>
+                            <th>Size</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {displayAudioFiles.map((file) => (
+                            <tr key={file.id}>
+                              <td>{file.originalFilename}</td>
+                              <td>{file.language}</td>
+                              <td>{formatBytes(file.sizeBytes)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1313,10 +1635,13 @@ export function GdiqrWorkspace({
                           : "Review transcript before analysis"}
                       </h3>
                       <p className="small">
-                        Check speaker labels, edit any recognition errors, and
-                        resolve privacy markers such as
-                        {" [[PRIVACY_REVIEW:PERSON:Sam]] "}before generating
-                        meaning units.
+                        Before continuing, confirm that every turn is assigned
+                        to the correct speaker. Questions and prompts should be
+                        labelled Interviewer; interviewee experiences should be
+                        labelled Participant. Also correct any missing words,
+                        recognition errors, or privacy markers such as
+                        {" [[PRIVACY_REVIEW:PERSON:Sam]]"}. Mistakes here will
+                        carry into the meaning units.
                       </p>
                     </div>
                     <StatusBadge
@@ -1407,48 +1732,222 @@ export function GdiqrWorkspace({
 
             {activeStep === "segments" && (
               <div className="section-body grid">
+                <div className="mini-card soft">
+                  <span className="label">Segment Manager</span>
+                  <p className="small">
+                    Review and adjust segment boundaries before analysis. Only
+                    segments marked Ready for MU Analysis are sent to local AI,
+                    one segment at a time.
+                  </p>
+                </div>
                 {displaySegments.length === 0 && (
                   <EmptyState text="No segments yet. Upload and transcribe audio first; the app will create the first working segment from the transcript." />
                 )}
-                {displaySegments.map((segment) => (
-                  <div className="mini-card" key={segment.id}>
-                    <div className="category-header">
-                      <div>
-                        <span className="badge">{segment.caseId}</span>
-                        <h3>{segment.segmentId}</h3>
+                {selectedSegment && (
+                  <div className="segment-manager">
+                    <aside className="segment-list">
+                      {displaySegments.map((segment) => (
+                        <button
+                          className={`segment-list-item ${
+                            segment.id === selectedSegment.id ? "active" : ""
+                          }`}
+                          key={segment.id}
+                          onClick={() => setSelectedSegmentId(segment.id)}
+                          type="button"
+                        >
+                          <div>
+                            <strong>
+                              {segment.segmentId}: {segment.topicLabel}
+                            </strong>
+                            <p className="small">
+                              {segment.text.slice(0, 120)}
+                              {segment.text.length > 120 ? "..." : ""}
+                            </p>
+                          </div>
+                          <StatusBadge label={segment.status} />
+                        </button>
+                      ))}
+                    </aside>
+                    <div className="segment-detail">
+                      <div className="grid two">
+                        <div className="mini-card soft">
+                          <span className="label">Context</span>
+                          <ContextPreview
+                            current={selectedSegment}
+                            next={nextSegment}
+                            previous={previousSegment}
+                          />
+                        </div>
+                        <div className="mini-card">
+                          <div className="category-header">
+                            <div>
+                              <span className="badge">{selectedSegment.caseId}</span>
+                              <h3>{selectedSegment.segmentId}</h3>
+                            </div>
+                            <StatusBadge label={selectedSegment.status} />
+                          </div>
+                          <div className="grid two">
+                            <label className="label">
+                              Segment title
+                              <input
+                                className="field"
+                                onChange={(event) =>
+                                  setSegmentDraftTitle(event.target.value)
+                                }
+                                value={segmentDraftTitle}
+                              />
+                            </label>
+                            <label className="label">
+                              Status
+                              <select
+                                className="field"
+                                onChange={(event) =>
+                                  void saveSelectedSegment(
+                                    event.target.value as SegmentStatus
+                                  )
+                                }
+                                value={selectedSegment.status}
+                              >
+                                {segmentStatuses.map((status) => (
+                                  <option key={status} value={status}>
+                                    {status}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+                          <p className="small">
+                            Starting MU #{selectedSegment.startingMuNumber} ·{" "}
+                            {selectedSegment.startTimestamp} to{" "}
+                            {selectedSegment.endTimestamp}
+                          </p>
+                          <label className="label" htmlFor="segment-editor">
+                            Editable segment text
+                          </label>
+                          <textarea
+                            className="textarea segment-textarea"
+                            id="segment-editor"
+                            onChange={(event) =>
+                              setSegmentDraftText(event.target.value)
+                            }
+                            ref={segmentTextAreaRef}
+                            value={segmentDraftText}
+                          />
+                          <div className="button-row">
+                            <button
+                              className="button primary"
+                              disabled={isSavingSegment}
+                              onClick={() => void saveSelectedSegment()}
+                              type="button"
+                            >
+                              Save segment
+                            </button>
+                            <button
+                              className="button"
+                              disabled={isSavingSegment}
+                              onClick={() =>
+                                void saveSelectedSegment("Ready for MU Analysis")
+                              }
+                              type="button"
+                            >
+                              Mark ready
+                            </button>
+                            <button
+                              className="button"
+                              disabled={
+                                isGeneratingMeaningUnits ||
+                                !canRunMeaningUnitsForSegment(selectedSegment)
+                              }
+                              onClick={() => void generateMeaningUnits(selectedSegment)}
+                              type="button"
+                              title="Run local AI for this segment only"
+                            >
+                              <Bot size={18} />
+                              Run MU for this segment
+                            </button>
+                          </div>
+                          <div className="button-row">
+                            <button
+                              className="button"
+                              disabled={isSavingSegment}
+                              onClick={() => void runSegmentAction("split")}
+                              type="button"
+                            >
+                              Split at cursor
+                            </button>
+                            <button
+                              className="button"
+                              disabled={isSavingSegment || !previousSegment}
+                              onClick={() =>
+                                void runSegmentAction("merge", "previous")
+                              }
+                              type="button"
+                            >
+                              Merge previous
+                            </button>
+                            <button
+                              className="button"
+                              disabled={isSavingSegment || !nextSegment}
+                              onClick={() => void runSegmentAction("merge", "next")}
+                              type="button"
+                            >
+                              Merge next
+                            </button>
+                            <button
+                              className="button"
+                              disabled={isSavingSegment || !previousSegment}
+                              onClick={() => void runSegmentAction("move", "up")}
+                              type="button"
+                            >
+                              Move up
+                            </button>
+                            <button
+                              className="button"
+                              disabled={isSavingSegment || !nextSegment}
+                              onClick={() => void runSegmentAction("move", "down")}
+                              type="button"
+                            >
+                              Move down
+                            </button>
+                            <button
+                              className="button danger"
+                              disabled={isSavingSegment}
+                              onClick={() => void deleteSelectedSegment()}
+                              type="button"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                      <span className="badge blue">{segment.status}</span>
                     </div>
-                    <div className="grid three">
-                      <p className="small">
-                        <strong>Timestamp:</strong> {segment.startTimestamp} to{" "}
-                        {segment.endTimestamp}
-                      </p>
-                      <p className="small">
-                        <strong>Speakers:</strong> {segment.speakerInfo}
-                      </p>
-                      <p className="small">
-                        <strong>Starting MU:</strong>{" "}
-                        {segment.startingMuNumber}
-                      </p>
-                    </div>
-                    <p className="small">{segment.text.slice(0, 380)}...</p>
                   </div>
-                ))}
+                )}
               </div>
             )}
 
             {activeStep === "meaning-units" && (
               <div className="section-body grid">
+                <div className="mini-card soft">
+                  <span className="label">Before categorising</span>
+                  <p className="small">
+                    Check that each excerpt represents the Participant's
+                    experience, not the Interviewer's question. Edit summaries
+                    directly when they are close. If the excerpt or speaker is
+                    wrong, use Fix transcript: correct the transcript,
+                    confirm it again, and regenerate meaning units so later
+                    category work is based on the right text.
+                  </p>
+                </div>
                 <div className="button-row">
                   <button
                     className="button primary"
                     disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
-                    onClick={generateMeaningUnits}
+                    onClick={() => void generateMeaningUnits(activeMeaningUnitSegment)}
                     type="button"
                     title={
                       transcriptConfirmed
-                        ? "Generate meaning units from the confirmed transcript"
+                        ? "Generate meaning units from a ready segment"
                         : "Confirm the transcript before generating meaning units"
                     }
                   >
@@ -1456,7 +1955,7 @@ export function GdiqrWorkspace({
                     {isGeneratingMeaningUnits
                       ? "Generating MUs..."
                       : transcriptConfirmed
-                        ? "Generate draft MUs"
+                        ? "Generate draft MUs for ready segment"
                         : "Confirm transcript first"}
                   </button>
                   <button
@@ -1477,7 +1976,7 @@ export function GdiqrWorkspace({
                     text={
                       transcriptConfirmed
                         ? "No meaning units yet. Run local AI to generate draft MUs."
-                        : "No meaning units yet. Review and confirm the transcript first, then run local AI."
+                        : "No meaning units yet. Confirm the transcript, review segment boundaries, mark a segment ready, then run local AI."
                     }
                   />
                 ) : (
@@ -1499,7 +1998,22 @@ export function GdiqrWorkspace({
                         {units.map((unit) => (
                           <tr key={unit.id}>
                             <td className="mono">#{unit.number}</td>
-                            <td>{unit.speaker}</td>
+                            <td>
+                              <select
+                                className="select compact"
+                                onChange={(event) =>
+                                  void updateMeaningUnitSpeaker(
+                                    unit.id,
+                                    event.target.value
+                                  )
+                                }
+                                value={unit.speaker}
+                              >
+                                <option value="Participant">Participant</option>
+                                <option value="Interviewer">Interviewer</option>
+                                <option value="Unknown">Unknown</option>
+                              </select>
+                            </td>
                             <td>{unit.excerpt}</td>
                             <td>{unit.aiSummary}</td>
                             <td>
@@ -1521,14 +2035,24 @@ export function GdiqrWorkspace({
                               <StatusBadge label={unit.reviewerStatus} />
                             </td>
                             <td>
-                              <button
-                                className="button icon"
-                                onClick={() => markAccepted(unit.id)}
-                                title="Accept meaning unit"
-                                type="button"
-                              >
-                                <Check size={18} />
-                              </button>
+                              <div className="button-row">
+                                <button
+                                  className="button icon"
+                                  onClick={() => markAccepted(unit.id)}
+                                  title="Accept meaning unit"
+                                  type="button"
+                                >
+                                  <Check size={18} />
+                                </button>
+                                <button
+                                  className="button icon"
+                                  onClick={() => returnToTranscriptForUnit(unit)}
+                                  title="Fix source transcript and regenerate"
+                                  type="button"
+                                >
+                                  <Pencil size={18} />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -1541,6 +2065,15 @@ export function GdiqrWorkspace({
 
             {activeStep === "categories" && (
               <div className="section-body grid">
+                <div className="mini-card soft">
+                  <span className="label">Category readiness</span>
+                  <p className="small">
+                    Categories use only accepted or edited meaning-unit
+                    summaries. Review each MU first so category construction is
+                    based on confirmed participant meaning rather than raw
+                    transcript text.
+                  </p>
+                </div>
                 <div className="mode-selector">
                   <ModeButton
                     active={mode === "A"}
@@ -1578,7 +2111,7 @@ export function GdiqrWorkspace({
                   )}
                 </div>
                 {displayCategories.length === 0 ? (
-                  <EmptyState text="No categories yet. Generate meaning units first, then run Mode A/B/C." />
+                  <EmptyState text="No categories yet. Accept or edit meaning-unit summaries first, then run Mode A/B/C." />
                 ) : (
                   <div className="grid">
                     {displayCategories.map((category) => (
@@ -1692,7 +2225,7 @@ export function GdiqrWorkspace({
               </div>
             )}
           </section>
-          <RunLogPanel logs={runLogs} />
+          <RunLogPanel logs={runLogs} onClear={clearFinishedRunLogs} />
         </main>
       </div>
     </div>
@@ -1715,8 +2248,98 @@ function StatusBadge({ label }: { label: string }) {
   return <span className={className}>{label}</span>;
 }
 
+const segmentStatuses: SegmentStatus[] = [
+  "Draft",
+  "Needs Review",
+  "Ready for MU Analysis",
+  "Analysed",
+  "Needs Revision",
+  "Completed"
+];
+
+function ContextPreview({
+  current,
+  next,
+  previous
+}: {
+  current: TranscriptSegment;
+  next: TranscriptSegment | null;
+  previous: TranscriptSegment | null;
+}) {
+  return (
+    <div className="context-stack">
+      <ContextItem label="Previous" segment={previous} />
+      <ContextItem current label="Current" segment={current} />
+      <ContextItem label="Next" segment={next} />
+    </div>
+  );
+}
+
+function ContextItem({
+  current = false,
+  label,
+  segment
+}: {
+  current?: boolean;
+  label: string;
+  segment: TranscriptSegment | null;
+}) {
+  return (
+    <div className={`context-item ${current ? "current" : ""}`}>
+      <span className="label">{label}</span>
+      {segment ? (
+        <>
+          <strong>{segment.segmentId}</strong>
+          <p className="small">
+            {segment.text.slice(0, current ? 240 : 160)}
+            {segment.text.length > (current ? 240 : 160) ? "..." : ""}
+          </p>
+        </>
+      ) : (
+        <p className="small">No segment.</p>
+      )}
+    </div>
+  );
+}
+
 function isTranscriptConfirmed(project: Project) {
   return project.status === "Transcript confirmed for analysis";
+}
+
+function canRunMeaningUnitsForSegment(segment: TranscriptSegment) {
+  return (
+    segment.text.trim().length > 0 &&
+    (segment.status === "Ready for MU Analysis" ||
+      segment.status === "Analysed" ||
+      segment.status === "Completed")
+  );
+}
+
+function isConfirmedMeaningUnit(unit: MeaningUnit) {
+  return unit.humanStatus === "Accepted" || unit.humanStatus === "Edited";
+}
+
+function getSegmentSplitIndex(text: string, cursorPosition?: number | null) {
+  if (
+    typeof cursorPosition === "number" &&
+    cursorPosition > 0 &&
+    cursorPosition < text.length
+  ) {
+    return cursorPosition;
+  }
+
+  const middle = Math.floor(text.length / 2);
+  const nextParagraph = text.indexOf("\n\n", middle);
+  if (nextParagraph > 0) {
+    return nextParagraph;
+  }
+
+  const previousParagraph = text.lastIndexOf("\n\n", middle);
+  if (previousParagraph > 0) {
+    return previousParagraph;
+  }
+
+  return middle;
 }
 
 function extractPrivacyReviewMarkers(transcript: string) {
@@ -1729,25 +2352,54 @@ function extractPrivacyReviewMarkers(transcript: string) {
   );
 }
 
+function getStepCopy(step: WorkflowStep) {
+  switch (step) {
+    case "upload":
+      return "Add an interview audio file or import an existing transcript. The transcript will be prepared for review before any analysis begins.";
+    case "transcript":
+      return "Carefully check every speaker label and every sentence. Meaning-unit analysis depends on this transcript being accurate.";
+    case "meaning-units":
+      return "Review each meaning unit before moving on. If a unit is assigned to the wrong speaker or the excerpt is wrong, return to the transcript, correct it, confirm again, and regenerate.";
+    case "categories":
+      return "Build categories only after meaning units have been reviewed. Mode A starts construction, Mode B refines it, and Mode C integrates the final structure.";
+    case "reviewers":
+      return "Run checks for coverage, coherence, GDIQR discipline, and unresolved uncertainty.";
+    case "export":
+      return "Download the reviewed transcript, meaning units, categories, reviewer notes, and audit trail.";
+    default:
+      return "Set up the project and research question before importing data. GDIQR is used as the default analysis method.";
+  }
+}
+
 function EmptyState({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>;
 }
 
-function RunLogPanel({ logs }: { logs: RunLog[] }) {
+function RunLogPanel({
+  logs,
+  onClear
+}: {
+  logs: RunLog[];
+  onClear: () => void;
+}) {
   return (
     <section className="section run-log-section">
       <div className="section-header compact">
         <div>
-          <span className="badge blue">Live local logs</span>
-          <h2 className="run-log-title">AI / transcription activity</h2>
+          <span className="badge blue">Activity</span>
+          <h2 className="run-log-title">Current processing activity</h2>
           <p className="small">
-            Polls local API every 2 seconds. Meaning-unit jobs run in the background.
+            Shows the current upload, transcript preparation, and analysis run.
+            Finished runs are automatically cleared when a new run starts.
           </p>
         </div>
+        <button className="button" onClick={onClear} type="button">
+          Clear finished
+        </button>
       </div>
       <div className="section-body grid">
         {logs.length === 0 ? (
-          <EmptyState text="No local runs yet. Start an audio upload, transcript import, or AI generation to see step timings here." />
+          <EmptyState text="No current activity. Start an upload, transcript import, or analysis step to see progress here." />
         ) : (
           logs.slice(0, 8).map((log) => (
             <article className="run-log-card" key={log.id}>
@@ -1761,7 +2413,7 @@ function RunLogPanel({ logs }: { logs: RunLog[] }) {
                       : ""}
                   </p>
                 </div>
-                <StatusBadge label={log.status} />
+                <StatusBadge label={formatRunStatus(log.status)} />
               </div>
               <div className="timeline">
                 {log.events.slice(-20).map((event) => (
@@ -1792,6 +2444,14 @@ function formatMs(ms: number) {
   }
 
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function formatRunStatus(status: RunLog["status"]) {
+  return status === "failed"
+    ? "Needs attention"
+    : status === "completed"
+      ? "Completed"
+      : "Running";
 }
 
 async function fetchWithTimeout(

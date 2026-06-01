@@ -11,6 +11,13 @@ export type WorkflowStep =
 export type HumanStatus = "Draft" | "Accepted" | "Edited" | "Needs review";
 export type ReviewerStatus = "Not run" | "Pass" | "Warning" | "Major issue";
 export type CategoryMode = "A" | "B" | "C";
+export type SegmentStatus =
+  | "Draft"
+  | "Needs Review"
+  | "Ready for MU Analysis"
+  | "Analysed"
+  | "Needs Revision"
+  | "Completed";
 
 export interface Project {
   id: string;
@@ -28,11 +35,13 @@ export interface TranscriptSegment {
   id: string;
   caseId: string;
   segmentId: string;
+  segmentNumber: number;
+  topicLabel: string;
   speakerInfo: string;
   startTimestamp: string;
   endTimestamp: string;
   startingMuNumber: number;
-  status: "Ready" | "Processed" | "Needs review";
+  status: SegmentStatus;
   text: string;
 }
 

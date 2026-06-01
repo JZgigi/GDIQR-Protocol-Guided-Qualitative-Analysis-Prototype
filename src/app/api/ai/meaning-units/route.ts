@@ -9,21 +9,31 @@ import {
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
-  const runId = startRunLog("Meaning-unit generation");
   const body = (await request.json().catch(() => ({}))) as {
+    caseId?: string;
     lightInterpretation?: boolean;
     projectId?: string;
+    segmentId?: string;
+    startingNumber?: number;
     transcript?: string;
   };
+  const runId = startRunLog(
+    body.segmentId
+      ? `Meaning-unit generation · ${body.segmentId}`
+      : "Meaning-unit generation"
+  );
   const projectId =
     body.projectId ?? process.env.GDIQR_DEFAULT_PROJECT_ID ?? "proj_student_wellbeing";
 
   addRunEvent(runId, "Queued background meaning-unit job");
   setTimeout(() => {
     void runMeaningUnitGeneration({
+      caseId: body.caseId,
       lightInterpretation: body.lightInterpretation,
       projectId,
       runId,
+      segmentId: body.segmentId,
+      startingNumber: body.startingNumber,
       transcript: body.transcript
     });
   }, 0);
@@ -49,11 +59,17 @@ async function runMeaningUnitGeneration({
   lightInterpretation,
   projectId,
   runId,
+  caseId,
+  segmentId,
+  startingNumber,
   transcript
 }: {
+  caseId?: string;
   lightInterpretation?: boolean;
   projectId: string;
   runId: string;
+  segmentId?: string;
+  startingNumber?: number;
   transcript?: string;
 }) {
   try {
@@ -74,6 +90,9 @@ async function runMeaningUnitGeneration({
         lightInterpretation ?? workspace.project.lightInterpretation,
       project: workspace.project,
       runId,
+      caseId,
+      segmentId,
+      startingNumber,
       transcript: sourceTranscript
     });
     addRunEvent(
@@ -82,10 +101,16 @@ async function runMeaningUnitGeneration({
     );
 
     addRunEvent(runId, `Saving ${result.meaningUnits.length} meaning units`);
-    const saveResult = await repository.replaceMeaningUnitsFromAi({
-      projectId,
-      units: result.meaningUnits
-    });
+    const saveResult = segmentId
+      ? await repository.replaceMeaningUnitsForSegment({
+          projectId,
+          segmentId,
+          units: result.meaningUnits
+        })
+      : await repository.replaceMeaningUnitsFromAi({
+          projectId,
+          units: result.meaningUnits
+        });
     addRunEvent(
       runId,
       saveResult.saved

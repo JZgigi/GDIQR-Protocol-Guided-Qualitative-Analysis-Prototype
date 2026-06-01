@@ -84,7 +84,8 @@ export function startRunLog(label: string) {
   };
 
   const store = getStore({ reload: true });
-  store.logs = [log, ...store.logs].slice(0, 40);
+  const runningLogs = store.logs.filter((item) => item.status === "running");
+  store.logs = [log, ...runningLogs].slice(0, 12);
   persistStore(store);
   return log.id;
 }
@@ -120,6 +121,15 @@ export function listRunLogs() {
   return getStore({ reload: true }).logs;
 }
 
+export function clearRunLogs({ includeRunning = false } = {}) {
+  const store = getStore({ reload: true });
+  store.logs = includeRunning
+    ? []
+    : store.logs.filter((item) => item.status === "running");
+  persistStore(store);
+  return store.logs;
+}
+
 function updateRunLogStatus(
   runId: string | undefined,
   status: RunLogStatus,
@@ -143,7 +153,7 @@ function updateRunLogStatus(
   log.error = error;
   log.events.push({
     id: `event_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    message: error ?? `Finished with status: ${status}`,
+    message: error ?? "Finished",
     timestamp: endedAt
   });
   persistStore(store);

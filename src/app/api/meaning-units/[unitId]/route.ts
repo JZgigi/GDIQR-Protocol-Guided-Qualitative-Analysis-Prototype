@@ -10,12 +10,14 @@ export async function PATCH(
   const body = (await request.json().catch(() => ({}))) as {
     humanStatus?: HumanStatus;
     humanSummary?: string;
+    speaker?: string;
   };
 
   try {
     const result = await updateMeaningUnit({
       humanStatus: body.humanStatus,
       humanSummary: body.humanSummary,
+      speaker: body.speaker,
       unitId
     });
 
