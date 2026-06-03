@@ -97,6 +97,11 @@ export interface Database {
           project_id: string;
           content: string;
           version_label: string;
+          anonymisation_status: "not_reviewed" | "reviewed" | "confirmed";
+          raw_transcript_retained: boolean;
+          sensitive_items: unknown[];
+          sensitive_items_reviewed_at?: string | null;
+          reviewed_by?: string | null;
           created_at: string;
         };
         Insert: {
@@ -104,6 +109,11 @@ export interface Database {
           project_id: string;
           content: string;
           version_label?: string;
+          anonymisation_status?: "not_reviewed" | "reviewed" | "confirmed";
+          raw_transcript_retained?: boolean;
+          sensitive_items?: unknown[];
+          sensitive_items_reviewed_at?: string | null;
+          reviewed_by?: string | null;
           created_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["transcripts"]["Insert"]>;

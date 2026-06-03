@@ -12,7 +12,7 @@ import type {
 } from "@/lib/types";
 import { createSupabaseServerClient, hasSupabaseConfig } from "./supabase/server";
 import type { Database } from "./supabase/database.types";
-import { autoSplitTranscript } from "./auto-segmenter";
+import { autoSplitTranscript, type AutoSegmentMode } from "./auto-segmenter";
 
 type AudioFileRow = Database["public"]["Tables"]["audio_files"]["Row"];
 type CategoryRow = Database["public"]["Tables"]["categories"]["Row"];
@@ -30,18 +30,26 @@ export interface WorkspaceData {
   reviewerComments: ReviewerComment[];
   auditEvents: AuditEvent[];
   integratedNarrative: string;
-  dataSource: "supabase" | "unconfigured";
+  dataSource: "local" | "supabase" | "unconfigured";
   supabaseConfigured: boolean;
 }
 
 export const defaultProjectId =
   process.env.GDIQR_DEFAULT_PROJECT_ID ?? "proj_student_wellbeing";
 
+interface TranscriptPrivacyMetadata {
+  anonymisationStatus?: "not_reviewed" | "reviewed" | "confirmed";
+  rawTranscriptRetained?: boolean;
+  reviewedBy?: string | null;
+  sensitiveItems?: unknown[];
+  sensitiveItemsReviewedAt?: string | null;
+}
+
 export function getEmptyWorkspace(reason = "Supabase is not configured."): WorkspaceData {
   return {
     project: {
       id: defaultProjectId,
-      title: "Untitled GDIQR project",
+      title: "Untitled GDI-QR project",
       researchQuestion: "",
       studyDescription: reason,
       language: "English",
@@ -61,6 +69,22 @@ export function getEmptyWorkspace(reason = "Supabase is not configured."): Works
     integratedNarrative: "",
     dataSource: "unconfigured",
     supabaseConfigured: hasSupabaseConfig()
+  };
+}
+
+export function getLocalWorkspace(): WorkspaceData {
+  return {
+    ...getEmptyWorkspace(
+      "Local-only mode: transcript data is processed and stored within the local environment."
+    ),
+    dataSource: "local",
+    project: {
+      ...getEmptyWorkspace().project,
+      status: "Local-only draft workspace",
+      studyDescription:
+        "Local-only mode: transcript data is processed and stored within the local environment."
+    },
+    supabaseConfigured: false
   };
 }
 
@@ -199,12 +223,18 @@ export async function getWorkspace(
 }
 
 export async function saveTranscriptVersion({
+  anonymisationStatus = "reviewed",
   content,
   projectId = defaultProjectId,
+  rawTranscriptRetained = false,
+  sensitiveItems = [],
   versionLabel = "Researcher saved version"
 }: {
+  anonymisationStatus?: TranscriptPrivacyMetadata["anonymisationStatus"];
   content: string;
   projectId?: string;
+  rawTranscriptRetained?: boolean;
+  sensitiveItems?: unknown[];
   versionLabel?: string;
 }) {
   const supabase = createSupabaseServerClient();
@@ -212,15 +242,15 @@ export async function saveTranscriptVersion({
     return { saved: false, reason: "Supabase is not configured." };
   }
 
-  const { data, error } = await supabase
-    .from("transcripts")
-    .insert({
-      project_id: projectId,
-      content,
-      version_label: versionLabel
-    })
-    .select()
-    .single();
+  const { data, error } = await insertTranscriptWithOptionalPrivacyMetadata({
+    anonymisationStatus,
+    content,
+    projectId,
+    rawTranscriptRetained,
+    sensitiveItems,
+    supabase,
+    versionLabel
+  });
 
   if (error) {
     throw new Error(error.message);
@@ -261,7 +291,7 @@ export async function updateProjectSettings({
     .from("projects")
     .upsert({
       id: projectId,
-      title: title.trim() || "Untitled GDIQR project",
+      title: title.trim() || "Untitled GDI-QR project",
       research_question: researchQuestion.trim(),
       study_description: studyDescription.trim(),
       language,
@@ -547,29 +577,141 @@ export async function importTranscriptForAnalysis({
   };
 }
 
+export async function clearProjectTranscriptData(projectId = defaultProjectId) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { cleared: false, reason: "Supabase is not configured." };
+  }
+
+  const { data: audioRows } = await supabase
+    .from("audio_files")
+    .select("storage_bucket, storage_path")
+    .eq("project_id", projectId);
+
+  const storageByBucket = new Map<string, string[]>();
+  (audioRows ?? []).forEach((row) => {
+    const paths = storageByBucket.get(row.storage_bucket) ?? [];
+    paths.push(row.storage_path);
+    storageByBucket.set(row.storage_bucket, paths);
+  });
+
+  await Promise.all(
+    Array.from(storageByBucket.entries()).map(([bucket, paths]) =>
+      supabase.storage.from(bucket).remove(paths)
+    )
+  );
+
+  await Promise.all([
+    supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("meaning_units").delete().eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId),
+    supabase.from("segments").delete().eq("project_id", projectId),
+    supabase.from("transcription_jobs").delete().eq("project_id", projectId),
+    supabase.from("audio_files").delete().eq("project_id", projectId),
+    supabase.from("transcripts").delete().eq("project_id", projectId),
+    supabase.from("audit_events").delete().eq("project_id", projectId)
+  ]);
+
+  await supabase
+    .from("projects")
+    .update({
+      status: "Ready for local testing",
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", projectId);
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: "Deleted transcript, uploads, and derived outputs",
+    target: "Project data minimisation"
+  });
+
+  return { cleared: true };
+}
+
+async function insertTranscriptWithOptionalPrivacyMetadata({
+  anonymisationStatus,
+  content,
+  projectId,
+  rawTranscriptRetained,
+  sensitiveItems,
+  supabase,
+  versionLabel
+}: TranscriptPrivacyMetadata & {
+  content: string;
+  projectId: string;
+  supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>;
+  versionLabel: string;
+}) {
+  const baseRow = {
+    project_id: projectId,
+    content,
+    version_label: versionLabel
+  };
+  const privacyRow = {
+    ...baseRow,
+    anonymisation_status: anonymisationStatus ?? "reviewed",
+    raw_transcript_retained: rawTranscriptRetained ?? false,
+    sensitive_items: sensitiveItems ?? [],
+    sensitive_items_reviewed_at: new Date().toISOString(),
+    reviewed_by: null
+  };
+
+  const result = await supabase
+    .from("transcripts")
+    .insert(privacyRow)
+    .select()
+    .single();
+
+  if (!result.error) {
+    return result;
+  }
+
+  const missingPrivacyColumn =
+    result.error.message.includes("anonymisation_status") ||
+    result.error.message.includes("raw_transcript_retained") ||
+    result.error.message.includes("sensitive_items") ||
+    result.error.message.includes("sensitive_items_reviewed_at") ||
+    result.error.message.includes("reviewed_by");
+
+  if (!missingPrivacyColumn) {
+    return result;
+  }
+
+  return supabase.from("transcripts").insert(baseRow).select().single();
+}
+
 export async function confirmTranscriptForAnalysis({
+  anonymisationStatus = "confirmed",
   content,
   language,
-  projectId = defaultProjectId
+  projectId = defaultProjectId,
+  rawTranscriptRetained = false,
+  sensitiveItems = []
 }: {
+  anonymisationStatus?: TranscriptPrivacyMetadata["anonymisationStatus"];
   content: string;
   language: Project["language"];
   projectId?: string;
+  rawTranscriptRetained?: boolean;
+  sensitiveItems?: unknown[];
 }) {
   const supabase = createSupabaseServerClient();
   if (!supabase) {
     return { saved: false, reason: "Supabase is not configured." };
   }
 
-  const { data: transcriptRow, error: transcriptError } = await supabase
-    .from("transcripts")
-    .insert({
-      project_id: projectId,
+  const { data: transcriptRow, error: transcriptError } =
+    await insertTranscriptWithOptionalPrivacyMetadata({
+      anonymisationStatus,
       content,
-      version_label: "Researcher-confirmed transcript"
-    })
-    .select()
-    .single();
+      projectId,
+      rawTranscriptRetained,
+      sensitiveItems,
+      supabase,
+      versionLabel: "Researcher-confirmed transcript"
+    });
 
   if (transcriptError) {
     throw new Error(transcriptError.message);
@@ -1075,11 +1217,13 @@ export async function autoSplitSegmentsFromTranscript({
   caseId = "CASE-001",
   projectId = defaultProjectId,
   researchQuestion,
+  splittingMode = "balanced",
   transcript
 }: {
   caseId?: string;
   projectId?: string;
   researchQuestion?: string;
+  splittingMode?: AutoSegmentMode;
   transcript: string;
 }) {
   const supabase = createSupabaseServerClient();
@@ -1098,7 +1242,9 @@ export async function autoSplitSegmentsFromTranscript({
   }
 
   const splitResult = autoSplitTranscript(trimmedTranscript, {
-    researchQuestion
+    mode: splittingMode,
+    researchQuestion,
+    sourceTranscriptId: projectId
   });
   const now = Date.now();
 
@@ -1344,11 +1490,11 @@ export async function replaceReviewerCommentsFromAi({
     .from("reviewer_comments")
     .delete()
     .eq("project_id", projectId)
-    .eq(
+    .in(
       "agent",
       workspace === "categories"
-        ? "GDIQR Category Review"
-        : "GDIQR Meaning Units Review"
+        ? ["GDIQR Category Review", "GDI-QR Category Review"]
+        : ["GDIQR Meaning Units Review", "GDI-QR Meaning Units Review"]
     );
 
   if (comments.length === 0) {
@@ -1385,8 +1531,8 @@ export async function replaceReviewerCommentsFromAi({
   await supabase.from("audit_events").insert({
     project_id: projectId,
     actor: "Reviewer",
-    action: `Generated ${comments.length} ${workspace ?? "GDIQR"} reviewer issues`,
-    target: workspace ?? "Reviewer agents"
+    action: `Generated ${comments.length} ${workspace ?? "GDI-QR-informed"} reviewer issues`,
+    target: workspace ?? "Reviewer checks"
   });
 
   return {
@@ -1567,7 +1713,7 @@ async function createDefaultProject(projectId: string) {
     .from("projects")
     .insert({
       id: projectId,
-      title: "Untitled GDIQR project",
+      title: "Untitled GDI-QR project",
       research_question: "",
       study_description: "",
       language: "English",

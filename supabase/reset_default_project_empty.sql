@@ -34,7 +34,7 @@ insert into public.projects (
   updated_at
 ) values (
   'proj_student_wellbeing',
-  'Untitled GDIQR project',
+  'Untitled GDI-QR project',
   '',
   '',
   'English',

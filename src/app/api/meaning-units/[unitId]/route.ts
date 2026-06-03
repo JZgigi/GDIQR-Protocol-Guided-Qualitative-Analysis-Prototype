@@ -3,6 +3,7 @@ import {
   deleteMeaningUnit,
   updateMeaningUnit
 } from "@/lib/gdiqr-repository";
+import { isLocalStorageMode } from "@/lib/storage-mode";
 import type { HumanStatus } from "@/lib/types";
 
 export async function PATCH(
@@ -19,6 +20,15 @@ export async function PATCH(
   };
 
   try {
+    if (isLocalStorageMode()) {
+      return NextResponse.json({
+        saved: false,
+        persisted: false,
+        reason:
+          "Local-only mode stores meaning-unit edits in browser state, not Supabase."
+      });
+    }
+
     const result = await updateMeaningUnit({
       analysisExcluded: body.analysisExcluded,
       exclusionReason: body.exclusionReason,
@@ -44,6 +54,15 @@ export async function DELETE(
   const { unitId } = await context.params;
 
   try {
+    if (isLocalStorageMode()) {
+      return NextResponse.json({
+        deleted: false,
+        persisted: false,
+        reason:
+          "Local-only mode deletes meaning units from browser state, not Supabase."
+      });
+    }
+
     const result = await deleteMeaningUnit({ unitId });
     return NextResponse.json(result);
   } catch (error) {

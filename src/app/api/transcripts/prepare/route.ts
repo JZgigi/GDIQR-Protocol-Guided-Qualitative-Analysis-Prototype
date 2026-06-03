@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { processTranscriptForPrivacyAndSpeakers } from "@/lib/ai-provider";
 import {
-  defaultProjectId,
-  getWorkspace,
-  importTranscriptForAnalysis
-} from "@/lib/gdiqr-repository";
-import {
   addRunEvent,
   failRunLog,
   finishRunLog,
@@ -17,22 +12,12 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(request: NextRequest) {
-  const runId = startRunLog("Transcript import");
-  if (process.env.ALLOW_LEGACY_TRANSCRIPT_IMPORT !== "true") {
-    const message =
-      "This legacy import route is disabled. Use /api/transcripts/prepare, review/anonymise locally, then save only the reviewed transcript.";
-    failRunLog(runId, message);
-    return NextResponse.json({ error: message }, { status: 410 });
-  }
-
+  const runId = startRunLog("Transcript preparation");
   const body = (await request.json().catch(() => ({}))) as {
     language?: Project["language"];
-    projectId?: string;
-    sourceLabel?: string;
     transcript?: string;
   };
   const transcript = body.transcript?.trim() ?? "";
-  const projectId = body.projectId ?? defaultProjectId;
   const language = body.language === "Chinese" ? "Chinese" : "English";
 
   if (!transcript) {
@@ -44,31 +29,26 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    addRunEvent(runId, `Received transcript import (${transcript.length} chars)`);
+    addRunEvent(
+      runId,
+      `Preparing local transcript draft (${transcript.length} chars); raw text is not saved to Supabase`
+    );
     const processed = await processTranscriptForPrivacyAndSpeakers({
       language,
       runId,
       transcript
     });
-    addRunEvent(runId, "Saving prepared transcript to Supabase");
-    const saveResult = await importTranscriptForAnalysis({
-      language,
-      projectId,
-      sourceLabel: body.sourceLabel ?? "Imported transcript + privacy review",
-      transcript: processed.sanitizedTranscript
-    });
-    const workspace = await getWorkspace(projectId);
     finishRunLog(runId);
 
     return NextResponse.json({
-      imported: saveResult.saved,
+      prepared: true,
       privacyFindings: processed.privacyFindings,
       speakerNotes: processed.speakerNotes,
-      workspace
+      transcript: processed.sanitizedTranscript
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Transcript import failed.";
+      error instanceof Error ? error.message : "Transcript preparation failed.";
     failRunLog(runId, message);
     return NextResponse.json({ error: message }, { status: 500 });
   }

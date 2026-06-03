@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
   Ban,
@@ -38,6 +38,30 @@ import type {
 } from "@/lib/types";
 import type { WorkspaceData } from "@/lib/gdiqr-repository";
 import type { RunLog } from "@/lib/run-logs";
+import type { AutoSegmentMode } from "@/lib/auto-segmenter";
+import type { StorageMode } from "@/lib/storage-mode";
+
+const PRODUCT_TITLE =
+  "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
+const PRODUCT_SHORT_TITLE = "GDI-QR x AI Prototype";
+const METHODOLOGICAL_FRAME = "GDI-QR-informed";
+
+type SensitiveRiskLevel = "low" | "medium" | "high";
+type SensitiveReviewStatus = "pending" | "confirmed" | "ignored" | "edited";
+
+interface SensitiveReviewItem {
+  id: string;
+  placeholder: string;
+  category: string;
+  // Client-only raw marker/span used for locating text. Strip before storage.
+  matchedText?: string;
+  riskLevel: SensitiveRiskLevel;
+  replacementText: string;
+  startOffset?: number;
+  endOffset?: number;
+  status: SensitiveReviewStatus;
+  explanation: string;
+}
 
 const steps: Array<{
   id: WorkflowStep;
@@ -66,6 +90,7 @@ interface GdiqrWorkspaceProps {
   auditEvents: AuditEvent[];
   integratedNarrative: string;
   dataSource?: WorkspaceData["dataSource"];
+  storageMode?: StorageMode;
   supabaseConfigured?: boolean;
 }
 
@@ -82,6 +107,7 @@ export function GdiqrWorkspace({
   auditEvents,
   integratedNarrative,
   dataSource = "unconfigured",
+  storageMode = "local",
   supabaseConfigured = false
 }: GdiqrWorkspaceProps) {
   const [activeStep, setActiveStep] = useState<WorkflowStep>("setup");
@@ -99,12 +125,24 @@ export function GdiqrWorkspace({
   const [lightInterpretation, setLightInterpretation] = useState(
     project.lightInterpretation
   );
+  const [projectSetupSavedAt, setProjectSetupSavedAt] = useState("");
   const [editableTranscript, setEditableTranscript] = useState(transcript);
   const [transcriptConfirmed, setTranscriptConfirmed] = useState(
     isTranscriptConfirmed(project)
   );
   const [aiPrivacyFindings, setAiPrivacyFindings] = useState<string[]>(
     extractPrivacyReviewMarkers(transcript)
+  );
+  const [sensitiveReviewItems, setSensitiveReviewItems] = useState<
+    SensitiveReviewItem[]
+  >(() => buildSensitiveReviewItems(transcript, extractPrivacyReviewMarkers(transcript)));
+  const [privacyReviewExpanded, setPrivacyReviewExpanded] = useState(true);
+  const [activeSensitiveItemId, setActiveSensitiveItemId] = useState("");
+  const [privacyOverrideAccepted, setPrivacyOverrideAccepted] = useState(false);
+  const [transcriptStorageStatus, setTranscriptStorageStatus] = useState(
+    transcript.trim()
+      ? "Anonymised version saved"
+      : "Not saved yet — local draft only"
   );
   const [displaySegments, setDisplaySegments] = useState(segments);
   const [displayAudioFiles, setDisplayAudioFiles] = useState(audioFiles);
@@ -115,13 +153,17 @@ export function GdiqrWorkspace({
   const [reviewerOutputs, setReviewerOutputs] = useState(reviewerComments);
   const [displayAuditEvents, setDisplayAuditEvents] = useState(auditEvents);
   const [narrative, setNarrative] = useState(integratedNarrative);
+  const [integrationReviewed, setIntegrationReviewed] = useState(false);
+  const [integrationNote, setIntegrationNote] = useState("");
   const [categoryDraftNotice, setCategoryDraftNotice] = useState("");
   const [categoryDraftIsFallback, setCategoryDraftIsFallback] = useState(false);
   const [allSegmentsProcessedForModeC, setAllSegmentsProcessedForModeC] =
     useState(false);
   const [apiDataSource, setApiDataSource] = useState(dataSource);
   const [apiStatus, setApiStatus] = useState(
-    supabaseConfigured
+    storageMode === "local"
+      ? "Local-only mode ready. Import or paste a transcript to begin."
+      : supabaseConfigured
       ? "Workspace ready. Start by uploading audio or importing a transcript."
       : "Supabase is not connected yet. Add your Supabase settings before testing with real data."
   );
@@ -171,8 +213,12 @@ export function GdiqrWorkspace({
     segments[0]?.text ?? ""
   );
   const [isSavingSegment, setIsSavingSegment] = useState(false);
+  const [segmentSplitMode, setSegmentSplitMode] =
+    useState<AutoSegmentMode>("balanced");
+  const transcriptTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const segmentTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const meaningUnitAbortControllerRef = useRef<AbortController | null>(null);
+  const isLocalOnlyMode = storageMode === "local";
 
   async function loadRunLogs() {
     const response = await fetch("/api/run-logs", { cache: "no-store" });
@@ -241,6 +287,12 @@ export function GdiqrWorkspace({
   }, [activeMeaningUnitRunId, runLogs]);
 
   useEffect(() => {
+    setSensitiveReviewItems((current) =>
+      buildSensitiveReviewItems(editableTranscript, aiPrivacyFindings, current)
+    );
+  }, [aiPrivacyFindings, editableTranscript]);
+
+  useEffect(() => {
     if (displaySegments.length === 0) {
       setSelectedSegmentId("");
       setMeaningUnitSegmentId("");
@@ -297,16 +349,19 @@ export function GdiqrWorkspace({
   const selectedTitle = steps.find((step) => step.id === activeStep)?.label;
   const latestAudioFile = displayAudioFiles[0];
   const latestTranscriptionJob = displayTranscriptionJobs[0];
-  const privacyReviewNotes = useMemo(
+  const pendingHighRiskItems = useMemo(
     () =>
-      Array.from(
-        new Set([
-          ...extractPrivacyReviewMarkers(editableTranscript),
-          ...aiPrivacyFindings
-        ])
+      sensitiveReviewItems.filter(
+        (item) => item.riskLevel === "high" && item.status === "pending"
       ),
-    [aiPrivacyFindings, editableTranscript]
+    [sensitiveReviewItems]
   );
+  const unresolvedHighRiskCount = pendingHighRiskItems.length;
+  const canProceedWithTranscript =
+    unresolvedHighRiskCount === 0 || privacyOverrideAccepted;
+  const activeSensitiveItem =
+    sensitiveReviewItems.find((item) => item.id === activeSensitiveItemId) ??
+    null;
   const selectedSegment = useMemo(
     () =>
       displaySegments.find((segment) => segment.id === selectedSegmentId) ??
@@ -354,8 +409,27 @@ export function GdiqrWorkspace({
     () => units.filter((unit) => unit.analysisExcluded),
     [units]
   );
-  const hasTemporaryFallbackCategories =
-    categoryDraftIsFallback || displayCategories.some(isFallbackCategory);
+  const hasFallbackCategoryLabels = displayCategories.some(isFallbackCategory);
+  const hasTemporaryFallbackCategories = categoryDraftIsFallback;
+  const assignedMeaningUnitNumbers = useMemo(
+    () =>
+      new Set(
+        displayCategories
+          .filter((category) => category.status !== "rejected")
+          .flatMap((category) => category.includedUnitIds)
+      ),
+    [displayCategories]
+  );
+  const unassignedMeaningUnits = useMemo(
+    () =>
+      confirmedMeaningUnits.filter(
+        (unit) => !assignedMeaningUnitNumbers.has(unit.number)
+      ),
+    [assignedMeaningUnitNumbers, confirmedMeaningUnits]
+  );
+  const confirmedCategoryCount = displayCategories.filter(
+    (category) => category.status === "confirmed"
+  ).length;
   const canRunCategories =
     confirmedMeaningUnits.length > 0 &&
     (mode === "A" ||
@@ -379,9 +453,40 @@ export function GdiqrWorkspace({
       displayCategories.length ||
       reviewerOutputs.length
   );
+  const unresolvedPrivacyMarkerCount =
+    countUnresolvedPrivacyMarkers(editableTranscript);
+  const dataSafetyItems = [
+    {
+      label: "Storage mode",
+      value: isLocalOnlyMode ? "Local-only" : "Supabase-backed"
+    },
+    {
+      label: "Cloud database writes",
+      value: isLocalOnlyMode ? "Off for this session" : "Enabled"
+    },
+    {
+      label: "Raw transcript retained",
+      value: "No by default"
+    },
+    {
+      label: "AI processing",
+      value:
+        aiProvider === "ollama"
+          ? "Server-side local Ollama"
+          : `Server-side ${aiProvider}`
+    },
+    {
+      label: "Unresolved privacy markers",
+      value: String(unresolvedPrivacyMarkerCount)
+    },
+    {
+      label: "Transcript status",
+      value: transcriptConfirmed ? "Confirmed for analysis" : transcriptStorageStatus
+    }
+  ];
   const generationTargetLabel =
     meaningUnitGenerationScope === "all"
-      ? "All Segments"
+      ? "all ready segments"
       : selectedMeaningUnitSegment?.segmentId ?? "Selected Segment";
   const selectedSegmentAlreadyHasUnits = Boolean(
     selectedMeaningUnitSegment &&
@@ -389,8 +494,8 @@ export function GdiqrWorkspace({
   );
   const generationButtonLabel =
     meaningUnitGenerationScope === "all"
-      ? "Generate Meaning Units for All Segments"
-      : `${selectedSegmentAlreadyHasUnits ? "Regenerate" : "Generate"} Meaning Units for ${selectedMeaningUnitSegment?.segmentId ?? "Selected Segment"}`;
+      ? "Generate MUs for all ready segments"
+      : `${selectedSegmentAlreadyHasUnits ? "Regenerate" : "Generate"} MUs for ${selectedMeaningUnitSegment?.segmentId ?? "selected segment"}`;
 
   function applyWorkspace(workspace: WorkspaceData) {
     setCurrentProject(workspace.project);
@@ -403,6 +508,12 @@ export function GdiqrWorkspace({
     setEditableTranscript(workspace.transcript);
     setTranscriptConfirmed(isTranscriptConfirmed(workspace.project));
     setAiPrivacyFindings(extractPrivacyReviewMarkers(workspace.transcript));
+    setPrivacyOverrideAccepted(false);
+    setTranscriptStorageStatus(
+      workspace.transcript.trim()
+        ? "Anonymised version saved"
+        : "Not saved yet — local draft only"
+    );
     setDisplaySegments(workspace.segments);
     setDisplayAudioFiles(workspace.audioFiles);
     setDisplayTranscriptionJobs(workspace.transcriptionJobs);
@@ -419,6 +530,26 @@ export function GdiqrWorkspace({
 
   async function saveProjectSetup() {
     setIsSavingProject(true);
+    if (isLocalOnlyMode) {
+      const now = new Date().toISOString();
+      setCurrentProject((current) => ({
+        ...current,
+        language: projectLanguage,
+        lightInterpretation,
+        researchQuestion,
+        studyDescription,
+        title: projectTitle,
+        updatedAt: now
+      }));
+      setUploadLanguage(projectLanguage);
+      setProjectSetupSavedAt(now);
+      setApiStatus(
+        `Project setup saved locally at ${new Date(now).toLocaleTimeString()}. Nothing was saved to Supabase.`
+      );
+      setIsSavingProject(false);
+      return;
+    }
+
     setApiStatus("Saving project setup...");
 
     try {
@@ -448,6 +579,7 @@ export function GdiqrWorkspace({
       if (result.project) {
         setCurrentProject(result.project);
       }
+      setProjectSetupSavedAt(new Date().toISOString());
       setApiStatus("Project setup saved to Supabase");
     } catch (error) {
       setApiStatus(
@@ -458,7 +590,29 @@ export function GdiqrWorkspace({
     }
   }
 
+  function toggleLightInterpretation(nextValue?: boolean) {
+    const value = nextValue ?? !lightInterpretation;
+    setLightInterpretation(value);
+    setCurrentProject((current) => ({
+      ...current,
+      lightInterpretation: value,
+      updatedAt: new Date().toISOString()
+    }));
+    setApiStatus(
+      value
+        ? "Light interpretation is ON. New meaning-unit drafts may include cautious tentative interpretation."
+        : "Light interpretation is OFF. New meaning-unit drafts will stay closer to descriptive summaries."
+    );
+  }
+
   async function uploadAndTranscribeAudio() {
+    if (isLocalOnlyMode) {
+      setApiStatus(
+        "Audio upload is disabled in local-only sharing mode because raw audio would need special temporary handling. Please import an anonymised transcript for this prototype test."
+      );
+      return;
+    }
+
     if (!selectedAudioFile) {
       setApiStatus("Choose an audio file before starting transcription.");
       return;
@@ -569,11 +723,9 @@ export function GdiqrWorkspace({
     );
 
     try {
-      const response = await fetchWithTimeout("/api/transcripts/import", {
+      const response = await fetchWithTimeout("/api/transcripts/prepare", {
         body: JSON.stringify({
           language: uploadLanguage,
-          projectId: currentProject.id,
-          sourceLabel: `${transcriptImportName} + privacy review`,
           transcript: transcriptImportText
         }),
         headers: { "Content-Type": "application/json" },
@@ -582,29 +734,31 @@ export function GdiqrWorkspace({
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
-        imported?: boolean;
+        prepared?: boolean;
         privacyFindings?: string[];
-        workspace?: WorkspaceData;
+        speakerNotes?: string[];
+        transcript?: string;
       };
 
-      if (!response.ok || !result.imported) {
-        setApiStatus(result.error ?? "Transcript import failed");
+      if (!response.ok || !result.prepared || !result.transcript) {
+        setApiStatus(result.error ?? "Transcript preparation failed");
         return;
       }
 
-      if (result.workspace) {
-        applyWorkspace(result.workspace);
-      }
+      const safePreparedTranscript = prepareTranscriptForStorage(result.transcript);
+      setEditableTranscript(safePreparedTranscript);
       setTranscriptConfirmed(false);
+      setTranscriptStorageStatus("Not saved yet — local draft only");
+      setPrivacyOverrideAccepted(false);
       setAiPrivacyFindings(
         result.privacyFindings?.length
           ? result.privacyFindings
-          : extractPrivacyReviewMarkers(result.workspace?.transcript ?? "")
+          : extractPrivacyReviewMarkers(result.transcript)
       );
 
       setTranscriptImportText("");
       setApiStatus(
-        `Transcript imported. Please review speaker labels, privacy markers, and wording before confirming${
+        `Transcript prepared locally and not saved yet. Please review speaker labels, sensitive-information items, and wording before saving or confirming${
           result.privacyFindings?.length
             ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
             : ""
@@ -620,6 +774,10 @@ export function GdiqrWorkspace({
   }
 
   async function refreshWorkspace() {
+    if (isLocalOnlyMode) {
+      setApiStatus("Local-only mode keeps the current workspace in browser state. Export project JSON to keep a copy.");
+      return;
+    }
     setApiStatus("Refreshing workspace...");
     const response = await fetch(`/api/workspace?projectId=${currentProject.id}`, {
       cache: "no-store"
@@ -633,12 +791,37 @@ export function GdiqrWorkspace({
   }
 
   async function saveTranscriptVersion() {
-    setApiStatus("Saving a transcript version...");
+    if (!canProceedWithTranscript) {
+      setApiStatus(
+        "This transcript may still contain identifiable or sensitive information. Please review high-risk items before saving."
+      );
+      return;
+    }
+
+    if (hasUnresolvedPrivacyMarkers(editableTranscript)) {
+      setApiStatus(
+        "Unresolved privacy review markers remain in this transcript. Please review or anonymise them before saving or analysis."
+      );
+      return;
+    }
+    const transcriptForStorage = prepareTranscriptForStorage(editableTranscript);
+    if (isLocalOnlyMode) {
+      setEditableTranscript(transcriptForStorage);
+      setTranscriptConfirmed(false);
+      setTranscriptStorageStatus("Reviewed transcript saved locally");
+      setApiStatus("Reviewed transcript saved locally in this browser session. Export project JSON to keep a copy.");
+      return;
+    }
+    setApiStatus("Saving reviewed transcript...");
     setTranscriptConfirmed(false);
     const response = await fetch("/api/transcript-versions", {
       body: JSON.stringify({
-        content: editableTranscript,
-        projectId: currentProject.id
+        content: transcriptForStorage,
+        projectId: currentProject.id,
+        sensitiveItems: serialiseSensitiveItemsForStorage(sensitiveReviewItems),
+        anonymisationStatus:
+          unresolvedHighRiskCount === 0 ? "reviewed" : "not_reviewed",
+        rawTranscriptRetained: false
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST"
@@ -657,9 +840,13 @@ export function GdiqrWorkspace({
     };
     setApiStatus(
       result.saved
-        ? "Transcript version saved. Please confirm again before analysis."
+        ? "Reviewed transcript saved. Please confirm again before analysis."
         : result.reason ?? result.error ?? "Transcript save failed"
     );
+    if (result.saved) {
+      setEditableTranscript(transcriptForStorage);
+      setTranscriptStorageStatus("Anonymised version saved");
+    }
   }
 
   async function confirmTranscriptForAnalysis() {
@@ -667,16 +854,68 @@ export function GdiqrWorkspace({
       setApiStatus("Add or import a transcript before confirming it for analysis.");
       return;
     }
+    if (!canProceedWithTranscript) {
+      setApiStatus(
+        "This transcript may still contain identifiable or sensitive information. Please review high-risk items before analysis."
+      );
+      return;
+    }
 
+    if (hasUnresolvedPrivacyMarkers(editableTranscript)) {
+      setApiStatus(
+        "Unresolved privacy review markers remain in this transcript. Please review or anonymise them before saving or analysis."
+      );
+      return;
+    }
+    const transcriptForStorage = prepareTranscriptForStorage(editableTranscript);
+    if (isLocalOnlyMode) {
+      const now = new Date().toISOString();
+      setEditableTranscript(transcriptForStorage);
+      setTranscriptConfirmed(true);
+      setTranscriptStorageStatus("Reviewed transcript saved locally");
+      setCurrentProject((current) => ({
+        ...current,
+        status: "Transcript confirmed for local analysis",
+        updatedAt: now
+      }));
+      const localSegment = buildLocalTranscriptSegment({
+        caseId: "CASE-001",
+        segmentNumber: 1,
+        text: transcriptForStorage
+      });
+      setDisplaySegments([localSegment]);
+      setSelectedSegmentId(localSegment.id);
+      setMeaningUnitSegmentId(localSegment.id);
+      setUnits([]);
+      setDisplayCategories([]);
+      setReviewerOutputs([]);
+      setNarrative("");
+      setDisplayAuditEvents((current) => [
+        {
+          actor: "Researcher",
+          action: "Confirmed reviewed transcript locally",
+          id: `audit_local_${Date.now()}`,
+          target: "Local-only workspace",
+          timestamp: now
+        },
+        ...current
+      ]);
+      setApiStatus("Reviewed transcript confirmed locally. You can now review or split segments.");
+      return;
+    }
     setIsConfirmingTranscript(true);
     setApiStatus("Confirming transcript. Previous derived analysis will be cleared so the next analysis uses this reviewed text.");
 
     try {
       const response = await fetch("/api/transcripts/confirm", {
         body: JSON.stringify({
-          content: editableTranscript,
-          language: projectLanguage,
-          projectId: currentProject.id
+          content: transcriptForStorage,
+        language: projectLanguage,
+        projectId: currentProject.id,
+        sensitiveItems: serialiseSensitiveItemsForStorage(sensitiveReviewItems),
+        anonymisationStatus:
+          unresolvedHighRiskCount === 0 ? "confirmed" : "not_reviewed",
+        rawTranscriptRetained: false
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST"
@@ -696,6 +935,8 @@ export function GdiqrWorkspace({
         applyWorkspace(result.workspace);
       }
       setTranscriptConfirmed(true);
+      setEditableTranscript(transcriptForStorage);
+      setTranscriptStorageStatus("Anonymised version saved");
       setApiStatus(
         "Transcript confirmed. You can now generate meaning units from the reviewed text."
       );
@@ -708,9 +949,97 @@ export function GdiqrWorkspace({
     }
   }
 
+  async function clearTranscriptAndDerivedOutputs() {
+    const confirmed = window.confirm(
+      "Delete the current transcript, uploaded audio records, and all derived segments, meaning units, categories, reviewer comments, and review-trail records for this project? This cannot be undone."
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    if (isLocalOnlyMode) {
+      setEditableTranscript("");
+      setTranscriptImportText("");
+      setTranscriptConfirmed(false);
+      setTranscriptStorageStatus("Not saved yet — local draft only");
+      setDisplayAudioFiles([]);
+      setDisplayTranscriptionJobs([]);
+      setDisplaySegments([]);
+      setSelectedSegmentId("");
+      setMeaningUnitSegmentId("");
+      setUnits([]);
+      setDisplayCategories([]);
+      setReviewerOutputs([]);
+      setNarrative("");
+      setCategoryDraftNotice("");
+      setCategoryDraftIsFallback(false);
+      setSensitiveReviewItems([]);
+      setAiPrivacyFindings([]);
+      setPrivacyOverrideAccepted(false);
+      setDisplayAuditEvents([]);
+      setApiStatus("Local transcript and derived outputs cleared from this browser session.");
+      return;
+    }
+
+    setApiStatus("Deleting transcript and derived outputs...");
+    const response = await fetch("/api/project/clear-data", {
+      body: JSON.stringify({ projectId: currentProject.id }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      cleared?: boolean;
+      error?: string;
+      reason?: string;
+      workspace?: WorkspaceData;
+    };
+
+    if (!response.ok || !result.cleared) {
+      setApiStatus(result.error ?? result.reason ?? "Project data clear failed.");
+      return;
+    }
+
+    if (result.workspace) {
+      applyWorkspace(result.workspace);
+    }
+    setEditableTranscript("");
+    setTranscriptConfirmed(false);
+    setTranscriptStorageStatus("Not saved yet — local draft only");
+    setSensitiveReviewItems([]);
+    setAiPrivacyFindings([]);
+    setApiStatus("Transcript, uploads, and derived outputs deleted.");
+  }
+
   async function saveSelectedSegment(status?: SegmentStatus) {
     if (!selectedSegment) {
       setApiStatus("Select a segment before saving.");
+      return;
+    }
+
+    if (isLocalOnlyMode) {
+      const updatedSegment: TranscriptSegment = {
+        ...selectedSegment,
+        status: status ?? selectedSegment.status,
+        text: segmentDraftText,
+        topicLabel: segmentDraftTitle
+      };
+      setDisplaySegments((current) =>
+        current.map((segment) =>
+          segment.id === selectedSegment.id ? updatedSegment : segment
+        )
+      );
+      setSelectedSegmentId(updatedSegment.id);
+      setUnits((current) =>
+        current.filter((unit) => unit.segmentId !== updatedSegment.segmentId)
+      );
+      setDisplayCategories([]);
+      setReviewerOutputs([]);
+      setNarrative("");
+      setApiStatus(
+        status === "Ready for MU Analysis"
+          ? "Segment marked ready locally. You can now run meaning-unit analysis for this segment."
+          : "Segment saved locally. Existing MUs for this segment were cleared so regenerated analysis uses the edited text."
+      );
       return;
     }
 
@@ -789,6 +1118,68 @@ export function GdiqrWorkspace({
     );
 
     try {
+      if (isLocalOnlyMode) {
+        let nextSegments = [...displaySegments];
+        if (action === "split") {
+          const nextNumber = selectedSegment.segmentNumber + 1;
+          const beforeSegment: TranscriptSegment = {
+            ...selectedSegment,
+            text: beforeText,
+            topicLabel: segmentDraftTitle || selectedSegment.topicLabel,
+            status: "Needs Review"
+          };
+          const afterSegment = buildLocalTranscriptSegment({
+            caseId: selectedSegment.caseId,
+            segmentNumber: nextNumber,
+            text: afterText,
+            topicLabel: `Split from ${selectedSegment.segmentId}`
+          });
+          nextSegments.splice(selectedSegmentIndex, 1, beforeSegment, afterSegment);
+        } else if (action === "merge") {
+          const targetIndex =
+            direction === "previous"
+              ? selectedSegmentIndex - 1
+              : selectedSegmentIndex + 1;
+          const target = nextSegments[targetIndex];
+          if (!target) {
+            setApiStatus("No adjacent segment is available to merge.");
+            return;
+          }
+          const merged: TranscriptSegment = {
+            ...target,
+            text:
+              direction === "previous"
+                ? `${target.text}\n\n${segmentDraftText}`.trim()
+                : `${segmentDraftText}\n\n${target.text}`.trim(),
+            topicLabel: `${target.topicLabel} + ${selectedSegment.topicLabel}`,
+            status: "Needs Review"
+          };
+          nextSegments = nextSegments.filter((segment) => segment.id !== selectedSegment.id);
+          nextSegments[targetIndex > selectedSegmentIndex ? selectedSegmentIndex : targetIndex] = merged;
+          setSelectedSegmentId(merged.id);
+        } else {
+          const targetIndex =
+            direction === "up"
+              ? selectedSegmentIndex - 1
+              : selectedSegmentIndex + 1;
+          if (targetIndex < 0 || targetIndex >= nextSegments.length) {
+            setApiStatus("Segment cannot move further in that direction.");
+            return;
+          }
+          const [moving] = nextSegments.splice(selectedSegmentIndex, 1);
+          nextSegments.splice(targetIndex, 0, moving);
+        }
+
+        nextSegments = renumberLocalSegments(nextSegments);
+        setDisplaySegments(nextSegments);
+        setUnits([]);
+        setDisplayCategories([]);
+        setReviewerOutputs([]);
+        setNarrative("");
+        setApiStatus("Segment list updated locally. Review boundaries before running meaning-unit analysis.");
+        return;
+      }
+
       const response = await fetch(`/api/segments/${selectedSegment.id}`, {
         body: JSON.stringify({
           action,
@@ -823,6 +1214,70 @@ export function GdiqrWorkspace({
     }
   }
 
+  function createSegmentFromSelection() {
+    if (!selectedSegment) {
+      setApiStatus("Select a segment first.");
+      return;
+    }
+
+    const textarea = segmentTextAreaRef.current;
+    const selectionStart = textarea?.selectionStart ?? 0;
+    const selectionEnd = textarea?.selectionEnd ?? 0;
+    if (selectionEnd <= selectionStart) {
+      setApiStatus(
+        "Select the text that should become its own segment, then click Create new segment from selection."
+      );
+      return;
+    }
+
+    const selectedText = segmentDraftText.slice(selectionStart, selectionEnd).trim();
+    const beforeText = segmentDraftText.slice(0, selectionStart).trim();
+    const afterText = segmentDraftText.slice(selectionEnd).trim();
+    const remainingText = [beforeText, afterText].filter(Boolean).join("\n\n");
+    if (!selectedText || !remainingText) {
+      setApiStatus(
+        "Selection split needs both selected text and remaining text in the current segment."
+      );
+      return;
+    }
+
+    const newTitle =
+      window.prompt("Title for the new segment:", "New selected segment")?.trim() ||
+      "New selected segment";
+    const selectedSegmentDraft = buildLocalTranscriptSegment({
+      caseId: selectedSegment.caseId,
+      createdBy: "manual",
+      segmentNumber: selectedSegment.segmentNumber + 1,
+      splittingMode: segmentSplitMode,
+      text: selectedText,
+      topicLabel: newTitle
+    });
+    const updatedOriginal: TranscriptSegment = {
+      ...selectedSegment,
+      createdBy: selectedSegment.createdBy ?? "manual",
+      splittingMode: selectedSegment.splittingMode ?? segmentSplitMode,
+      status: "Needs Review",
+      text: remainingText
+    };
+    const nextSegments = renumberLocalSegments([
+      ...displaySegments.slice(0, selectedSegmentIndex),
+      updatedOriginal,
+      selectedSegmentDraft,
+      ...displaySegments.slice(selectedSegmentIndex + 1)
+    ]);
+
+    setDisplaySegments(nextSegments);
+    setSelectedSegmentId(selectedSegmentDraft.id);
+    setMeaningUnitSegmentId(selectedSegmentDraft.id);
+    setUnits([]);
+    setDisplayCategories([]);
+    setReviewerOutputs([]);
+    setNarrative("");
+    setApiStatus(
+      "Created a new segment from the selected text. Review both segment boundaries before meaning-unit analysis."
+    );
+  }
+
   async function deleteSelectedSegment() {
     if (!selectedSegment) {
       setApiStatus("Select a segment first.");
@@ -833,6 +1288,23 @@ export function GdiqrWorkspace({
     setApiStatus("Deleting segment...");
 
     try {
+      if (isLocalOnlyMode) {
+        const nextSegments = renumberLocalSegments(
+          displaySegments.filter((segment) => segment.id !== selectedSegment.id)
+        );
+        setDisplaySegments(nextSegments);
+        setSelectedSegmentId(nextSegments[0]?.id ?? "");
+        setMeaningUnitSegmentId(nextSegments[0]?.id ?? "");
+        setUnits((current) =>
+          current.filter((unit) => unit.segmentId !== selectedSegment.segmentId)
+        );
+        setDisplayCategories([]);
+        setReviewerOutputs([]);
+        setNarrative("");
+        setApiStatus("Segment deleted locally. Related meaning units and categories were cleared.");
+        return;
+      }
+
       const response = await fetch(
         `/api/segments/${selectedSegment.id}?projectId=${currentProject.id}`,
         { method: "DELETE" }
@@ -867,6 +1339,12 @@ export function GdiqrWorkspace({
       setApiStatus("Confirm the transcript before auto-splitting segments.");
       return;
     }
+    if (hasUnresolvedPrivacyMarkers(editableTranscript)) {
+      setApiStatus(
+        "Unresolved privacy review markers remain. Review or anonymise them before splitting and analysis."
+      );
+      return;
+    }
 
     const confirmed = window.confirm(
       "Auto-splitting will replace the current segment list. Existing meaning units linked to these segments may need to be regenerated. Continue?"
@@ -884,6 +1362,7 @@ export function GdiqrWorkspace({
           caseId: selectedSegment?.caseId ?? "CASE-001",
           projectId: currentProject.id,
           researchQuestion: currentProject.researchQuestion,
+          splittingMode: segmentSplitMode,
           transcript: editableTranscript
         }),
         headers: { "Content-Type": "application/json" },
@@ -1000,6 +1479,25 @@ export function GdiqrWorkspace({
       );
       return;
     }
+    if (hasUnresolvedPrivacyMarkers(editableTranscript)) {
+      setApiStatus(
+        "Unresolved privacy review markers remain. Review or anonymise them before requesting AI analysis."
+      );
+      return;
+    }
+    const segmentsWithExistingUnits = requestedSegments.filter((segment) =>
+      units.some((unit) => unit.segmentId === segment.segmentId)
+    );
+    if (segmentsWithExistingUnits.length > 0) {
+      const confirmed = window.confirm(
+        `Meaning units already exist for ${segmentsWithExistingUnits
+          .map((segment) => segment.segmentId)
+          .join(", ")}. Regenerating will replace only those segment-level draft MUs. Continue?`
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
 
     const notReadySegment = requestedSegments.find(
       (item) => !canRunMeaningUnitsForSegment(item)
@@ -1084,7 +1582,7 @@ export function GdiqrWorkspace({
       !options.allowFallbackRegenerate
     ) {
       setApiStatus(
-        "This category set is a temporary fallback draft. Regenerate it or explicitly accept it for prototype testing before running Mode B/C."
+        "This category set is a fallback draft. Regenerate it or use it as an editable starting point before running Mode B/C."
       );
       return;
     }
@@ -1110,6 +1608,9 @@ export function GdiqrWorkspace({
           mode,
           projectId: currentProject.id,
           allBatchesProcessed: allSegmentsProcessedForModeC,
+          categories: displayCategories,
+          integratedNarrative: narrative,
+          project: currentProject,
           units: confirmedMeaningUnits
         }),
         headers: { "Content-Type": "application/json" },
@@ -1140,8 +1641,8 @@ export function GdiqrWorkspace({
       const warning =
         result.uncertainties?.[0] ?? result.categoryRevisions?.[0] ?? "";
       setCategoryDraftNotice(
-        result.isFallbackDraft
-          ? "AI returned empty output. A temporary fallback draft was created to keep the workflow testable. Please review or regenerate. It has not been saved as final project categories."
+      result.isFallbackDraft
+          ? "AI returned empty output. A fallback draft was created only to keep the workflow testable. Regenerate it or use it as an editable starting point; do not treat it as final analysis."
           : warning
       );
       setApiStatus(
@@ -1165,13 +1666,26 @@ export function GdiqrWorkspace({
     }
 
     const confirmed = window.confirm(
-      "This will save the temporary fallback category draft to Supabase for prototype testing. Only continue if you have reviewed it and accept it as a researcher-confirmed draft."
+      isLocalOnlyMode
+        ? "This will mark the temporary fallback category draft as researcher-confirmed in this local browser session. Only continue if you have reviewed it and accept it for prototype testing."
+        : "This will save the temporary fallback category draft to Supabase for prototype testing. Only continue if you have reviewed it and accept it as a researcher-confirmed draft."
     );
     if (!confirmed) {
       return;
     }
 
     setIsRunningCategories(true);
+    if (isLocalOnlyMode) {
+      setDisplayCategories(markCategoriesEditableDraft(displayCategories));
+      setCategoryDraftIsFallback(false);
+      setCategoryDraftNotice(
+        "Fallback draft is now an editable starting point. It still requires review, renaming, evidence checks, and confirmation."
+      );
+      setApiStatus("Fallback draft kept as editable draft only.");
+      setIsRunningCategories(false);
+      return;
+    }
+
     setApiStatus("Saving researcher-confirmed temporary category draft...");
     try {
       const response = await fetchWithTimeout("/api/ai/categories", {
@@ -1227,15 +1741,19 @@ export function GdiqrWorkspace({
     setIsRunningReviewer(true);
     setApiStatus(
       reviewerWorkspace === "categories"
-        ? "Running GDIQR category check..."
-        : "Running GDIQR meaning-unit check..."
+        ? "Running category reviewer check..."
+        : "Running meaning-unit reviewer check..."
     );
 
     try {
       const response = await fetchWithTimeout("/api/ai/reviewer", {
         body: JSON.stringify({
+          categories: displayCategories,
+          integratedNarrative: narrative,
           mode,
           projectId: currentProject.id,
+          project: currentProject,
+          units,
           workspace: reviewerWorkspace
         }),
         headers: { "Content-Type": "application/json" },
@@ -1259,7 +1777,7 @@ export function GdiqrWorkspace({
         ...(result.comments ?? [])
       ]);
       setApiStatus(
-        `GDIQR review applied from ${result.provider ?? aiProvider}${
+        `Reviewer check applied from ${result.provider ?? aiProvider}${
           result.persisted ? " and saved to Supabase" : ""
         }`
       );
@@ -1270,10 +1788,193 @@ export function GdiqrWorkspace({
     }
   }
 
+  function updateCategoryDraft(
+    categoryId: string,
+    updates: Partial<CategoryNode>
+  ) {
+    setDisplayCategories((current) =>
+      current.map((category) =>
+        category.id === categoryId
+          ? {
+              ...category,
+              ...updates,
+              status:
+                updates.status ??
+                (category.status === "confirmed" ? "confirmed" : "edited")
+            }
+          : category
+      )
+    );
+    setCategoryDraftNotice(
+      "Category draft edited. Review the included meaning units and evidence before confirming."
+    );
+  }
+
+  function addCategoryDraft(unitNumbers: number[] = []) {
+    const name =
+      window.prompt("New category title:", "New draft category")?.trim() ||
+      "New draft category";
+    const nextCategory: CategoryNode = {
+      definition: "Researcher-created draft category. Add a short analytic definition.",
+      id: `cat_manual_${Date.now()}`,
+      includedUnitIds: unitNumbers,
+      name,
+      source: "researcher_confirmed",
+      status: "edited"
+    };
+    setDisplayCategories((current) => [...current, nextCategory]);
+    setCategoryDraftNotice(
+      "New editable category created. Add or move meaning units into it before confirming."
+    );
+  }
+
+  function removeMeaningUnitFromCategory(categoryId: string, unitNumber: number) {
+    updateCategoryDraft(categoryId, {
+      includedUnitIds:
+        displayCategories
+          .find((category) => category.id === categoryId)
+          ?.includedUnitIds.filter((number) => number !== unitNumber) ?? []
+    });
+  }
+
+  function assignMeaningUnitToCategory(unitNumber: number, categoryId: string) {
+    setDisplayCategories((current) =>
+      current.map((category) => {
+        const withoutUnit = category.includedUnitIds.filter(
+          (number) => number !== unitNumber
+        );
+        if (category.id !== categoryId) {
+          return { ...category, includedUnitIds: withoutUnit };
+        }
+        return {
+          ...category,
+          includedUnitIds: Array.from(new Set([...withoutUnit, unitNumber])).sort(
+            (left, right) => left - right
+          ),
+          status: category.status === "confirmed" ? "confirmed" : "edited"
+        };
+      })
+    );
+    setCategoryDraftNotice(
+      `MU #${unitNumber} assigned. Review category fit before confirmation.`
+    );
+  }
+
+  function deleteCategoryDraft(category: CategoryNode) {
+    if (
+      category.includedUnitIds.length > 0 &&
+      !window.confirm(
+        `${category.name} contains ${category.includedUnitIds.length} MU(s). Delete it and move those MUs to Unassigned?`
+      )
+    ) {
+      return;
+    }
+
+    setDisplayCategories((current) =>
+      current.filter((item) => item.id !== category.id)
+    );
+    setCategoryDraftNotice(
+      "Category deleted. Its meaning units are now shown under Unassigned meaning units."
+    );
+  }
+
+  function mergeCategoryDraft(category: CategoryNode) {
+    const targetId = window.prompt(
+      `Merge "${category.name}" into which category ID? Available: ${displayCategories
+        .filter((item) => item.id !== category.id)
+        .map((item) => item.id)
+        .join(", ")}`
+    );
+    const target = displayCategories.find((item) => item.id === targetId);
+    if (!target) {
+      setApiStatus("Choose a valid target category ID to merge.");
+      return;
+    }
+
+    const mergedName =
+      window.prompt("Merged category title:", target.name)?.trim() || target.name;
+    setDisplayCategories((current) =>
+      current
+        .filter((item) => item.id !== category.id)
+        .map((item) =>
+          item.id === target.id
+            ? {
+                ...item,
+                definition: `${item.definition}\n\nMerged note: ${category.definition}`.trim(),
+                includedUnitIds: Array.from(
+                  new Set([...item.includedUnitIds, ...category.includedUnitIds])
+                ).sort((left, right) => left - right),
+                name: mergedName,
+                status: "edited"
+              }
+            : item
+        )
+    );
+    setCategoryDraftNotice("Categories merged. Review the merged title, definition, and evidence.");
+  }
+
+  function confirmCategoryDraft(categoryId: string) {
+    const category = displayCategories.find((item) => item.id === categoryId);
+    if (!category) {
+      return;
+    }
+    if (!category.name.trim() || category.includedUnitIds.length === 0) {
+      setApiStatus(
+        "A category needs a title and at least one included MU before it can be confirmed."
+      );
+      return;
+    }
+    if (hasSensitivePlaceholder(category.name)) {
+      setApiStatus(
+        "Category title contains a sensitive placeholder. Rename it before confirming."
+      );
+      return;
+    }
+    updateCategoryDraft(categoryId, { status: "confirmed" });
+    setApiStatus("Category confirmed as researcher-reviewed draft.");
+  }
+
+  function rejectCategoryDraft(category: CategoryNode) {
+    if (
+      !window.confirm(
+        `Reject "${category.name}"? Its meaning units will move to Unassigned.`
+      )
+    ) {
+      return;
+    }
+    updateCategoryDraft(category.id, {
+      includedUnitIds: [],
+      status: "rejected"
+    });
+  }
+
   async function updateReviewerIssue(
     commentId: string,
     updates: { memo?: string; status?: ReviewerComment["status"] }
   ) {
+    if (isLocalOnlyMode) {
+      setReviewerOutputs((current) =>
+        current.map((comment) =>
+          comment.id === commentId
+            ? {
+                ...comment,
+                researcherMemo: updates.memo ?? comment.researcherMemo,
+                resolved: updates.status
+                  ? updates.status === "resolved"
+                  : comment.resolved,
+                resolvedAt:
+                  updates.status === "resolved"
+                    ? new Date().toISOString()
+                    : comment.resolvedAt,
+                status: updates.status ?? comment.status
+              }
+            : comment
+        )
+      );
+      setApiStatus("Reviewer issue updated locally.");
+      return;
+    }
+
     const response = await fetch(`/api/reviewer-comments/${commentId}`, {
       body: JSON.stringify({
         ...updates,
@@ -1338,6 +2039,11 @@ export function GdiqrWorkspace({
       return;
     }
 
+    if (isLocalOnlyMode) {
+      setApiStatus("Meaning-unit summary edit saved locally.");
+      return;
+    }
+
     const response = await fetch(`/api/meaning-units/${unitId}`, {
       body: JSON.stringify({
         humanStatus: unit.humanStatus,
@@ -1364,6 +2070,24 @@ export function GdiqrWorkspace({
     setApiStatus("Saving accepted meaning-unit summaries...");
 
     try {
+      if (isLocalOnlyMode) {
+        setUnits((current) =>
+          current.map((unit) =>
+            unit.analysisExcluded
+              ? unit
+              : {
+                  ...unit,
+                  humanStatus: "Accepted",
+                  humanSummary: unit.humanSummary || unit.aiSummary
+                }
+          )
+        );
+        setApiStatus(
+          "Meaning-unit summaries accepted locally. You can now run category Mode A/B/C."
+        );
+        return;
+      }
+
       const results = await Promise.all(
         includableUnits.map(async (unit) => {
           const response = await fetch(`/api/meaning-units/${unit.id}`, {
@@ -1418,6 +2142,11 @@ export function GdiqrWorkspace({
       )
     );
 
+    if (isLocalOnlyMode) {
+      setApiStatus("Speaker correction saved locally for this meaning unit.");
+      return;
+    }
+
     const response = await fetch(`/api/meaning-units/${unitId}`, {
       body: JSON.stringify({
         humanStatus: "Edited",
@@ -1439,7 +2168,7 @@ export function GdiqrWorkspace({
           "Why should this MU be excluded from analysis?",
           unit.speaker === "Interviewer"
             ? "Interviewer opening/question, not participant experience"
-            : "Not relevant for GDIQR analysis"
+            : "Not relevant for this GDI-QR-informed workflow"
         )
       : null;
     if (excluded && reason === null) {
@@ -1463,6 +2192,15 @@ export function GdiqrWorkspace({
     setCategoryDraftNotice("");
     setCategoryDraftIsFallback(false);
     setApiStatus(excluded ? "Excluding meaning unit..." : "Restoring meaning unit...");
+
+    if (isLocalOnlyMode) {
+      setApiStatus(
+        excluded
+          ? "Meaning unit excluded locally. Existing categories were cleared; rerun categories when ready."
+          : "Meaning unit restored locally. Review and accept it before categories."
+      );
+      return;
+    }
 
     const response = await fetch(`/api/meaning-units/${unit.id}`, {
       body: JSON.stringify({
@@ -1504,6 +2242,18 @@ export function GdiqrWorkspace({
     }
 
     setApiStatus(`Deleting MU #${unit.number}...`);
+    if (isLocalOnlyMode) {
+      setUnits((current) => current.filter((item) => item.id !== unit.id));
+      setDisplayCategories([]);
+      setNarrative("");
+      setCategoryDraftNotice("");
+      setCategoryDraftIsFallback(false);
+      setApiStatus(
+        `MU #${unit.number} deleted locally. Existing categories were cleared; rerun categories when ready.`
+      );
+      return;
+    }
+
     const response = await fetch(`/api/meaning-units/${unit.id}`, {
       method: "DELETE"
     });
@@ -1543,7 +2293,110 @@ export function GdiqrWorkspace({
     setEditableTranscript(cleaned);
     setTranscriptConfirmed(false);
     setAiPrivacyFindings(extractPrivacyReviewMarkers(cleaned));
-    setApiStatus("Transcript spacing cleaned. Review the text, save a version, then confirm before analysis.");
+    setPrivacyOverrideAccepted(false);
+    setTranscriptStorageStatus("Not saved yet — local draft only");
+    setApiStatus("Transcript spacing cleaned. Review the text, save a reviewed transcript, then confirm before analysis.");
+  }
+
+  function focusSensitiveItem(item: SensitiveReviewItem) {
+    setActiveSensitiveItemId(item.id);
+    setActiveStep("transcript");
+    window.setTimeout(() => {
+      const textarea = transcriptTextAreaRef.current;
+      if (!textarea || typeof item.startOffset !== "number") {
+        return;
+      }
+      textarea.focus();
+      textarea.scrollIntoView({ behavior: "smooth", block: "center" });
+      textarea.setSelectionRange(
+        item.startOffset,
+        item.endOffset ?? item.startOffset + item.placeholder.length
+      );
+    }, 0);
+  }
+
+  function updateSensitiveItemStatus(
+    itemId: string,
+    status: SensitiveReviewStatus
+  ) {
+    const item = sensitiveReviewItems.find((current) => current.id === itemId);
+    if (
+      status === "confirmed" &&
+      item?.matchedText &&
+      item.matchedText !== item.replacementText
+    ) {
+      replaceSensitiveItemText(item, item.replacementText);
+    }
+    setSensitiveReviewItems((current) =>
+      current.map((item) => (item.id === itemId ? { ...item, status } : item))
+    );
+  }
+
+  function editSensitiveReplacement(item: SensitiveReviewItem) {
+    const replacement = window.prompt(
+      "Edit the anonymised replacement label:",
+      item.replacementText
+    );
+    if (!replacement?.trim()) {
+      return;
+    }
+    const nextReplacement = replacement.trim();
+    replaceSensitiveItemText(item, nextReplacement);
+    setSensitiveReviewItems((current) =>
+      current.map((currentItem) =>
+        currentItem.id === item.id
+          ? {
+              ...currentItem,
+              placeholder: nextReplacement,
+              replacementText: nextReplacement,
+              status: "edited"
+            }
+          : currentItem
+      )
+    );
+  }
+
+  function applyConsistentReplacement(item: SensitiveReviewItem) {
+    const replacement = item.replacementText || item.placeholder;
+    const sourceText = item.matchedText ?? item.placeholder;
+    setEditableTranscript((current) =>
+      current.split(sourceText).join(replacement)
+    );
+    setTranscriptConfirmed(false);
+    setTranscriptStorageStatus("Not saved yet — local draft only");
+    setSensitiveReviewItems((current) =>
+      current.map((currentItem) =>
+        (currentItem.matchedText ?? currentItem.placeholder) === sourceText
+          ? {
+              ...currentItem,
+              placeholder: replacement,
+              replacementText: replacement,
+              status: currentItem.status === "ignored" ? "ignored" : "confirmed"
+            }
+          : currentItem
+      )
+    );
+    setApiStatus(`Applied ${replacement} consistently across the transcript.`);
+  }
+
+  function replaceSensitiveItemText(
+    item: SensitiveReviewItem,
+    replacement: string
+  ) {
+    const sourceText = item.matchedText ?? item.placeholder;
+    setEditableTranscript((current) => {
+      if (
+        typeof item.startOffset === "number" &&
+        typeof item.endOffset === "number" &&
+        current.slice(item.startOffset, item.endOffset) === sourceText
+      ) {
+        return `${current.slice(0, item.startOffset)}${replacement}${current.slice(item.endOffset)}`;
+      }
+      return current.replace(sourceText, replacement);
+    });
+    setTranscriptConfirmed(false);
+    setPrivacyOverrideAccepted(false);
+    setTranscriptStorageStatus("Not saved yet — local draft only");
   }
 
   async function loadAudioPreview() {
@@ -1576,7 +2429,7 @@ export function GdiqrWorkspace({
 
     if (format === "json") {
       downloadFile(
-        `gdiqr-workspace-${timestamp}.json`,
+        `gdi-qr-workspace-${timestamp}.json`,
         JSON.stringify(buildExportPayload(), null, 2),
         "application/json"
       );
@@ -1586,7 +2439,7 @@ export function GdiqrWorkspace({
 
     if (format === "csv") {
       downloadFile(
-        `gdiqr-meaning-units-${timestamp}.csv`,
+        `gdi-qr-meaning-units-${timestamp}.csv`,
         buildMeaningUnitCsv(units),
         "text/csv"
       );
@@ -1595,7 +2448,7 @@ export function GdiqrWorkspace({
     }
 
     downloadFile(
-      `gdiqr-analysis-report-${timestamp}.txt`,
+      `gdi-qr-draft-report-${timestamp}.txt`,
       buildTextReport(),
       "text/plain"
     );
@@ -1604,6 +2457,8 @@ export function GdiqrWorkspace({
 
   function buildExportPayload() {
     return {
+      exportNote:
+        "This export may contain AI-drafted material. Review all outputs against transcript evidence before use.",
       project: currentProject,
       transcript: editableTranscript,
       segments: displaySegments,
@@ -1629,9 +2484,12 @@ export function GdiqrWorkspace({
       .join("\n");
 
     return [
+      PRODUCT_TITLE,
       currentProject.title,
       "",
       `Research question: ${currentProject.researchQuestion || "Not set"}`,
+      `Methodological frame: ${METHODOLOGICAL_FRAME}`,
+      "Note: AI-drafted outputs require researcher review against transcript evidence before use.",
       `Language: ${currentProject.language}`,
       "",
       "Transcript",
@@ -1653,8 +2511,8 @@ export function GdiqrWorkspace({
       "Reviewer Comments",
       reviewerText || "No reviewer comments yet.",
       "",
-      "Integrated Narrative",
-      narrative || "No integrated narrative yet."
+      "Integration Draft",
+      narrative || "No integration draft yet."
     ].join("\n");
   }
 
@@ -1666,6 +2524,11 @@ export function GdiqrWorkspace({
       )
     );
     setApiStatus("Saving meaning-unit decision...");
+
+    if (isLocalOnlyMode) {
+      setApiStatus("Meaning-unit decision saved locally.");
+      return;
+    }
 
     const response = await fetch(`/api/meaning-units/${unitId}`, {
       body: JSON.stringify({
@@ -1700,19 +2563,24 @@ export function GdiqrWorkspace({
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand" aria-label="GDIQR Analysis Assistant">
+        <div className="brand" aria-label={PRODUCT_TITLE}>
           <div className="brand-mark">G</div>
           <div>
-            <h1 className="brand-title">GDIQR Analysis Assistant</h1>
+            <h1 className="brand-title">{PRODUCT_SHORT_TITLE}</h1>
             <p className="brand-subtitle">
-              Qualitative analysis workspace
+              Researcher-led qualitative analysis support
             </p>
           </div>
         </div>
         <div className="topbar-actions">
           <span className="badge blue">AI provider: {aiProvider}</span>
           <span className="badge">
-            Data: {apiDataSource === "supabase" ? "Supabase" : "Not configured"}
+            Data:{" "}
+            {isLocalOnlyMode
+              ? "Local-only"
+              : apiDataSource === "supabase"
+                ? "Supabase"
+                : "Not configured"}
           </span>
           <button
             className="button soft"
@@ -1730,15 +2598,15 @@ export function GdiqrWorkspace({
             type="button"
             title={
               transcriptConfirmed
-                ? `Run local AI for ${generationTargetLabel}`
-                : "Confirm the transcript before running AI analysis"
+                ? `Create AI-drafted outputs for ${generationTargetLabel}`
+                : "Confirm the transcript before requesting AI draft support"
             }
           >
             <Bot size={18} />
             {isGeneratingMeaningUnits
-              ? "Running AI..."
+              ? "Drafting..."
               : transcriptConfirmed
-                ? "Run AI"
+                ? "Run draft support"
                 : "Confirm transcript first"}
           </button>
           <button
@@ -1787,6 +2655,20 @@ export function GdiqrWorkspace({
         </aside>
 
         <main className="main">
+          {isLocalOnlyMode && (
+            <div className="local-mode-banner">
+              <div>
+                <strong>Local-only prototype mode</strong>
+                <p className="small">
+                  Transcript drafts, segments, meaning units, categories, and
+                  reviewer notes stay in this browser session unless you export
+                  JSON. Supabase writes and audio upload storage are disabled in
+                  this mode.
+                </p>
+              </div>
+              <span className="badge blue">Raw transcript retained: No</span>
+            </div>
+          )}
           <section className="section">
             <div className="section-header">
               <div>
@@ -1872,8 +2754,12 @@ export function GdiqrWorkspace({
                     </select>
                   </div>
                   <div className="mini-card soft">
-                    <span className="label">Analysis method</span>
-                    <strong>GDIQR</strong>
+                    <span className="label">Methodological frame</span>
+                    <strong>{METHODOLOGICAL_FRAME}</strong>
+                    <p className="small">
+                      AI outputs are draft material for researcher review, not
+                      final analysis.
+                    </p>
                   </div>
                   <div className="mini-card soft">
                     <span className="label">Light interpretation</span>
@@ -1881,7 +2767,7 @@ export function GdiqrWorkspace({
                       className={`button ${
                         lightInterpretation ? "primary" : ""
                       }`}
-                      onClick={() => setLightInterpretation((value) => !value)}
+                      onClick={() => toggleLightInterpretation()}
                       type="button"
                     >
                       <Pencil size={16} />
@@ -1899,6 +2785,12 @@ export function GdiqrWorkspace({
                       <Archive size={16} />
                       {isSavingProject ? "Saving..." : "Save setup"}
                     </button>
+                    {projectSetupSavedAt && (
+                      <p className="small">
+                        {isLocalOnlyMode ? "Saved locally" : "Saved"} at{" "}
+                        {new Date(projectSetupSavedAt).toLocaleTimeString()}.
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1906,14 +2798,34 @@ export function GdiqrWorkspace({
 
             {activeStep === "upload" && (
               <div className="section-body grid">
+                <div className="mini-card soft">
+                  <span className="label">Before you upload</span>
+                  <p className="small">
+                    Use anonymised or synthetic data for testing. Do not upload
+                    identifiable, sensitive, or confidential counselling,
+                    psychotherapy, clinical, or client data unless you have the
+                    required consent, ethical approval, and data protection
+                    arrangements in place. Remove names, contact details,
+                    locations, and any details that could identify a participant
+                    before upload.
+                  </p>
+                  <p className="small">
+                    Transcript file/paste imports are prepared as a local draft
+                    first and are not saved until you review and confirm them.
+                    In local-only sharing mode, audio upload is disabled; use a
+                    short anonymised transcript or test text.
+                  </p>
+                  {/* TODO: Consider an enforced ethics acknowledgement for non-demo deployments. */}
+                </div>
                 <div className="upload-panel">
                   <div className="upload-dropzone">
                     <FileAudio size={32} />
                     <h3>Upload interview audio</h3>
                     <p className="small">
                       Supported audio: MP3, M4A, WAV, MP4, WebM, OGG, AAC.
-                      Your file is stored privately, transcribed locally, then
-                      shown for review before analysis.
+                      {isLocalOnlyMode
+                        ? " Audio upload is disabled in local-only sharing mode because raw audio should not be stored before review."
+                        : " Your file is stored privately, transcribed locally, then shown for researcher review before any AI-drafted outputs are created."}
                     </p>
                     <div className="upload-controls">
                       <div>
@@ -1943,6 +2855,7 @@ export function GdiqrWorkspace({
                         <input
                           accept="audio/*,.m4a,.mp3,.mp4,.wav,.webm,.ogg,.aac"
                           className="field"
+                          disabled={isLocalOnlyMode}
                           id="audio-file"
                           onChange={(event) =>
                             setSelectedAudioFile(event.target.files?.[0] ?? null)
@@ -1962,12 +2875,16 @@ export function GdiqrWorkspace({
                     <div className="button-row">
                       <button
                         className="button primary"
-                        disabled={isUploadingAudio || !selectedAudioFile}
+                        disabled={
+                          isLocalOnlyMode || isUploadingAudio || !selectedAudioFile
+                        }
                         onClick={uploadAndTranscribeAudio}
                         type="button"
                       >
                         <Upload size={18} />
-                        {isUploadingAudio
+                        {isLocalOnlyMode
+                          ? "Audio disabled in local-only mode"
+                          : isUploadingAudio
                           ? "Uploading and transcribing..."
                           : "Upload and transcribe"}
                       </button>
@@ -1991,10 +2908,20 @@ export function GdiqrWorkspace({
                       generating meaning units.
                     </p>
                     <span className="badge blue">
-                      {apiDataSource === "supabase"
+                      {isLocalOnlyMode
+                        ? "Local-only session"
+                        : apiDataSource === "supabase"
                         ? "Supabase connected"
                         : "Supabase not connected"}
                     </span>
+                    <div className="data-safety-grid">
+                      {dataSafetyItems.map((item) => (
+                        <div className="data-safety-item" key={item.label}>
+                          <span className="label">{item.label}</span>
+                          <strong>{item.value}</strong>
+                        </div>
+                      ))}
+                    </div>
                     {latestAudioFile && (
                       <div className="upload-status">
                         <span className="label">Latest audio</span>
@@ -2035,7 +2962,8 @@ export function GdiqrWorkspace({
                     <p className="small">
                       Supported transcript files: TXT, MD, VTT, SRT, DOCX, and
                       PDF. You can also paste text below. The app will prepare
-                      the text, then ask you to review it before analysis.
+                      the text, then ask you to review it before any AI-drafted
+                      outputs are created.
                       For shared-link demos, use a short anonymised transcript
                       or test text only. Files over 5 MB are not accepted.
                     </p>
@@ -2179,33 +3107,191 @@ export function GdiqrWorkspace({
                         labelled Participant. Also correct any missing words,
                         recognition errors, or privacy markers such as
                         {" [[PRIVACY_REVIEW:PERSON:Sam]]"}. Mistakes here will
-                        carry into the meaning units.
+                        carry into the meaning units and category drafts.
+                      </p>
+                      <p className="small">
+                        Please ensure that all personal identifiers and
+                        sensitive information have been removed or appropriately
+                        anonymised before analysis. This may include names,
+                        addresses, contact details, institutions, health
+                        information, immigration status, financial details, and
+                        third-party identifiers.
                       </p>
                     </div>
                     <StatusBadge
                       label={transcriptConfirmed ? "Confirmed" : "Needs review"}
                     />
                   </div>
-                  {privacyReviewNotes.length > 0 && (
+                  <div className="button-row">
+                    <span className="badge blue">{transcriptStorageStatus}</span>
+                    <span className="badge">Raw transcript retained: No</span>
+                  </div>
+                  {sensitiveReviewItems.length > 0 && (
                     <div className="privacy-review-list">
-                      <span className="label">Privacy review items</span>
-                      {privacyReviewNotes.slice(0, 8).map((item) => (
-                        <p className="small mono" key={item}>
-                          {item}
-                        </p>
-                      ))}
-                      {privacyReviewNotes.length > 8 && (
-                        <p className="small">
-                          +{privacyReviewNotes.length - 8} more item
-                          {privacyReviewNotes.length - 8 === 1 ? "" : "s"}
-                        </p>
+                      <div className="category-header">
+                        <div>
+                          <span className="label">Sensitive information review</span>
+                          <p className="small">
+                            Review each detected placeholder before analysis.
+                            High-risk items must be confirmed, edited, or marked
+                            as false positives unless you explicitly override.
+                          </p>
+                        </div>
+                        <button
+                          className="button"
+                          onClick={() =>
+                            setPrivacyReviewExpanded((value) => !value)
+                          }
+                          type="button"
+                        >
+                          {privacyReviewExpanded
+                            ? "Hide review list"
+                            : `Show ${sensitiveReviewItems.length} item${sensitiveReviewItems.length === 1 ? "" : "s"}`}
+                        </button>
+                      </div>
+                      {unresolvedHighRiskCount > 0 && (
+                        <div className="mini-card warning-card">
+                          <strong>
+                            This transcript may still contain identifiable or
+                            sensitive information.
+                          </strong>
+                          <p className="small">
+                            Please review these items before analysis.
+                          </p>
+                        </div>
                       )}
+                      {privacyReviewExpanded && (
+                        <div className="sensitive-review-grid">
+                          {sensitiveReviewItems.map((item) => (
+                            <SensitiveReviewCard
+                              isActive={item.id === activeSensitiveItemId}
+                              item={item}
+                              key={item.id}
+                              onApplyConsistent={applyConsistentReplacement}
+                              onConfirm={(target) =>
+                                updateSensitiveItemStatus(target.id, "confirmed")
+                              }
+                              onEdit={editSensitiveReplacement}
+                              onFocus={focusSensitiveItem}
+                              onIgnore={(target) =>
+                                updateSensitiveItemStatus(target.id, "ignored")
+                              }
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {unresolvedHighRiskCount > 0 && (
+                    <label className="scope-option">
+                      <input
+                        checked={privacyOverrideAccepted}
+                        onChange={(event) =>
+                          setPrivacyOverrideAccepted(event.target.checked)
+                        }
+                        type="checkbox"
+                      />
+                      <span>
+                        I confirm that I have reviewed the transcript and accept
+                        responsibility for proceeding.
+                      </span>
+                    </label>
+                  )}
+                  {activeSensitiveItem && (
+                    <div className="mini-card soft">
+                      <span className="label">Selected sensitive item</span>
+                      <p className="small">
+                        <strong>{activeSensitiveItem.placeholder}</strong> ·{" "}
+                        {activeSensitiveItem.category} ·{" "}
+                        {activeSensitiveItem.riskLevel} risk
+                      </p>
+                      <p className="small">{activeSensitiveItem.explanation}</p>
+                      <div className="button-row">
+                        <button
+                          className="button"
+                          onClick={() =>
+                            updateSensitiveItemStatus(
+                              activeSensitiveItem.id,
+                              "confirmed"
+                            )
+                          }
+                          type="button"
+                        >
+                          Confirm anonymisation
+                        </button>
+                        <button
+                          className="button"
+                          onClick={() =>
+                            editSensitiveReplacement(activeSensitiveItem)
+                          }
+                          type="button"
+                        >
+                          Edit label
+                        </button>
+                        <button
+                          className="button"
+                          onClick={() =>
+                            updateSensitiveItemStatus(
+                              activeSensitiveItem.id,
+                              "ignored"
+                            )
+                          }
+                          type="button"
+                        >
+                          Ignore
+                        </button>
+                        <button
+                          className="button"
+                          onClick={() =>
+                            applyConsistentReplacement(activeSensitiveItem)
+                          }
+                          type="button"
+                        >
+                          Apply consistently
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {editableTranscript.trim() && (
+                    <div className="mini-card soft">
+                      <span className="label">Highlighted transcript review</span>
+                      <p className="small">
+                        Click a highlighted placeholder to locate it in the
+                        editable transcript and review its metadata.
+                      </p>
+                      <SensitiveTranscriptPreview
+                        activeItemId={activeSensitiveItemId}
+                        items={sensitiveReviewItems}
+                        onSelect={focusSensitiveItem}
+                        transcript={editableTranscript}
+                      />
+                    </div>
+                  )}
+                  {unresolvedHighRiskCount > 0 && !privacyOverrideAccepted && (
+                    <div className="mini-card warning-card">
+                      <strong>Analysis is paused for privacy review.</strong>
+                      <p className="small">
+                        Confirm, edit, or ignore all high-risk sensitive items
+                        before confirming this transcript for analysis.
+                      </p>
+                    </div>
+                  )}
+                  {editableTranscript.trim() && (
+                    <div className="mini-card soft">
+                      <span className="label">Before saving</span>
+                      <p className="small">
+                        Raw transcripts may contain identifiable or sensitive
+                        information. Please review and anonymise the transcript
+                        before saving it for analysis.
+                      </p>
                     </div>
                   )}
                   <button
                     className="button primary"
                     disabled={
-                      isConfirmingTranscript || !editableTranscript.trim()
+                      isConfirmingTranscript ||
+                      !editableTranscript.trim() ||
+                      !canProceedWithTranscript
                     }
                     onClick={confirmTranscriptForAnalysis}
                     type="button"
@@ -2213,7 +3299,7 @@ export function GdiqrWorkspace({
                     <Check size={18} />
                     {isConfirmingTranscript
                       ? "Confirming..."
-                      : "Confirm transcript for analysis"}
+                      : "Confirm reviewed transcript for analysis"}
                   </button>
                 </div>
                 <div className="button-row">
@@ -2237,12 +3323,27 @@ export function GdiqrWorkspace({
                   </button>
                   <button
                     className="button"
-                    disabled={!editableTranscript.trim()}
+                    disabled={!editableTranscript.trim() || !canProceedWithTranscript}
                     onClick={saveTranscriptVersion}
                     type="button"
                   >
                     <Archive size={18} />
-                    Save version
+                    Save reviewed transcript
+                  </button>
+                  <button
+                    className="button danger"
+                    disabled={
+                      !editableTranscript.trim() &&
+                      displayAudioFiles.length === 0 &&
+                      displaySegments.length === 0 &&
+                      units.length === 0 &&
+                      displayCategories.length === 0
+                    }
+                    onClick={() => void clearTranscriptAndDerivedOutputs()}
+                    type="button"
+                  >
+                    <Trash2 size={18} />
+                    Delete transcript + outputs
                   </button>
                 </div>
                 <label className="label" htmlFor="transcript-editor">
@@ -2255,11 +3356,14 @@ export function GdiqrWorkspace({
                     const nextTranscript = event.target.value;
                     setEditableTranscript(nextTranscript);
                     setTranscriptConfirmed(false);
+                    setTranscriptStorageStatus("Not saved yet — local draft only");
+                    setPrivacyOverrideAccepted(false);
                     setAiPrivacyFindings(
                       extractPrivacyReviewMarkers(nextTranscript)
                     );
                   }}
                   placeholder="Your uploaded audio transcript will appear here after local transcription."
+                  ref={transcriptTextAreaRef}
                   value={editableTranscript}
                 />
                 {audioPreviewUrl && (
@@ -2275,8 +3379,44 @@ export function GdiqrWorkspace({
                   <p className="small">
                     Auto-generated segments are draft processing chunks, not
                     meaning units. Review and adjust boundaries before analysis.
-                    Only segments marked Ready for MU Analysis are sent to
-                    local AI, one segment at a time.
+                    Only segments marked "Ready for MU Analysis" can be used for
+                    meaning unit generation. You can generate meaning units from
+                    one selected segment, or batch-generate them for all ready
+                    segments later.
+                  </p>
+                  <p className="small">
+                    Ready segments are processed one by one, even when using
+                    "Generate MUs for all ready segments", to keep outputs
+                    traceable to transcript evidence.
+                  </p>
+                  <div className="upload-controls">
+                    <label className="label" htmlFor="segment-split-mode">
+                      Segmentation mode
+                    </label>
+                    <select
+                      className="field"
+                      disabled={isAutoSplittingTranscript}
+                      id="segment-split-mode"
+                      onChange={(event) =>
+                        setSegmentSplitMode(event.target.value as AutoSegmentMode)
+                      }
+                      value={segmentSplitMode}
+                    >
+                      <option value="conservative">
+                        Conservative — fewer, larger segments
+                      </option>
+                      <option value="balanced">
+                        Balanced — topic-based, recommended
+                      </option>
+                      <option value="detailed">
+                        Detailed — more granular topic/question shifts
+                      </option>
+                    </select>
+                  </div>
+                  <p className="small">
+                    If the auto-split result is too broad, use Split segment
+                    here, Create new segment from selection, or rerun with
+                    Detailed mode.
                   </p>
                   <div className="button-row">
                     <button
@@ -2428,10 +3568,10 @@ export function GdiqrWorkspace({
                               }
                               onClick={() => void generateMeaningUnits(selectedSegment)}
                               type="button"
-                              title="Run local AI for this segment only"
+                              title="Create draft meaning units for this ready segment only"
                             >
                               <Bot size={18} />
-                              Run MU for this segment
+                              Generate MUs for this segment
                             </button>
                           </div>
                           <div className="button-row">
@@ -2441,7 +3581,16 @@ export function GdiqrWorkspace({
                               onClick={() => void runSegmentAction("split")}
                               type="button"
                             >
-                              Split at cursor
+                              Split segment here
+                            </button>
+                            <button
+                              className="button"
+                              disabled={isSavingSegment}
+                              onClick={createSegmentFromSelection}
+                              type="button"
+                              title="Select text in the segment editor first"
+                            >
+                              Create new segment from selection
                             </button>
                             <button
                               className="button"
@@ -2557,9 +3706,11 @@ export function GdiqrWorkspace({
                     </select>
                   </div>
                   <p className="small">
-                    Only segments marked Ready for MU Analysis will run. All
-                    segments mode processes ready segments one by one and keeps
-                    completed results if you stop later.
+                    Generate meaning units from one selected ready segment, or
+                    from all segments marked "Ready for MU Analysis". The system
+                    processes ready segments one at a time to keep outputs
+                    traceable to transcript evidence and reduce
+                    over-interpretation risk.
                   </p>
                   {generationProgress && (
                     <p className="small">
@@ -2577,7 +3728,7 @@ export function GdiqrWorkspace({
                     type="button"
                     title={
                       transcriptConfirmed
-                        ? `Generate meaning units for ${generationTargetLabel}`
+                        ? `Generate draft meaning units for ${generationTargetLabel}`
                         : "Confirm the transcript before generating meaning units"
                     }
                   >
@@ -2616,18 +3767,25 @@ export function GdiqrWorkspace({
                     type="button"
                   >
                     <ShieldCheck size={18} />
-                    Run GDIQR check
+                    Run reviewer check
                   </button>
-                  <span className="badge">
+                  <button
+                    className={`button ${lightInterpretation ? "primary" : ""}`}
+                    disabled={isGeneratingMeaningUnits}
+                    onClick={() => toggleLightInterpretation()}
+                    title="Toggle whether new MU drafts may include cautious tentative interpretation"
+                    type="button"
+                  >
+                    <Pencil size={18} />
                     Light interpretation: {lightInterpretation ? "ON" : "OFF"}
-                  </span>
+                  </button>
                 </div>
                 {units.length === 0 ? (
                   <EmptyState
                     text={
                       transcriptConfirmed
-                        ? "No meaning units yet. Run local AI to generate draft MUs."
-                        : "No meaning units yet. Confirm the transcript, review segment boundaries, mark a segment ready, then run local AI."
+                        ? "No meaning units yet. Generate draft MUs from one ready segment or all ready segments."
+                        : "No meaning units yet. Confirm the transcript, review segment boundaries, mark a segment ready, then generate draft MUs."
                     }
                   />
                 ) : (
@@ -2790,7 +3948,7 @@ export function GdiqrWorkspace({
                       )
                     }
                     onView={viewReviewerTarget}
-                    title="GDIQR Review"
+                    title="GDI-QR-informed Review"
                   />
                 </div>
               </div>
@@ -2803,10 +3961,16 @@ export function GdiqrWorkspace({
                 <div className="mini-card soft">
                   <span className="label">Category readiness</span>
                   <p className="small">
-                    Categories use only accepted or edited meaning-unit
-                    summaries. Review each MU first so category construction is
-                    based on confirmed participant meaning rather than raw
-                    transcript text.
+                    Category-level drafts use only accepted or edited
+                    meaning-unit summaries. Review each meaning unit (MU) first
+                    so category drafting is based on researcher-confirmed
+                    participant meaning rather than raw transcript text.
+                  </p>
+                  <p className="small">
+                    Mode B generates provisional analytic groupings that must be
+                    reviewed, renamed, merged, edited, or rejected by the
+                    researcher. Mode C creates an editable integration aid, not
+                    a final report.
                   </p>
                   <div className="button-row">
                     <span
@@ -2831,9 +3995,15 @@ export function GdiqrWorkspace({
                         Review and accept MUs first
                       </button>
                     )}
-                    {hasTemporaryFallbackCategories && (
+                    {hasFallbackCategoryLabels && (
                       <span className="badge warning">
-                        Temporary fallback draft
+                        Fallback draft present
+                      </span>
+                    )}
+                    {displayCategories.length > 0 && (
+                      <span className="badge blue">
+                        Confirmed categories: {confirmedCategoryCount} /{" "}
+                        {displayCategories.filter((item) => item.status !== "rejected").length}
                       </span>
                     )}
                   </div>
@@ -2841,19 +4011,19 @@ export function GdiqrWorkspace({
                 <div className="mode-selector">
                   <ModeButton
                     active={mode === "A"}
-                    description="Initial category construction"
+                    description="Initial category-level drafting"
                     label="Mode A"
                     onClick={() => setMode("A")}
                   />
                   <ModeButton
                     active={mode === "B"}
-                    description="Expansion and refinement"
+                    description="Researcher-led expansion and refinement"
                     label="Mode B"
                     onClick={() => setMode("B")}
                   />
                   <ModeButton
                     active={mode === "C"}
-                    description="Final integration after confirmation"
+                    description="Integration draft after confirmation"
                     label="Mode C"
                     onClick={() => setMode("C")}
                   />
@@ -2875,8 +4045,8 @@ export function GdiqrWorkspace({
                     </label>
                     <p className="small">
                       Mode C should only be used after the single-transcript
-                      batch is complete. It creates the final structure and
-                      integrated narrative.
+                      batch is complete. It creates an integration draft for
+                      researcher review, not a final report.
                     </p>
                   </div>
                 )}
@@ -2912,7 +4082,7 @@ export function GdiqrWorkspace({
                           type="button"
                         >
                           <Check size={18} />
-                          Accept temporary draft for prototype
+                          Use fallback draft as editable starting point
                         </button>
                       </div>
                     )}
@@ -2950,7 +4120,7 @@ export function GdiqrWorkspace({
                     type="button"
                   >
                     <ShieldCheck size={18} />
-                    Run category check
+                    Run reviewer check
                   </button>
                   {mode === "C" && (
                     <span className="badge warning">
@@ -2959,19 +4129,57 @@ export function GdiqrWorkspace({
                   )}
                 </div>
                 {displayCategories.length === 0 ? (
-                  <EmptyState text="No categories yet. Accept or edit meaning-unit summaries first, then run Mode A/B/C." />
+                  <EmptyState text="No category drafts yet. Accept or edit meaning-unit summaries first, then run Mode A/B/C." />
                 ) : (
                   <div className="grid">
                     {displayCategories.map((category) => (
-                      <CategoryBlock category={category} key={category.id} />
+                      <CategoryBlock
+                        categories={displayCategories}
+                        category={category}
+                        key={category.id}
+                        onAssignUnit={assignMeaningUnitToCategory}
+                        onConfirm={confirmCategoryDraft}
+                        onDelete={deleteCategoryDraft}
+                        onMerge={mergeCategoryDraft}
+                        onReject={rejectCategoryDraft}
+                        onRemoveUnit={removeMeaningUnitFromCategory}
+                        onUpdate={updateCategoryDraft}
+                        units={confirmedMeaningUnits}
+                      />
                     ))}
                   </div>
                 )}
+                <UnassignedMeaningUnits
+                  categories={displayCategories}
+                  onAssign={assignMeaningUnitToCategory}
+                  onCreateCategory={addCategoryDraft}
+                  units={unassignedMeaningUnits}
+                />
                 {mode === "C" && (
-                  <div className="mini-card soft">
-                    <span className="label">Integrated narrative</span>
-                    <p id="integrated-narrative">{narrative}</p>
-                  </div>
+                  <IntegrationDraftPanel
+                    categories={displayCategories}
+                    integrationNote={integrationNote}
+                    integrationReviewed={integrationReviewed}
+                    narrative={narrative}
+                    onChangeNarrative={(value) => {
+                      setNarrative(value);
+                      setIntegrationReviewed(false);
+                    }}
+                    onConfirm={() => {
+                      if (!narrative.trim()) {
+                        setApiStatus("Generate or write an integration draft before confirming.");
+                        return;
+                      }
+                      if (hasSensitivePlaceholder(narrative)) {
+                        setApiStatus("Integration draft contains sensitive placeholders. Review before confirming.");
+                        return;
+                      }
+                      setIntegrationReviewed(true);
+                      setApiStatus("Integration draft marked as researcher-reviewed provisional synthesis.");
+                    }}
+                    onNoteChange={setIntegrationNote}
+                    units={confirmedMeaningUnits}
+                  />
                 )}
                   </div>
                   <ReviewerPanel
@@ -3025,7 +4233,7 @@ export function GdiqrWorkspace({
                       label: "CSV"
                     },
                     {
-                      description: "Readable transcript and analysis report.",
+                      description: "Readable transcript and draft-output report.",
                       format: "txt" as const,
                       label: "TXT"
                     }
@@ -3047,9 +4255,14 @@ export function GdiqrWorkspace({
                   ))}
                 </div>
                 <div className="mini-card soft">
-                  <span className="label">Audit trail</span>
+                  <span className="label">Review trail</span>
+                  <p className="small">
+                    Exports may contain AI-drafted material. Review all outputs
+                    against transcript evidence before using them in reports,
+                    publications, supervision, or teaching materials.
+                  </p>
                   {displayAuditEvents.length === 0 ? (
-                    <EmptyState text="No audit events yet. Upload, save, or run AI to start the trail." />
+                    <EmptyState text="No review-trail records yet. Upload, save, or request AI draft support to start the trail." />
                   ) : (
                     <div className="timeline">
                       {displayAuditEvents.map((event) => (
@@ -3148,7 +4361,52 @@ function ContextItem({
 }
 
 function isTranscriptConfirmed(project: Project) {
-  return project.status === "Transcript confirmed for analysis";
+  return (
+    project.status === "Transcript confirmed for analysis" ||
+    project.status === "Transcript confirmed for local analysis"
+  );
+}
+
+function buildLocalTranscriptSegment({
+  caseId,
+  createdBy = "manual",
+  segmentNumber,
+  splittingMode,
+  text,
+  topicLabel
+}: {
+  caseId: string;
+  createdBy?: "auto" | "manual";
+  segmentNumber: number;
+  splittingMode?: AutoSegmentMode;
+  text: string;
+  topicLabel?: string;
+}): TranscriptSegment {
+  return {
+    caseId,
+    createdBy,
+    endTimestamp: "00:00",
+    id: `local-seg-${String(segmentNumber).padStart(3, "0")}-${Date.now()}`,
+    segmentId: `SEG-${String(segmentNumber).padStart(3, "0")}`,
+    segmentNumber,
+    speakerInfo: "Local draft segment",
+    sourceTranscriptId: "active-transcript",
+    splittingMode,
+    startingMuNumber: (segmentNumber - 1) * 100 + 1,
+    startTimestamp: "00:00",
+    status: "Needs Review",
+    text,
+    topicLabel: topicLabel ?? `Segment ${segmentNumber}`
+  };
+}
+
+function renumberLocalSegments(segments: TranscriptSegment[]) {
+  return segments.map((segment, index) => ({
+    ...segment,
+    segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
+    segmentNumber: index + 1,
+    startingMuNumber: index * 100 + 1
+  }));
 }
 
 function canRunMeaningUnitsForSegment(segment: TranscriptSegment) {
@@ -3214,11 +4472,299 @@ function extractPrivacyReviewMarkers(transcript: string) {
   );
 }
 
+function hasUnresolvedPrivacyMarkers(transcript: string) {
+  return countUnresolvedPrivacyMarkers(transcript) > 0;
+}
+
+function countUnresolvedPrivacyMarkers(transcript: string) {
+  return transcript.match(/\[\[PRIVACY_REVIEW:[^\]]+\]\]/g)?.length ?? 0;
+}
+
+function buildSensitiveReviewItems(
+  transcript: string,
+  findings: string[],
+  existingItems: SensitiveReviewItem[] = []
+): SensitiveReviewItem[] {
+  const existingByKey = new Map(
+    existingItems.map((item) => [sensitiveItemKey(item), item])
+  );
+  const items: SensitiveReviewItem[] = [];
+  const markerCounters = new Map<string, number>();
+  const regex =
+    /\[\[(PRIVACY_REVIEW):([A-Z_ -]+):([^\]]+)\]\]|\[((?:PERSON|LOCATION|POSTCODE|CONTACT|ADDRESS|ORGANIZATION|ORGANISATION|INSTITUTION|HEALTH|FINANCIAL|IMMIGRATION|LEGAL|IDENTIFIER|DATE|OTHER_PRIVATE_DETAIL|THIRD_PARTY)[A-Z_]*_\d+)\]/g;
+
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(transcript)) !== null) {
+    const fullMatch = match[0];
+    const markerCategory = match[2];
+    const categoryKey = normaliseSensitiveCategory(
+      markerCategory ?? match[4] ?? "OTHER_PRIVATE_DETAIL"
+    );
+    const safePlaceholderCategory = safePlaceholderCategoryName(categoryKey);
+    const markerNumber = (markerCounters.get(safePlaceholderCategory) ?? 0) + 1;
+    markerCounters.set(safePlaceholderCategory, markerNumber);
+    const placeholder = match[4]
+      ? `[${match[4]}]`
+      : `[${safePlaceholderCategory}_${markerNumber}]`;
+    const metadata = sensitiveCategoryMetadata(categoryKey);
+    const startOffset = match.index;
+    const endOffset = match.index + fullMatch.length;
+    const base: SensitiveReviewItem = {
+      id: `sensitive-${items.length + 1}`,
+      placeholder,
+      category: metadata.label,
+      matchedText: fullMatch === placeholder ? undefined : fullMatch,
+      riskLevel: metadata.riskLevel,
+      replacementText: placeholder,
+      startOffset,
+      endOffset,
+      status: "pending",
+      explanation:
+        findMatchingPrivacyFinding(findings, fullMatch, placeholder) ??
+        metadata.explanation
+    };
+    const existing =
+      existingByKey.get(sensitiveItemKey(base)) ??
+      existingItems.find(
+        (item) =>
+          item.placeholder === base.placeholder &&
+          item.startOffset === base.startOffset
+      );
+    items.push(
+      existing
+        ? {
+            ...base,
+            ...existing,
+            matchedText: base.matchedText,
+            startOffset,
+            endOffset
+          }
+        : base
+    );
+  }
+
+  return items;
+}
+
+function safePlaceholderCategoryName(categoryKey: string) {
+  if (categoryKey === "IMMIGRATION_LEGAL") {
+    return "LEGAL_STATUS";
+  }
+  return categoryKey;
+}
+
+function prepareTranscriptForStorage(transcript: string) {
+  const markerCounters = new Map<string, number>();
+  return transcript.replace(
+    /\[\[PRIVACY_REVIEW:([A-Z_ -]+):[^\]]+\]\]/g,
+    (_marker, rawCategory: string) => {
+      const category = safePlaceholderCategoryName(
+        normaliseSensitiveCategory(rawCategory)
+      );
+      const nextNumber = (markerCounters.get(category) ?? 0) + 1;
+      markerCounters.set(category, nextNumber);
+      return `[${category}_${nextNumber}]`;
+    }
+  );
+}
+
+function serialiseSensitiveItemsForStorage(items: SensitiveReviewItem[]) {
+  return items.map(
+    ({
+      category,
+      endOffset,
+      explanation,
+      id,
+      placeholder,
+      replacementText,
+      riskLevel,
+      startOffset,
+      status
+    }) => ({
+      category,
+      endOffset,
+      explanation,
+      id,
+      placeholder,
+      replacementText,
+      riskLevel,
+      startOffset,
+      status
+    })
+  );
+}
+
+function sensitiveItemKey(item: SensitiveReviewItem) {
+  return `${item.placeholder}:${item.startOffset ?? ""}:${item.category}`;
+}
+
+function findMatchingPrivacyFinding(
+  findings: string[],
+  rawMarker: string,
+  placeholder: string
+) {
+  const finding = findings.find(
+    (finding) => finding.includes(rawMarker) || finding.includes(placeholder)
+  );
+  if (!finding) {
+    return undefined;
+  }
+  return finding.replace(/\[\[PRIVACY_REVIEW:[^\]]+\]\]/g, placeholder);
+}
+
+function normaliseSensitiveCategory(category: string) {
+  const upper = category.toUpperCase().replace(/[^A-Z]/g, "_");
+  if (upper.includes("PERSON") || upper.includes("THIRD_PARTY")) {
+    return "PERSON";
+  }
+  if (
+    upper.includes("LOCATION") ||
+    upper.includes("ADDRESS") ||
+    upper.includes("POSTCODE") ||
+    upper.includes("INSTITUTION") ||
+    upper.includes("ORGANIZATION") ||
+    upper.includes("ORGANISATION")
+  ) {
+    return upper.includes("POSTCODE")
+      ? "POSTCODE"
+      : upper.includes("ADDRESS")
+        ? "ADDRESS"
+        : upper.includes("ORGANIZATION") || upper.includes("ORGANISATION")
+          ? "ORGANIZATION"
+          : "LOCATION";
+  }
+  if (upper.includes("CONTACT") || upper.includes("EMAIL") || upper.includes("PHONE")) {
+    return "CONTACT";
+  }
+  if (upper.includes("HEALTH") || upper.includes("CLINICAL")) {
+    return "HEALTH";
+  }
+  if (upper.includes("FINANCIAL") || upper.includes("MONEY")) {
+    return "FINANCIAL";
+  }
+  if (upper.includes("IMMIGRATION") || upper.includes("LEGAL")) {
+    return "IMMIGRATION_LEGAL";
+  }
+  if (upper.includes("IDENTIFIER") || upper.includes("ID")) {
+    return "IDENTIFIER";
+  }
+  return "OTHER_PRIVATE_DETAIL";
+}
+
+function sensitiveCategoryMetadata(categoryKey: string): {
+  explanation: string;
+  label: string;
+  riskLevel: SensitiveRiskLevel;
+} {
+  const map: Record<
+    string,
+    { explanation: string; label: string; riskLevel: SensitiveRiskLevel }
+  > = {
+    PERSON: {
+      explanation: "May identify a participant, interviewer, or third-party person.",
+      label: "person name or third-party identifier",
+      riskLevel: "high"
+    },
+    LOCATION: {
+      explanation: "May reveal a specific location or institution.",
+      label: "location or institution",
+      riskLevel: "medium"
+    },
+    ADDRESS: {
+      explanation: "May reveal a specific address.",
+      label: "address",
+      riskLevel: "high"
+    },
+    POSTCODE: {
+      explanation: "May reveal a precise geographic area.",
+      label: "postcode",
+      riskLevel: "high"
+    },
+    ORGANIZATION: {
+      explanation: "May identify a workplace, school, service, or organisation.",
+      label: "organisation or institution",
+      riskLevel: "medium"
+    },
+    CONTACT: {
+      explanation: "May reveal direct contact details.",
+      label: "contact detail",
+      riskLevel: "high"
+    },
+    HEALTH: {
+      explanation: "May reveal sensitive health-related information.",
+      label: "health-related disclosure",
+      riskLevel: "high"
+    },
+    FINANCIAL: {
+      explanation: "May reveal sensitive financial detail.",
+      label: "financial detail",
+      riskLevel: "high"
+    },
+    IMMIGRATION_LEGAL: {
+      explanation: "May reveal immigration, legal, or status-related information.",
+      label: "immigration/legal detail",
+      riskLevel: "high"
+    },
+    IDENTIFIER: {
+      explanation: "May reveal an ID, account, social handle, or unique identifier.",
+      label: "identifier",
+      riskLevel: "high"
+    },
+    OTHER_PRIVATE_DETAIL: {
+      explanation: "May contain identifying or sensitive contextual detail.",
+      label: "other private detail",
+      riskLevel: "medium"
+    }
+  };
+
+  return map[categoryKey] ?? map.OTHER_PRIVATE_DETAIL;
+}
+
 function isFallbackCategory(category: CategoryNode): boolean {
   return (
     category.source === "fallback" ||
     category.id.startsWith("cat_fallback") ||
     Boolean(category.subcategories?.some(isFallbackCategory))
+  );
+}
+
+function markCategoriesResearcherConfirmed(
+  categories: CategoryNode[]
+): CategoryNode[] {
+  return categories.map((category) => ({
+    ...category,
+    source: "researcher_confirmed" as const,
+    subcategories: category.subcategories
+      ? markCategoriesResearcherConfirmed(category.subcategories)
+      : undefined
+  }));
+}
+
+function markCategoriesEditableDraft(categories: CategoryNode[]): CategoryNode[] {
+  return categories.map((category) => ({
+    ...category,
+    status: isFallbackCategory(category) ? "fallback_draft" : "needs_review",
+    subcategories: category.subcategories
+      ? markCategoriesEditableDraft(category.subcategories)
+      : undefined
+  }));
+}
+
+function formatCategoryStatus(status: NonNullable<CategoryNode["status"]>) {
+  const labels: Record<NonNullable<CategoryNode["status"]>, string> = {
+    ai_draft: "AI draft",
+    edited: "Edited",
+    confirmed: "Confirmed",
+    fallback_draft: "Fallback draft",
+    needs_review: "Needs review",
+    rejected: "Rejected"
+  };
+  return labels[status] ?? "Needs review";
+}
+
+function hasSensitivePlaceholder(text: string) {
+  return /\[(PERSON|CONTACT|LOCATION|POSTCODE|ADDRESS|IDENTIFIER|HEALTH|FINANCIAL|LEGAL_STATUS)_\d+\]/i.test(
+    text
   );
 }
 
@@ -3256,17 +4802,17 @@ function getCategoryRunDisabledReason({
 function getStepCopy(step: WorkflowStep) {
   switch (step) {
     case "upload":
-      return "Add an interview audio file or import an existing transcript. The transcript will be prepared for review before any analysis begins.";
+      return "Add an interview audio file or import an existing transcript. Use anonymised or approved data, then review the prepared transcript before requesting AI draft support.";
     case "transcript":
       return "Carefully check every speaker label and every sentence. Meaning-unit analysis depends on this transcript being accurate.";
     case "meaning-units":
-      return "Review each meaning unit before moving on. If a unit is assigned to the wrong speaker or the excerpt is wrong, return to the transcript, correct it, confirm again, and regenerate.";
+      return "Generate draft meaning units (MUs) from selected ready segments, then review each one. If a speaker or excerpt is wrong, correct the transcript and regenerate.";
     case "categories":
-      return "Build categories only after meaning units have been reviewed. Mode A starts construction, Mode B refines it, and Mode C integrates the final structure.";
+      return "Create category-level drafts only after meaning units have been reviewed. Mode A starts drafting, Mode B refines it, and Mode C creates an integration draft.";
     case "export":
-      return "Download the reviewed transcript, meaning units, categories, reviewer notes, and audit trail.";
+      return "Download the reviewed transcript, meaning units, category drafts, reviewer notes, and review trail. Exports may contain AI-drafted material.";
     default:
-      return "Set up the project and research question before importing data. GDIQR is used as the default analysis method.";
+      return "Set up the project and research question before importing data. Current workflow: GDI-QR-informed researcher-led analysis support.";
   }
 }
 
@@ -3441,6 +4987,127 @@ function csvEscape(value: string) {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
+function SensitiveReviewCard({
+  isActive,
+  item,
+  onApplyConsistent,
+  onConfirm,
+  onEdit,
+  onFocus,
+  onIgnore
+}: {
+  isActive: boolean;
+  item: SensitiveReviewItem;
+  onApplyConsistent: (item: SensitiveReviewItem) => void;
+  onConfirm: (item: SensitiveReviewItem) => void;
+  onEdit: (item: SensitiveReviewItem) => void;
+  onFocus: (item: SensitiveReviewItem) => void;
+  onIgnore: (item: SensitiveReviewItem) => void;
+}) {
+  return (
+    <article className={`sensitive-card ${isActive ? "active" : ""}`}>
+      <button
+        className="sensitive-card-main"
+        onClick={() => onFocus(item)}
+        type="button"
+      >
+        <span className={`sensitive-chip ${riskClass(item.riskLevel)}`}>
+          {item.placeholder}
+        </span>
+        <span>{item.category}</span>
+        <StatusBadge label={`${item.riskLevel} risk`} />
+        <StatusBadge label={item.status} />
+      </button>
+      <p className="small">{item.explanation}</p>
+      <div className="button-row">
+        <button className="button" onClick={() => onConfirm(item)} type="button">
+          Confirm
+        </button>
+        <button className="button" onClick={() => onEdit(item)} type="button">
+          Edit label
+        </button>
+        <button className="button" onClick={() => onIgnore(item)} type="button">
+          Ignore
+        </button>
+        <button
+          className="button"
+          onClick={() => onApplyConsistent(item)}
+          type="button"
+        >
+          Apply consistently
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function SensitiveTranscriptPreview({
+  activeItemId,
+  items,
+  onSelect,
+  transcript
+}: {
+  activeItemId: string;
+  items: SensitiveReviewItem[];
+  onSelect: (item: SensitiveReviewItem) => void;
+  transcript: string;
+}) {
+  if (!items.length) {
+    return (
+      <div className="transcript-highlight-preview">
+        <p className="small">No detected placeholders in the current transcript.</p>
+      </div>
+    );
+  }
+
+  const sortedItems = [...items]
+    .filter(
+      (item) =>
+        typeof item.startOffset === "number" &&
+        typeof item.endOffset === "number"
+    )
+    .sort((left, right) => (left.startOffset ?? 0) - (right.startOffset ?? 0));
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+
+  sortedItems.forEach((item) => {
+    const start = item.startOffset ?? cursor;
+    const end = item.endOffset ?? start + item.placeholder.length;
+    if (start < cursor) {
+      return;
+    }
+    if (start > cursor) {
+      parts.push(
+        <span key={`${item.id}-text-before`}>{transcript.slice(cursor, start)}</span>
+      );
+    }
+    parts.push(
+      <button
+        className={`sensitive-highlight ${riskClass(item.riskLevel)} ${
+          item.id === activeItemId ? "active" : ""
+        }`}
+        key={item.id}
+        onClick={() => onSelect(item)}
+        title={`${item.category}: ${item.explanation}`}
+        type="button"
+      >
+        {transcript.slice(start, end)}
+      </button>
+    );
+    cursor = end;
+  });
+
+  if (cursor < transcript.length) {
+    parts.push(<span key="tail">{transcript.slice(cursor)}</span>);
+  }
+
+  return <div className="transcript-highlight-preview">{parts}</div>;
+}
+
+function riskClass(riskLevel: SensitiveRiskLevel) {
+  return `risk-${riskLevel}`;
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) {
     return `${bytes} B`;
@@ -3523,7 +5190,7 @@ function ReviewerPanel({
     <aside className={`review-panel ${isOpen ? "" : "collapsed"}`}>
       <div className="category-header">
         <div>
-          <span className="badge blue">Protocol check</span>
+          <span className="badge blue">Reviewer check</span>
           <h3>{title}</h3>
           <p className="small">{reviewSummaryText(issues, warningCount, majorCount)}</p>
         </div>
@@ -3551,9 +5218,9 @@ function ReviewerPanel({
             )}
           </div>
           {issues.length === 0 ? (
-            <EmptyState text="Review not yet run. Use this as a lightweight GDIQR audit after AI output is available." />
+            <EmptyState text="Review not yet run. Reviewer checks flag possible issues; the researcher decides how to resolve them." />
           ) : activeIssues.length === 0 ? (
-            <EmptyState text="No active review issues. Dismissed and resolved items remain in the audit trail." />
+            <EmptyState text="No active review issues. Dismissed and resolved items remain in the review trail." />
           ) : (
             Object.entries(groupedIssues).map(([group, groupIssues]) => (
               <div className="review-group" key={group}>
@@ -3675,8 +5342,38 @@ function reviewerGroupLabel(issueType: string) {
   return "Rule compliance";
 }
 
-function CategoryBlock({ category }: { category: CategoryNode }) {
+function CategoryBlock({
+  categories,
+  category,
+  onAssignUnit,
+  onConfirm,
+  onDelete,
+  onMerge,
+  onReject,
+  onRemoveUnit,
+  onUpdate,
+  units
+}: {
+  categories: CategoryNode[];
+  category: CategoryNode;
+  onAssignUnit: (unitNumber: number, categoryId: string) => void;
+  onConfirm: (categoryId: string) => void;
+  onDelete: (category: CategoryNode) => void;
+  onMerge: (category: CategoryNode) => void;
+  onReject: (category: CategoryNode) => void;
+  onRemoveUnit: (categoryId: string, unitNumber: number) => void;
+  onUpdate: (categoryId: string, updates: Partial<CategoryNode>) => void;
+  units: MeaningUnit[];
+}) {
   const isFallback = isFallbackCategory(category);
+  const includedUnits = units.filter((unit) =>
+    category.includedUnitIds.includes(unit.number)
+  );
+  const statusLabel = category.status
+    ? formatCategoryStatus(category.status)
+    : isFallback
+      ? "Fallback draft"
+      : "AI draft";
   return (
     <article
       className={`category ${isFallback ? "temporary-draft" : ""}`}
@@ -3684,15 +5381,115 @@ function CategoryBlock({ category }: { category: CategoryNode }) {
     >
       <div className="category-header">
         <div>
-          <h3 className="category-title">{category.name}</h3>
-          <p className="small">{category.definition}</p>
+          <label className="label" htmlFor={`${category.id}-name`}>
+            Category title
+          </label>
+          <input
+            className="field category-title-input"
+            id={`${category.id}-name`}
+            onChange={(event) =>
+              onUpdate(category.id, { name: event.target.value })
+            }
+            value={category.name}
+          />
         </div>
         <div className="button-row">
-          {isFallback && <span className="badge warning">Fallback draft</span>}
+          <StatusBadge label={statusLabel} />
+          {isFallback && <span className="badge warning">Requires review</span>}
           <span className="badge">
             Units {category.includedUnitIds.join(", ")}
           </span>
         </div>
+      </div>
+      <label className="label" htmlFor={`${category.id}-definition`}>
+        Category description
+      </label>
+      <textarea
+        className="textarea compact-textarea"
+        id={`${category.id}-definition`}
+        onChange={(event) =>
+          onUpdate(category.id, { definition: event.target.value })
+        }
+        value={category.definition}
+      />
+      {category.rationale && (
+        <p className="small">
+          <strong>Draft rationale:</strong> {category.rationale}
+        </p>
+      )}
+      {isFallback && (
+        <p className="small">
+          This category was created by fallback grouping because the AI returned
+          empty output. Please review and rename before using it.
+        </p>
+      )}
+      <details className="evidence-panel" open>
+        <summary>View supporting evidence ({includedUnits.length} MU)</summary>
+        {includedUnits.length === 0 ? (
+          <EmptyState text="No meaning units assigned. Assign at least one MU before confirming this category." />
+        ) : (
+          <div className="evidence-list">
+            {includedUnits.map((unit) => (
+              <div className="evidence-item" key={unit.id}>
+                <div>
+                  <strong>MU #{unit.number}</strong>{" "}
+                  <span className="badge blue">{unit.segmentId}</span>
+                  <p className="small">{unit.humanSummary || unit.aiSummary}</p>
+                  <p className="small">Evidence: {unit.excerpt}</p>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="button"
+                    onClick={() => onRemoveUnit(category.id, unit.number)}
+                    type="button"
+                  >
+                    Remove from category
+                  </button>
+                  <select
+                    className="select compact"
+                    onChange={(event) => {
+                      if (event.target.value) {
+                        onAssignUnit(unit.number, event.target.value);
+                      }
+                    }}
+                    value=""
+                  >
+                    <option value="">Move to...</option>
+                    {categories
+                      .filter((item) => item.id !== category.id)
+                      .map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </details>
+      <div className="button-row">
+        <button
+          className="button primary"
+          onClick={() => onConfirm(category.id)}
+          type="button"
+        >
+          Confirm category
+        </button>
+        <button className="button" onClick={() => onMerge(category)} type="button">
+          Merge category
+        </button>
+        <button className="button" onClick={() => onReject(category)} type="button">
+          Reject
+        </button>
+        <button
+          className="button danger"
+          onClick={() => onDelete(category)}
+          type="button"
+        >
+          Delete
+        </button>
       </div>
       {category.subcategories && category.subcategories.length > 0 && (
         <div className="subcategories">
@@ -3708,5 +5505,163 @@ function CategoryBlock({ category }: { category: CategoryNode }) {
         </div>
       )}
     </article>
+  );
+}
+
+function UnassignedMeaningUnits({
+  categories,
+  onAssign,
+  onCreateCategory,
+  units
+}: {
+  categories: CategoryNode[];
+  onAssign: (unitNumber: number, categoryId: string) => void;
+  onCreateCategory: (unitNumbers?: number[]) => void;
+  units: MeaningUnit[];
+}) {
+  return (
+    <div className="mini-card soft">
+      <div className="category-header">
+        <div>
+          <span className="label">Unassigned meaning units</span>
+          <p className="small">
+            These confirmed MUs are not currently linked to a category. Assign
+            them, create a new category, or leave them unassigned with a
+            researcher note.
+          </p>
+        </div>
+        <button
+          className="button"
+          disabled={units.length === 0}
+          onClick={() => onCreateCategory(units.map((unit) => unit.number))}
+          type="button"
+        >
+          Create category from all unassigned
+        </button>
+      </div>
+      {units.length === 0 ? (
+        <EmptyState text="No unassigned confirmed MUs." />
+      ) : (
+        <div className="evidence-list">
+          {units.map((unit) => (
+            <div className="evidence-item" key={unit.id}>
+              <div>
+                <strong>MU #{unit.number}</strong>{" "}
+                <span className="badge blue">{unit.segmentId}</span>
+                <p className="small">{unit.humanSummary || unit.aiSummary}</p>
+              </div>
+              <select
+                className="select compact"
+                onChange={(event) => {
+                  if (event.target.value) {
+                    onAssign(unit.number, event.target.value);
+                  }
+                }}
+                value=""
+              >
+                <option value="">Assign to category...</option>
+                {categories
+                  .filter((category) => category.status !== "rejected")
+                  .map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IntegrationDraftPanel({
+  categories,
+  integrationNote,
+  integrationReviewed,
+  narrative,
+  onChangeNarrative,
+  onConfirm,
+  onNoteChange,
+  units
+}: {
+  categories: CategoryNode[];
+  integrationNote: string;
+  integrationReviewed: boolean;
+  narrative: string;
+  onChangeNarrative: (value: string) => void;
+  onConfirm: () => void;
+  onNoteChange: (value: string) => void;
+  units: MeaningUnit[];
+}) {
+  const linkedUnits = units.filter((unit) =>
+    categories.some((category) => category.includedUnitIds.includes(unit.number))
+  );
+  return (
+    <div className="mini-card soft">
+      <div className="category-header">
+        <div>
+          <span className="label">Mode C integration review workspace</span>
+          <h3>Editable provisional integration draft</h3>
+          <p className="small">
+            Mode C is an integration aid, not a final analysis. Review the
+            structure, interpretation, evidence, and limitations before using
+            this draft.
+          </p>
+        </div>
+        <StatusBadge
+          label={integrationReviewed ? "Confirmed by researcher" : "Needs review"}
+        />
+      </div>
+      <textarea
+        className="textarea integration-textarea"
+        id="integrated-narrative"
+        onChange={(event) => onChangeNarrative(event.target.value)}
+        placeholder="Write or generate a cautious integration draft. Example: In this transcript, the participant described..."
+        value={narrative}
+      />
+      <label className="label" htmlFor="integration-note">
+        Researcher note
+      </label>
+      <textarea
+        className="textarea compact-textarea"
+        id="integration-note"
+        onChange={(event) => onNoteChange(event.target.value)}
+        placeholder="Add decisions, cautions, or reviewer follow-up notes."
+        value={integrationNote}
+      />
+      <details className="evidence-panel">
+        <summary>View linked category and MU evidence</summary>
+        <div className="evidence-list">
+          {categories.map((category) => (
+            <div className="evidence-item" key={category.id}>
+              <div>
+                <strong>{category.name}</strong>
+                <p className="small">{category.definition}</p>
+                <p className="small">
+                  Linked MUs: {category.includedUnitIds.join(", ") || "None"}
+                </p>
+              </div>
+            </div>
+          ))}
+          <p className="small">
+            Evidence coverage: {linkedUnits.length} linked MU
+            {linkedUnits.length === 1 ? "" : "s"}.
+          </p>
+        </div>
+      </details>
+      <div className="mini-card warning-card">
+        <strong>Mode C caution</strong>
+        <p className="small">
+          This draft is based on one transcript workspace. Avoid claims such as
+          "mindfulness improves all students" or causal/clinical statements.
+          Prefer wording like "in this account, the participant described...".
+        </p>
+      </div>
+      <button className="button primary" onClick={onConfirm} type="button">
+        I reviewed evidence and confirm this provisional draft
+      </button>
+    </div>
   );
 }

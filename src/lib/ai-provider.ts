@@ -181,7 +181,7 @@ async function generateMeaningUnitsForChunk({
       {
         role: "user",
         content: `/no_think
-Create GDIQR meaning units from this reviewed transcript segment.
+Create GDI-QR-informed draft meaning units from this reviewed transcript segment.
 
 Rules:
 - Preserve participant meaning closely.
@@ -351,7 +351,7 @@ export async function generateCategories(
       structuralModel: "",
       integratedNarrative:
         input.mode === "C"
-          ? "Local fallback created a draft category grouping only. Please write or revise the integrated narrative after reviewing the categories."
+          ? buildFallbackIntegrationNarrative(categories, input.units)
           : "",
       isFallbackDraft: true,
       uncertainties: [
@@ -359,6 +359,40 @@ export async function generateCategories(
       ]
     };
   }
+}
+
+function buildFallbackIntegrationNarrative(
+  categories: CategoryNode[],
+  units: MeaningUnit[]
+) {
+  const categoryLines = categories
+    .map((category) => {
+      const linkedUnits = units.filter((unit) =>
+        category.includedUnitIds.includes(unit.number)
+      );
+      const evidence = linkedUnits
+        .slice(0, 2)
+        .map((unit) => `MU #${unit.number}: ${unit.humanSummary || unit.aiSummary}`)
+        .join("; ");
+      return `- ${category.name}: ${category.definition}${evidence ? ` Evidence: ${evidence}` : ""}`;
+    })
+    .join("\n");
+
+  return [
+    "Brief overview:",
+    "This fallback integration draft is a placeholder created because the local AI did not return usable Mode C output. It should be treated only as an editable starting point for researcher review.",
+    "",
+    "Key categories to review:",
+    categoryLines || "- No reviewed categories are available yet.",
+    "",
+    "Provisional interpretation:",
+    "Within this transcript, the participant's account should be synthesised cautiously from the confirmed meaning units and reviewed categories only. Rewrite this section after checking the supporting evidence.",
+    "",
+    "Methodological cautions:",
+    "- This draft is based on one transcript workspace and should not be treated as generalisable evidence.",
+    "- Avoid clinical, causal, or broad claims unless directly supported by the participant's account.",
+    "- Check that no sensitive placeholders or identifiers appear in analytic claims."
+  ].join("\n");
 }
 
 export async function generateReviewer(
@@ -475,23 +509,30 @@ function buildCategoryGenerationPrompt(input: CategoryInput) {
 - Do not produce narrative integration.`
       : input.mode === "B"
         ? `MODE B - Category Expansion and Refinement
+- Mode B generates provisional analytic groupings from confirmed meaning units. These are draft categories for researcher review, not findings.
 - Use the existing category system as the starting point.
 - Compare each confirmed summary against existing categories/subcategories.
 - Decide whether each summary fits, requires a new category/subcategory, or suggests merging/redefining categories.
 - Explicitly report structural changes in categoryRevisions.
 - Maintain parsimony and avoid category proliferation.
+- Generate concise analytic titles, not raw transcript openings.
+- Avoid greetings, names, identifiers, sensitive placeholders, interviewer questions, or identity details in category titles.
+- Include brief rationale and confidence when possible.
 - Do not produce narrative integration.`
-        : `MODE C - Final Integration
+        : `MODE C - Provisional Integration Draft
 - Use only after the researcher has confirmed all segments in this transcript have been processed and reviewed.
 - Review the full category system globally for coherence and parsimony.
-- Finalise a hierarchical structure, normally 3-6 levels at most.
+- Produce a provisional integration draft, not a final report.
+- Use cautious wording such as "in this transcript", "the participant described", and "this account suggests".
+- Do not make clinical, causal, or general claims about all students.
+- Mention limitations, tensions, exceptions, and methodological cautions.
 - Produce integratedNarrative that answers the research question, explains central patterns, identifies tensions/contradictions, and notes interpretative limits.
 - Do not introduce new categories unless essential for coherence.`;
 
   return `/no_think
-You are a qualitative research assistant using a Generic Descriptive-Interpretive qualitative research approach (GDIQR).
+You are a qualitative research assistant providing draft support within a GDI-QR-informed generic descriptive-interpretive qualitative research workflow.
 
-Task: Construct, refine, or integrate a category system using constant comparison across confirmed meaning-unit summaries.
+Task: Draft, refine, or integrate category-level material using constant comparison across researcher-confirmed meaning-unit summaries.
 
 ${modeInstructions}
 
@@ -500,6 +541,7 @@ Global rules:
 - Do not return to raw transcript text.
 - Do not introduce external theory or general world knowledge.
 - Categories must address the research question and say something substantive.
+- Category titles must be concise analytic labels. Do not use raw transcript greetings, names, identifiers, privacy placeholders, or interviewer wording as titles.
 - Avoid categories that merely repeat interview questions or broad domains.
 - Avoid redundant, trivial, or overly numerous categories.
 - Subcategories must reflect conceptual distinctions, not minor wording differences.
@@ -514,6 +556,9 @@ Return JSON in this shape:
       "name": "category name",
       "definition": "category definition",
       "includedUnitIds": [1, 2],
+      "rationale": "brief reason these MUs belong together",
+      "confidence": "low | medium | high",
+      "status": "ai_draft",
       "subcategories": [
         {
           "name": "subcategory name",
@@ -549,12 +594,12 @@ ${input.units
 
 function buildMeaningUnitReviewerPrompt(input: ReviewerInput) {
   return `/no_think
-You are a GDIQR reviewer agent. Your task is to audit the AI-generated Meaning Units + Summaries against the GDIQR protocol.
+You are a reviewer-check assistant for a GDI-QR-informed workflow. Your task is to flag possible issues in the AI-drafted meaning units and summaries so the researcher can review them.
 
 You are NOT generating new analysis.
 You are NOT creating categories or themes.
 You are NOT integrating findings.
-You are only checking whether the current output follows the protocol.
+You are not deciding validity. You are only flagging possible issues such as weak grounding, over-interpretation, uncertainty, or poor fit with this workflow stage.
 
 Check:
 1. Use only provided transcript segment.
@@ -605,12 +650,12 @@ ${input.units
 
 function buildCategoryReviewerPrompt(input: ReviewerInput) {
   return `/no_think
-You are a GDIQR category reviewer agent. Your task is to audit the category construction, refinement, or final integration output against GDIQR rules.
+You are a reviewer-check assistant for GDI-QR-informed category-level drafting. Your task is to flag possible issues in category construction, refinement, or integration drafts so the researcher can review them.
 
 You are NOT generating a new category system unless asked.
 You are NOT creating new findings.
 You are NOT returning to the raw transcript.
-You are only checking whether the category output follows the selected mode.
+You are not deciding validity. You are only checking whether the category-level draft fits the selected mode and remains grounded in confirmed meaning-unit summaries.
 
 Check based on mode:
 
@@ -630,6 +675,10 @@ Mode B:
 - Overlapping categories are merged where appropriate.
 - Definitions are revised when needed.
 - Category proliferation is avoided.
+- Category titles are analytic labels, not raw transcript phrases, names, greetings, privacy placeholders, or interviewer questions.
+- Included MU summaries fit the category title and definition.
+- Weak categories based on a single thin or ambiguous MU are flagged for human review.
+- Unassigned or mismatched MUs are flagged so the researcher can reassign, split, merge, or remove them.
 - No integrated narrative is produced.
 
 Mode C:
@@ -638,6 +687,10 @@ Mode C:
 - Final structure is coherent and parsimonious.
 - Integrated narrative answers the research question.
 - Central patterns, tensions, contradictions, and interpretative limits are included.
+- Claims are cautious and grounded in this transcript only.
+- The narrative avoids clinical, causal, or general claims unless they are directly supported by confirmed MUs.
+- Tensions, negative cases, uncertainty, and evidence limits are identified.
+- Sensitive placeholders or identifiable details are not repeated in analytic claims.
 - No external theory is introduced.
 - No raw transcript is used.
 - New categories are not introduced unless essential.
@@ -709,8 +762,8 @@ Prepare this raw interview transcript chunk for qualitative analysis.
 Tasks:
 1. Separate speech into turns labelled exactly "Interviewer:" and "Participant:".
 2. Infer speakers conservatively from questions, answers, greetings, and interview flow. If uncertain, choose the most likely label and add a short speakerNotes item.
-3. Detect privacy-sensitive information, including specific person names, exact addresses, local place names, workplaces, schools, organizations, phone numbers, emails, IDs, social handles, URLs, and highly identifying rare details.
-4. For high-confidence direct identifiers, replace with stable bracket placeholders, for example [PERSON_1], [LOCATION_1], [ORGANIZATION_1], [CONTACT_1], [IDENTIFIER_1], [DATE_1], [OTHER_PRIVATE_DETAIL_1].
+3. Detect privacy-sensitive information, including specific person names, third-party identifiers, exact addresses, postcodes, local place names, workplaces, schools, organizations, phone numbers, emails, IDs, social handles, URLs, health-related disclosures, immigration/legal details, financial details, and highly identifying rare details.
+4. For high-confidence direct identifiers or sensitive details, replace with stable bracket placeholders, for example [PERSON_1], [LOCATION_1], [POSTCODE_1], [ORGANIZATION_1], [CONTACT_1], [HEALTH_1], [FINANCIAL_1], [IMMIGRATION_1], [LEGAL_1], [IDENTIFIER_1], [DATE_1], [OTHER_PRIVATE_DETAIL_1].
 5. For uncertain possible names or details that may need human review, keep the text but wrap it inline as [[PRIVACY_REVIEW:TYPE:original text]], for example "谢谢[[PRIVACY_REVIEW:PERSON:Sam]]". Add a privacyFindings note for each marker.
 6. Do not summarize, translate, add new content, or remove research meaning.
 7. Preserve the original interview language: ${language}.
@@ -776,7 +829,7 @@ function systemMessage(): OllamaMessage {
   return {
     role: "system",
     content:
-      "You are a careful qualitative analysis assistant specialized in Generic Descriptive-Interpretive Qualitative Research (GDIQR). Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought."
+      "You are a careful qualitative research assistant providing draft support within a GDI-QR-informed generic descriptive-interpretive workflow. Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought."
   };
 }
 
@@ -1130,53 +1183,105 @@ function normalizeCategories(
   source: CategoryNode["source"] = "ai"
 ): CategoryNode[] {
   return items
-    .map((item, index) => ({
-      id: `cat_ai_${String(index + 1).padStart(3, "0")}`,
-      name: cleanText(item.name) || `Category ${index + 1}`,
-      definition: cleanText(item.definition),
-      includedUnitIds: numberArray(item.includedUnitIds),
-      source,
-      subcategories: normalizeCategories(item.subcategories ?? [], source)
-    }))
+    .map((item, index): CategoryNode => {
+      const status: CategoryNode["status"] =
+        source === "fallback" ? "fallback_draft" : "ai_draft";
+      return {
+        id: `cat_ai_${String(index + 1).padStart(3, "0")}`,
+        confidence: normalizeConfidence(item.confidence),
+        name:
+          safeCategoryTitle(cleanText(item.name), index + 1) ||
+          `Draft category ${index + 1}: Needs researcher review`,
+        definition:
+          cleanText(item.definition) ||
+          "AI-drafted category definition. Review and edit before using.",
+        includedUnitIds: numberArray(item.includedUnitIds),
+        rationale: cleanText(item.rationale),
+        source,
+        status,
+        subcategories: normalizeCategories(item.subcategories ?? [], source)
+      };
+    })
     .map((item) =>
-      item.subcategories.length ? item : { ...item, subcategories: undefined }
+      item.subcategories?.length ? item : { ...item, subcategories: undefined }
     );
 }
 
 function fallbackCategoriesFromUnits(units: MeaningUnit[]): CategoryNode[] {
-  const topLevelCount = Math.min(4, Math.max(2, Math.ceil(units.length / 4)));
-  const groupSize = Math.ceil(units.length / topLevelCount);
+  const themes = inferFallbackThemeGroups(units);
   const categories: CategoryNode[] = [];
 
-  for (let index = 0; index < units.length; index += groupSize) {
-    const group = units.slice(index, index + groupSize);
-    const firstSummary = group[0]?.humanSummary || group[0]?.aiSummary || "";
-    const name = fallbackCategoryName(firstSummary, categories.length + 1);
+  themes.forEach((group) => {
     categories.push({
       id: `cat_fallback_${String(categories.length + 1).padStart(3, "0")}`,
-      name,
+      name: `Draft category ${categories.length + 1}: ${group.title}`,
       definition:
-        "Draft grouping from confirmed meaning-unit summaries; review and refine.",
-      includedUnitIds: group.map((unit) => unit.number),
-      source: "fallback"
+        "This category was created by fallback grouping because the AI returned empty output. Please review and rename before using it.",
+      confidence: "low",
+      includedUnitIds: group.units.map((unit) => unit.number),
+      rationale:
+        "Fallback grouping based on broad wording patterns in confirmed meaning-unit summaries.",
+      source: "fallback",
+      status: "fallback_draft"
     });
-  }
+  });
 
   return categories;
 }
 
-function fallbackCategoryName(summary: string, index: number) {
-  const cleaned = cleanText(summary).replace(/\s+/g, " ");
-  if (!cleaned) {
-    return `Draft category ${index}`;
+function inferFallbackThemeGroups(units: MeaningUnit[]) {
+  const buckets: Array<{ keywords: RegExp; title: string; units: MeaningUnit[] }> = [
+    { keywords: /stress|anxiety|worry|pause|react|calm|压力|焦虑|紧张/i, title: "Stress and anxiety management", units: [] },
+    { keywords: /concentration|focus|study|reading|task|distraction|attention|学习|专注|阅读/i, title: "Concentration and study habits", units: [] },
+    { keywords: /self-awareness|self awareness|self-compassion|self compassion|self-critic|ask for help|自我觉察|自我关怀|自责/i, title: "Self-awareness and self-compassion", units: [] },
+    { keywords: /limit|challenge|difficult|recommend|magic solution|uncomfortable|impatient|限制|挑战|困难|建议/i, title: "Limits and challenges of mindfulness", units: [] }
+  ];
+  const reviewBucket = { title: "Needs researcher review", units: [] as MeaningUnit[] };
+
+  units.forEach((unit) => {
+    const summary = `${unit.humanSummary || unit.aiSummary} ${unit.excerpt}`;
+    const bucket = buckets.find((item) => item.keywords.test(summary));
+    if (bucket) {
+      bucket.units.push(unit);
+    } else {
+      reviewBucket.units.push(unit);
+    }
+  });
+
+  const used = buckets
+    .filter((bucket) => bucket.units.length > 0)
+    .map(({ title, units }) => ({ title, units }));
+  if (reviewBucket.units.length > 0) {
+    used.push(reviewBucket);
+  }
+  if (used.length > 0) {
+    return used;
   }
 
-  const words = cleaned.split(" ").filter(Boolean);
-  if (words.length > 1) {
-    return `Draft category ${index}: ${words.slice(0, 6).join(" ")}`;
-  }
+  const topLevelCount = Math.min(4, Math.max(2, Math.ceil(units.length / 4)));
+  const groupSize = Math.ceil(units.length / topLevelCount);
+  return Array.from({ length: topLevelCount }, (_item, index) => ({
+    title: "Needs researcher review",
+    units: units.slice(index * groupSize, (index + 1) * groupSize)
+  })).filter((group) => group.units.length > 0);
+}
 
-  return `Draft category ${index}: ${cleaned.slice(0, 18)}`;
+function safeCategoryTitle(title: string, index: number) {
+  const cleaned = title.replace(/\s+/g, " ").trim();
+  if (
+    !cleaned ||
+    /^(sure|my name is|i am|thank you|interviewer|participant said|interviewer asked)\b/i.test(cleaned) ||
+    /\[(PERSON|CONTACT|LOCATION|POSTCODE|ADDRESS|IDENTIFIER)_\d+\]/i.test(cleaned)
+  ) {
+    return `Draft category ${index}: Needs researcher review`;
+  }
+  return cleaned.slice(0, 90);
+}
+
+function normalizeConfidence(value: unknown): CategoryNode["confidence"] {
+  return value === "low" || value === "medium" || value === "high"
+    ? value
+    : undefined;
 }
 
 function normalizeReviewerComments(
@@ -1202,7 +1307,8 @@ function normalizeReviewerComments(
         cleanText(item.targetId) ||
         cleanText(item.target) ||
         `${workspace === "categories" ? "category" : "MU"}-${index + 1}`;
-      const issueType = cleanText(item.issueType) || cleanText(item.agent) || "Protocol check";
+      const issueType =
+        cleanText(item.issueType) || cleanText(item.agent) || "Reviewer check";
       const shortTitle =
         cleanText((item as { shortTitle?: string }).shortTitle) || issueType;
 
@@ -1210,8 +1316,8 @@ function normalizeReviewerComments(
         id: `rev_ai_${String(index + 1).padStart(3, "0")}`,
         agent:
           workspace === "categories"
-            ? "GDIQR Category Review"
-            : "GDIQR Meaning Units Review",
+            ? "GDI-QR Category Review"
+            : "GDI-QR Meaning Units Review",
         target: `${targetType}:${targetId}`,
         targetType,
         targetId,

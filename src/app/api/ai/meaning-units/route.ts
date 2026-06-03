@@ -5,6 +5,8 @@ import {
   finishRunLog,
   startRunLog
 } from "@/lib/run-logs";
+import { getStorageMode } from "@/lib/storage-mode";
+import type { Project } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -112,9 +114,31 @@ async function runMeaningUnitGeneration({
       import("@/lib/ai-provider"),
       import("@/lib/gdiqr-repository")
     ]);
-    addRunEvent(runId, "Loading workspace from Supabase");
-    const workspace = await repository.getWorkspace(projectId);
-    const sourceTranscript = transcript ?? workspace.transcript;
+    const storageMode = getStorageMode();
+    const workspace =
+      storageMode === "supabase" ? await repository.getWorkspace(projectId) : null;
+    const sourceTranscript = transcript ?? workspace?.transcript ?? "";
+    if (!sourceTranscript.trim()) {
+      throw new Error("No transcript text was provided for meaning-unit generation.");
+    }
+    const project: Project =
+      workspace?.project ?? {
+        id: projectId,
+        language: "English",
+        lightInterpretation: Boolean(lightInterpretation),
+        protocol: "GDIQR",
+        researchQuestion: "",
+        status: "Local-only draft workspace",
+        studyDescription: "",
+        title: "Local-only prototype workspace",
+        updatedAt: new Date().toISOString()
+      };
+    addRunEvent(
+      runId,
+      storageMode === "supabase"
+        ? "Loaded workspace from Supabase"
+        : "Using request transcript in local-only mode; no Supabase write will be made"
+    );
     addRunEvent(
       runId,
       `Starting background meaning-unit job (${sourceTranscript.length} chars)`
@@ -122,8 +146,8 @@ async function runMeaningUnitGeneration({
     const startedAt = Date.now();
     const result = await generateMeaningUnits({
       lightInterpretation:
-        lightInterpretation ?? workspace.project.lightInterpretation,
-      project: workspace.project,
+        lightInterpretation ?? project.lightInterpretation,
+      project,
       runId,
       caseId,
       abortSignal,
@@ -135,6 +159,16 @@ async function runMeaningUnitGeneration({
       runId,
       `Ollama meaning-unit generation finished in ${formatDuration(Date.now() - startedAt)}`
     );
+
+    if (storageMode !== "supabase") {
+      addRunEvent(runId, "Meaning units returned to browser state only");
+      finishRunLog(runId);
+      return {
+        meaningUnits: result.meaningUnits,
+        persisted: false,
+        provider: result.provider
+      };
+    }
 
     addRunEvent(runId, `Saving ${result.meaningUnits.length} meaning units`);
     const saveResult = segmentId

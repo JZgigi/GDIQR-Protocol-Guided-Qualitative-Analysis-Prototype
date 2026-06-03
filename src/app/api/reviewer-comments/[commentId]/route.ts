@@ -3,6 +3,7 @@ import {
   defaultProjectId,
   updateReviewerComment
 } from "@/lib/gdiqr-repository";
+import { isLocalStorageMode } from "@/lib/storage-mode";
 import type { ReviewerIssueStatus } from "@/lib/types";
 
 export async function PATCH(
@@ -17,6 +18,15 @@ export async function PATCH(
   };
 
   try {
+    if (isLocalStorageMode()) {
+      return NextResponse.json({
+        saved: false,
+        persisted: false,
+        reason:
+          "Local-only mode stores reviewer issue edits in browser state, not Supabase."
+      });
+    }
+
     const result = await updateReviewerComment({
       commentId,
       memo: body.memo,

@@ -28,7 +28,7 @@ On macOS, the desktop app may already keep the service running at:
 http://localhost:11434
 ```
 
-## 2. Pull the first local analysis model
+## 2. Pull the first local draft-support model
 
 Start with the smaller model first:
 
@@ -36,7 +36,7 @@ Start with the smaller model first:
 ollama pull qwen3:8b
 ```
 
-If your machine has enough memory and you want stronger qualitative-analysis output later:
+If your machine has enough memory and you want stronger draft-support output later:
 
 ```bash
 ollama pull qwen3:14b
@@ -88,7 +88,7 @@ No new Supabase tables are required just to start local AI text generation.
 The next useful Supabase additions are:
 
 - `ai_runs`: store prompt, provider, model, route, status, latency, and token estimates.
-- `prompt_templates`: version prompts for GDIQR meaning units, category construction, and reviewers.
+- `prompt_templates`: version prompts for GDI-QR-informed meaning units, category-level drafting, and reviewer checks.
 - `audio_files` and `transcription_jobs`: track audio upload and local Whisper work.
 
 Do not store raw service-role keys, local model logs, or sensitive transcript snippets in public client state.

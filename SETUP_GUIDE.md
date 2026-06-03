@@ -58,7 +58,7 @@ From this folder:
 ```bash
 git init
 git add .
-git commit -m "Create phase 1 GDIQR prototype"
+git commit -m "Create phase 1 GDI-QR-informed prototype"
 ```
 
 Create an empty GitHub repository, then connect it:

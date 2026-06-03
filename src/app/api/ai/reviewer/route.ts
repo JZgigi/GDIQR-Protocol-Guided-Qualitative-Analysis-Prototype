@@ -11,45 +11,82 @@ import {
   finishRunLog,
   startRunLog
 } from "@/lib/run-logs";
-import type { CategoryMode, ReviewerWorkspace } from "@/lib/types";
+import { getStorageMode } from "@/lib/storage-mode";
+import type {
+  CategoryMode,
+  CategoryNode,
+  MeaningUnit,
+  Project,
+  ReviewerWorkspace
+} from "@/lib/types";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
     mode?: CategoryMode;
     projectId?: string;
+    categories?: CategoryNode[];
+    integratedNarrative?: string;
+    project?: Project;
+    units?: MeaningUnit[];
     workspace?: ReviewerWorkspace;
   };
   const reviewerWorkspace: ReviewerWorkspace =
     body.workspace === "categories" ? "categories" : "meaning-units";
   const runId = startRunLog(
     reviewerWorkspace === "categories"
-      ? "GDIQR category review"
-      : "GDIQR meaning-unit review"
+      ? "Category reviewer check"
+      : "Meaning-unit reviewer check"
   );
   const projectId = body.projectId ?? defaultProjectId;
 
   try {
-    addRunEvent(runId, "Loading workspace from Supabase");
-    const workspace = await getWorkspace(projectId);
+    const storageMode = getStorageMode();
+    const workspace =
+      storageMode === "supabase" ? await getWorkspace(projectId) : null;
+    const units = workspace?.meaningUnits ?? body.units ?? [];
+    const categories = workspace?.categories ?? body.categories ?? [];
+    const integratedNarrative =
+      workspace?.integratedNarrative ?? body.integratedNarrative ?? "";
+    const project: Project =
+      workspace?.project ?? body.project ?? {
+        id: projectId,
+        language: "English",
+        lightInterpretation: false,
+        protocol: "GDIQR",
+        researchQuestion: "",
+        status: "Local-only draft workspace",
+        studyDescription: "",
+        title: "Local-only prototype workspace",
+        updatedAt: new Date().toISOString()
+      };
     addRunEvent(
       runId,
       reviewerWorkspace === "categories"
-        ? `Calling category reviewer (${workspace.categories.length} categories)`
-        : `Calling meaning-unit reviewer (${workspace.meaningUnits.length} MUs)`
+        ? `Calling category reviewer (${categories.length} categories)`
+        : `Calling meaning-unit reviewer (${units.length} MUs)`
     );
     const startedAt = Date.now();
     const result = await generateReviewer({
       categoryMode: body.mode,
-      categories: workspace.categories,
-      integratedNarrative: workspace.integratedNarrative,
-      project: workspace.project,
+      categories,
+      integratedNarrative,
+      project,
       reviewerWorkspace,
-      units: workspace.meaningUnits
+      units
     });
     addRunEvent(
       runId,
       `Ollama reviewer generation finished in ${formatDuration(Date.now() - startedAt)}`
     );
+
+    if (storageMode !== "supabase") {
+      addRunEvent(runId, "Reviewer comments returned to browser state only");
+      finishRunLog(runId);
+      return NextResponse.json({
+        ...result,
+        persisted: false
+      });
+    }
 
     addRunEvent(runId, `Saving ${result.comments.length} reviewer comments`);
     const saveResult = await replaceReviewerCommentsFromAi({

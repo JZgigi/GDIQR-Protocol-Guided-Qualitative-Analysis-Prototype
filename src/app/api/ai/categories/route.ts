@@ -11,7 +11,8 @@ import {
   finishRunLog,
   startRunLog
 } from "@/lib/run-logs";
-import type { CategoryMode, CategoryNode } from "@/lib/types";
+import { getStorageMode } from "@/lib/storage-mode";
+import type { CategoryMode, CategoryNode, MeaningUnit, Project } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -21,6 +22,8 @@ export async function POST(request: NextRequest) {
     integratedNarrative?: string;
     mode?: CategoryMode;
     projectId?: string;
+    project?: Project;
+    units?: MeaningUnit[];
   };
   const mode: CategoryMode =
     body.mode === "B" || body.mode === "C" ? body.mode : "A";
@@ -28,12 +31,36 @@ export async function POST(request: NextRequest) {
   const projectId = body.projectId ?? defaultProjectId;
 
   try {
-    addRunEvent(runId, "Loading workspace from Supabase");
-    const workspace = await getWorkspace(projectId);
+    const storageMode = getStorageMode();
+    const workspace =
+      storageMode === "supabase" ? await getWorkspace(projectId) : null;
+    addRunEvent(
+      runId,
+      storageMode === "supabase"
+        ? "Loaded workspace from Supabase"
+        : "Using reviewed meaning units from request body in local-only mode"
+    );
 
     if (body.acceptFallbackDraft) {
       if (!body.categories || body.categories.length === 0) {
         throw new Error("No temporary category draft was provided to save.");
+      }
+      if (storageMode !== "supabase") {
+        addRunEvent(
+          runId,
+          "Temporary category draft confirmed in browser state only"
+        );
+        finishRunLog(runId);
+        return NextResponse.json({
+          categories: markResearcherConfirmed(body.categories),
+          integratedNarrative: body.integratedNarrative ?? "",
+          isFallbackDraft: false,
+          persisted: false,
+          provider: "researcher_confirmed",
+          warnings: [
+            "Temporary fallback draft was confirmed for prototype testing in local-only mode."
+          ]
+        });
       }
       addRunEvent(runId, "Saving researcher-confirmed temporary category draft");
       const saveResult = await saveCategorySystemFromAi({
@@ -55,7 +82,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const confirmedUnits = workspace.meaningUnits.filter(
+    const sourceUnits = workspace?.meaningUnits ?? body.units ?? [];
+    const confirmedUnits = sourceUnits.filter(
       (unit) =>
         !unit.analysisExcluded &&
         (unit.humanStatus === "Accepted" || unit.humanStatus === "Edited")
@@ -67,11 +95,24 @@ export async function POST(request: NextRequest) {
     }
     addRunEvent(runId, `Calling Ollama for Mode ${mode} categories (${confirmedUnits.length} confirmed MUs)`);
     const startedAt = Date.now();
+    const project: Project =
+      workspace?.project ?? body.project ?? {
+        id: projectId,
+        language: "English",
+        lightInterpretation: false,
+        protocol: "GDIQR",
+        researchQuestion: "",
+        status: "Local-only draft workspace",
+        studyDescription: "",
+        title: "Local-only prototype workspace",
+        updatedAt: new Date().toISOString()
+      };
+    const existingCategories = workspace?.categories ?? body.categories ?? [];
     const result = await generateCategories({
       allBatchesProcessed: body.allBatchesProcessed,
-      existingCategories: workspace.categories,
+      existingCategories,
       mode,
-      project: workspace.project,
+      project,
       units: confirmedUnits
     });
     if (result.uncertainties.length > 0) {
@@ -87,6 +128,15 @@ export async function POST(request: NextRequest) {
         runId,
         "AI returned empty output. A temporary fallback draft was created but not saved."
       );
+      finishRunLog(runId);
+      return NextResponse.json({
+        ...result,
+        persisted: false
+      });
+    }
+
+    if (storageMode !== "supabase") {
+      addRunEvent(runId, "Category draft returned to browser state only");
       finishRunLog(runId);
       return NextResponse.json({
         ...result,

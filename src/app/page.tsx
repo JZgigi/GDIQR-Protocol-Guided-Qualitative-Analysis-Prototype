@@ -1,10 +1,13 @@
 import { GdiqrWorkspace } from "@/components/gdiqr-workspace";
-import { getWorkspace } from "@/lib/gdiqr-repository";
+import { getLocalWorkspace, getWorkspace } from "@/lib/gdiqr-repository";
+import { getStorageMode } from "@/lib/storage-mode";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const workspace = await getWorkspace();
+  const storageMode = getStorageMode();
+  const workspace =
+    storageMode === "local" ? getLocalWorkspace() : await getWorkspace();
 
   return (
     <GdiqrWorkspace
@@ -21,6 +24,7 @@ export default async function Home() {
       supabaseConfigured={workspace.supabaseConfigured}
       transcript={workspace.transcript}
       transcriptionJobs={workspace.transcriptionJobs}
+      storageMode={storageMode}
     />
   );
 }
