@@ -3,9 +3,15 @@ import type {
   CategoryNode,
   MeaningUnit,
   Project,
-  ReviewerComment
+  ReviewerComment,
+  ReviewerWorkspace
 } from "@/lib/types";
 import { addRunEvent } from "@/lib/run-logs";
+import {
+  getOllamaChatCompletionsUrl,
+  getOllamaConnectionErrorMessage,
+  getOllamaModel
+} from "@/lib/ollama-config";
 
 type AiProvider = "ollama";
 
@@ -15,6 +21,7 @@ interface OllamaMessage {
 }
 
 interface MeaningUnitInput {
+  abortSignal?: AbortSignal;
   caseId?: string;
   lightInterpretation: boolean;
   project: Project;
@@ -25,13 +32,17 @@ interface MeaningUnitInput {
 }
 
 interface CategoryInput {
+  existingCategories?: CategoryNode[];
+  allBatchesProcessed?: boolean;
   mode: CategoryMode;
   project: Project;
   units: MeaningUnit[];
 }
 
 interface ReviewerInput {
+  categoryMode?: CategoryMode;
   project: Project;
+  reviewerWorkspace: ReviewerWorkspace;
   units: MeaningUnit[];
   categories: CategoryNode[];
   integratedNarrative: string;
@@ -69,6 +80,7 @@ export interface CategoryResult {
   categoryRevisions: string[];
   structuralModel: string;
   integratedNarrative: string;
+  isFallbackDraft: boolean;
   uncertainties: string[];
 }
 
@@ -114,6 +126,7 @@ export async function generateMeaningUnits(
   );
 
   for (const [index, chunk] of chunks.entries()) {
+    throwIfAborted(input.abortSignal);
     const startedAt = Date.now();
     const startingNumber = initialNumber + allUnits.length;
     addRunEvent(
@@ -212,6 +225,7 @@ ${chunk}`
     ],
     {
       maxTokens: Number(process.env.OLLAMA_MU_MAX_TOKENS ?? 1800),
+      signal: input.abortSignal,
       timeoutMs: getMeaningUnitChunkTimeoutMs()
     }
   );
@@ -281,81 +295,70 @@ export async function generateCategories(
   }
 
   const model = getOllamaModel();
-  const result = await callOllamaJson<{
-    categories?: Array<Partial<CategoryNode>>;
-    categoryRevisions?: string[];
-    structuralModel?: string;
-    integratedNarrative?: string;
-    uncertainties?: string[];
-  }>(
-    [
-      systemMessage(),
-      {
-        role: "user",
-        content: `/no_think
-Construct a compact GDIQR category system for Mode ${input.mode}.
-
-Rules:
-- Use only the provided confirmed meaning-unit summaries.
-- Do not use raw transcript text or unconfirmed draft summaries.
-- Category includedUnitIds must refer to MU numbers only.
-- Preserve tensions and uncertainty rather than over-interpreting.
-- Produce 2 to 4 top-level categories.
-- Produce at most 2 subcategories per top-level category.
-- Keep every definition under 25 words.
-- Do not include chain-of-thought or reasoning notes.
-- In Mode C only, include structuralModel and integratedNarrative.
-- Return only JSON matching this shape:
-{
-  "categories": [
-    {
-      "name": "category name",
-      "definition": "category definition",
-      "includedUnitIds": [1, 2],
-      "subcategories": [
+  try {
+    const result = await callOllamaJson<{
+      categories?: Array<Partial<CategoryNode>>;
+      categoryRevisions?: string[];
+      structuralModel?: string;
+      integratedNarrative?: string;
+      uncertainties?: string[];
+    }>(
+      [
+        systemMessage(),
         {
-          "name": "subcategory name",
-          "definition": "subcategory definition",
-          "includedUnitIds": [1]
+          role: "user",
+          content: buildCategoryGenerationPrompt(input)
         }
-      ]
-    }
-  ],
-  "categoryRevisions": ["optional revision note"],
-  "structuralModel": "only for Mode C or empty string",
-  "integratedNarrative": "only for Mode C or empty string",
-  "uncertainties": ["optional uncertainty"]
-}
-
-Research question: ${input.project.researchQuestion}
-Interview language: ${input.project.language}
-Confirmed meaning-unit summaries:
-${input.units
-  .map(
-    (unit) =>
-      `MU ${unit.number} (${unit.caseId}, ${unit.segmentId})\nSummary: ${unit.humanSummary || unit.aiSummary}`
-  )
-  .join("\n\n")}`
+      ],
+      {
+        maxTokens: Number(process.env.OLLAMA_CATEGORY_MAX_TOKENS ?? 1800),
+        timeoutMs: getOllamaTimeoutMs()
       }
-    ],
-    {
-      maxTokens: Number(process.env.OLLAMA_CATEGORY_MAX_TOKENS ?? 1800),
-      timeoutMs: getOllamaTimeoutMs()
+    );
+    const categories = normalizeCategories(result.categories ?? [], "ai");
+    if (categories.length === 0) {
+      throw new Error("Local AI returned no categories.");
     }
-  );
 
-  return {
-    provider: "ollama",
-    model,
-    caseId: input.units[0]?.caseId ?? "CASE-001",
-    researchQuestion: input.project.researchQuestion,
-    mode: input.mode,
-    categories: normalizeCategories(result.categories ?? []),
-    categoryRevisions: stringArray(result.categoryRevisions),
-    structuralModel: result.structuralModel ?? "",
-    integratedNarrative: result.integratedNarrative ?? "",
-    uncertainties: stringArray(result.uncertainties)
-  };
+    return {
+      provider: "ollama",
+      model,
+      caseId: input.units[0]?.caseId ?? "CASE-001",
+      researchQuestion: input.project.researchQuestion,
+      mode: input.mode,
+      categories,
+      categoryRevisions: stringArray(result.categoryRevisions),
+      structuralModel: result.structuralModel ?? "",
+      integratedNarrative: result.integratedNarrative ?? "",
+      isFallbackDraft: false,
+      uncertainties: stringArray(result.uncertainties)
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Category generation failed.";
+    const categories = fallbackCategoriesFromUnits(input.units);
+
+    return {
+      provider: "ollama",
+      model,
+      caseId: input.units[0]?.caseId ?? "CASE-001",
+      researchQuestion: input.project.researchQuestion,
+      mode: input.mode,
+      categories,
+      categoryRevisions: [
+        `Local fallback category draft used because Ollama did not return a usable category result: ${message}`
+      ],
+      structuralModel: "",
+      integratedNarrative:
+        input.mode === "C"
+          ? "Local fallback created a draft category grouping only. Please write or revise the integrated narrative after reviewing the categories."
+          : "",
+      isFallbackDraft: true,
+      uncertainties: [
+        "Local fallback categories are mechanical draft groupings from confirmed summaries. Review, rename, merge, or replace them before treating them as analysis."
+      ]
+    };
+  }
 }
 
 export async function generateReviewer(
@@ -367,50 +370,18 @@ export async function generateReviewer(
   }
 
   const model = getOllamaModel();
-  const result = await callOllamaJson<{ comments?: Array<Partial<ReviewerComment>> }>(
+  const result = await callOllamaJson<{
+    issues?: Array<Partial<ReviewerComment>>;
+    comments?: Array<Partial<ReviewerComment>>;
+  }>(
     [
       systemMessage(),
       {
         role: "user",
-        content: `/no_think
-Review this GDIQR analysis.
-
-Rules:
-- Check meaning-unit coverage, category coherence, GDIQR boundary discipline, and uncertainty handling.
-- Do not rewrite the full analysis.
-- Return 2 to 5 actionable reviewer comments.
-- Keep each comment under 30 words.
-- Severity must be "Pass", "Warning", or "Major issue".
-- Return only JSON matching this shape:
-{
-  "comments": [
-    {
-      "agent": "Coverage Reviewer",
-      "target": "MU 1",
-      "severity": "Warning",
-      "comment": "specific finding",
-      "suggestedAction": "specific action",
-      "resolved": false
-    }
-  ]
-}
-
-Project:
-${JSON.stringify(input.project, null, 2)}
-
-Meaning units:
-${input.units
-  .map(
-    (unit) =>
-      `MU ${unit.number}: ${unit.excerpt}\nSummary: ${unit.humanSummary || unit.aiSummary}`
-  )
-  .join("\n\n")}
-
-Categories:
-${JSON.stringify(input.categories, null, 2)}
-
-Integrated narrative:
-${input.integratedNarrative}`
+        content:
+          input.reviewerWorkspace === "categories"
+            ? buildCategoryReviewerPrompt(input)
+            : buildMeaningUnitReviewerPrompt(input)
       }
     ],
     {
@@ -423,7 +394,10 @@ ${input.integratedNarrative}`
     provider: "ollama",
     model,
     status: "completed",
-    comments: normalizeReviewerComments(result.comments ?? [])
+    comments: normalizeReviewerComments(
+      result.issues ?? result.comments ?? [],
+      input.reviewerWorkspace
+    )
   };
 }
 
@@ -483,6 +457,221 @@ export async function processTranscriptForPrivacyAndSpeakers(
     privacyFindings: results.flatMap((result) => result.privacyFindings),
     speakerNotes: results.flatMap((result) => result.speakerNotes)
   };
+}
+
+function buildCategoryGenerationPrompt(input: CategoryInput) {
+  const existingCategories =
+    input.existingCategories && input.existingCategories.length > 0
+      ? JSON.stringify(input.existingCategories, null, 2)
+      : "None";
+  const modeInstructions =
+    input.mode === "A"
+      ? `MODE A - Initial Category Construction
+- Use when no existing category system is being refined.
+- Compare summaries within this single-transcript batch.
+- Cluster summaries into substantive categories that answer the research question.
+- Create subcategories only when there are strong internal conceptual distinctions.
+- Define each category clearly and list included MU numbers.
+- Do not produce narrative integration.`
+      : input.mode === "B"
+        ? `MODE B - Category Expansion and Refinement
+- Use the existing category system as the starting point.
+- Compare each confirmed summary against existing categories/subcategories.
+- Decide whether each summary fits, requires a new category/subcategory, or suggests merging/redefining categories.
+- Explicitly report structural changes in categoryRevisions.
+- Maintain parsimony and avoid category proliferation.
+- Do not produce narrative integration.`
+        : `MODE C - Final Integration
+- Use only after the researcher has confirmed all segments in this transcript have been processed and reviewed.
+- Review the full category system globally for coherence and parsimony.
+- Finalise a hierarchical structure, normally 3-6 levels at most.
+- Produce integratedNarrative that answers the research question, explains central patterns, identifies tensions/contradictions, and notes interpretative limits.
+- Do not introduce new categories unless essential for coherence.`;
+
+  return `/no_think
+You are a qualitative research assistant using a Generic Descriptive-Interpretive qualitative research approach (GDIQR).
+
+Task: Construct, refine, or integrate a category system using constant comparison across confirmed meaning-unit summaries.
+
+${modeInstructions}
+
+Global rules:
+- Use only the research question, confirmed meaning-unit summaries, and existing category system when provided.
+- Do not return to raw transcript text.
+- Do not introduce external theory or general world knowledge.
+- Categories must address the research question and say something substantive.
+- Avoid categories that merely repeat interview questions or broad domains.
+- Avoid redundant, trivial, or overly numerous categories.
+- Subcategories must reflect conceptual distinctions, not minor wording differences.
+- Preserve tensions, contradictions, and uncertainty rather than smoothing them over.
+- Category includedUnitIds must refer to MU numbers only.
+- Return strict JSON only, with no markdown or commentary.
+
+Return JSON in this shape:
+{
+  "categories": [
+    {
+      "name": "category name",
+      "definition": "category definition",
+      "includedUnitIds": [1, 2],
+      "subcategories": [
+        {
+          "name": "subcategory name",
+          "definition": "subcategory definition",
+          "includedUnitIds": [1]
+        }
+      ]
+    }
+  ],
+  "categoryRevisions": ["for Mode B/C: structural changes, merges, renamed categories, uncertainties"],
+  "structuralModel": "Mode C only, otherwise empty string",
+  "integratedNarrative": "Mode C only, otherwise empty string",
+  "uncertainties": ["optional uncertainty"]
+}
+
+Project title: ${input.project.title}
+Research question: ${input.project.researchQuestion}
+Interview language: ${input.project.language}
+Mode: ${input.mode}
+All single-transcript segments processed and reviewed: ${input.allBatchesProcessed ? "yes" : "no"}
+
+Existing category system:
+${existingCategories}
+
+Confirmed meaning-unit summaries:
+${input.units
+  .map(
+    (unit) =>
+      `MU ${unit.number} (${unit.caseId}, ${unit.segmentId})\nSpeaker: ${unit.speaker}\nSummary: ${unit.humanSummary || unit.aiSummary}`
+  )
+  .join("\n\n")}`;
+}
+
+function buildMeaningUnitReviewerPrompt(input: ReviewerInput) {
+  return `/no_think
+You are a GDIQR reviewer agent. Your task is to audit the AI-generated Meaning Units + Summaries against the GDIQR protocol.
+
+You are NOT generating new analysis.
+You are NOT creating categories or themes.
+You are NOT integrating findings.
+You are only checking whether the current output follows the protocol.
+
+Check:
+1. Use only provided transcript segment.
+2. No external knowledge.
+3. No categories or themes at this stage.
+4. No integrated findings.
+5. No comparison across segments.
+6. All content in the segment should be covered.
+7. Meaning units should be segmented by shifts in topic, experience, meaning, emotional change, or process change.
+8. Summaries should stay close to participant meaning.
+9. Summaries should use phrases and key words only.
+10. Summaries should avoid abstraction, theorising, diagnosis, causality, or unsupported psychological interpretation.
+11. If Light Interpretation is OFF, no interpretation should appear.
+12. If Light Interpretation is ON, tentative interpretation must be clearly labelled, grounded in text, brief, and non-theoretical.
+13. Ambiguous meaning should be marked UNCERTAIN.
+
+Return only structured review issues. Do not rewrite the full analysis unless a suggested revision is necessary.
+If no issue is found, return an empty issues array.
+
+Output JSON only:
+{
+  "issues": [
+    {
+      "targetType": "summary",
+      "targetId": "MU7",
+      "issueType": "Over-interpretation",
+      "severity": "warning",
+      "shortTitle": "Unsupported psychological wording",
+      "comment": "The summary introduces a concept not stated by the participant.",
+      "suggestedAction": "Revise using participant-close wording."
+    }
+  ]
+}
+
+Project:
+${JSON.stringify(input.project, null, 2)}
+
+Light interpretation: ${input.project.lightInterpretation ? "ON" : "OFF"}
+
+Meaning units:
+${input.units
+  .map(
+    (unit) =>
+      `MU${unit.number} (${unit.caseId}, ${unit.segmentId})\nSpeaker: ${unit.speaker}\nExcerpt: ${unit.excerpt}\nAI summary: ${unit.aiSummary}\nHuman summary: ${unit.humanSummary}\nTentative interpretation: ${unit.tentativeInterpretation ?? ""}\nUncertainty: ${unit.uncertainty ?? ""}`
+  )
+  .join("\n\n")}`;
+}
+
+function buildCategoryReviewerPrompt(input: ReviewerInput) {
+  return `/no_think
+You are a GDIQR category reviewer agent. Your task is to audit the category construction, refinement, or final integration output against GDIQR rules.
+
+You are NOT generating a new category system unless asked.
+You are NOT creating new findings.
+You are NOT returning to the raw transcript.
+You are only checking whether the category output follows the selected mode.
+
+Check based on mode:
+
+Mode A:
+- Categories are based only on provided meaning unit summaries.
+- Categories address the research question.
+- Categories are substantive, not trivial.
+- Category proliferation is avoided.
+- Subcategories are only used when conceptually distinct.
+- Included unit IDs are clearly listed.
+- No integrated narrative is produced.
+
+Mode B:
+- New summaries are compared with existing categories.
+- The output reports whether summaries fit existing categories/subcategories or require new ones.
+- Category revisions are explicitly reported.
+- Overlapping categories are merged where appropriate.
+- Definitions are revised when needed.
+- Category proliferation is avoided.
+- No integrated narrative is produced.
+
+Mode C:
+- Used only after "All batches processed".
+- Full category system is reviewed globally.
+- Final structure is coherent and parsimonious.
+- Integrated narrative answers the research question.
+- Central patterns, tensions, contradictions, and interpretative limits are included.
+- No external theory is introduced.
+- No raw transcript is used.
+- New categories are not introduced unless essential.
+
+Return only structured review issues. If no issue is found, return an empty issues array.
+
+Output JSON only:
+{
+  "issues": [
+    {
+      "targetType": "category",
+      "targetId": "cat_ai_001",
+      "issueType": "Category coherence",
+      "severity": "warning",
+      "shortTitle": "Category definition too broad",
+      "comment": "The category appears to combine distinct meanings.",
+      "suggestedAction": "Review included MU summaries and narrow the definition."
+    }
+  ]
+}
+
+Mode: ${input.categoryMode ?? "A"}
+Research question: ${input.project.researchQuestion}
+
+Confirmed meaning-unit summaries:
+${input.units
+  .map((unit) => `MU${unit.number}: ${unit.humanSummary || unit.aiSummary}`)
+  .join("\n")}
+
+Categories:
+${JSON.stringify(input.categories, null, 2)}
+
+Integrated narrative:
+${input.integratedNarrative}`;
 }
 
 async function processTranscriptChunk({
@@ -587,17 +776,22 @@ function systemMessage(): OllamaMessage {
   return {
     role: "system",
     content:
-      "You are a careful qualitative analysis assistant specialized in Giorgi-informed descriptive phenomenological qualitative research. Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought."
+      "You are a careful qualitative analysis assistant specialized in Generic Descriptive-Interpretive Qualitative Research (GDIQR). Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought."
   };
 }
 
 async function callOllamaJson<T>(
   messages: OllamaMessage[],
-  options: { maxTokens?: number; timeoutMs?: number } = {}
+  options: { maxTokens?: number; signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<T> {
   const maxTokens = options.maxTokens ?? 1600;
   const timeoutMs = options.timeoutMs ?? getOllamaTimeoutMs();
-  const content = await callOllamaContent(messages, timeoutMs, maxTokens);
+  const content = await callOllamaContent(
+    messages,
+    timeoutMs,
+    maxTokens,
+    options.signal
+  );
 
   try {
     return parseJsonObject<T>(content);
@@ -614,7 +808,8 @@ ${content}`
         }
       ],
       Math.min(timeoutMs, 120000),
-      Math.min(maxTokens, 1600)
+      Math.min(maxTokens, 1600),
+      options.signal
     );
 
     return parseJsonObject<T>(repaired);
@@ -624,28 +819,45 @@ ${content}`
 async function callOllamaContent(
   messages: OllamaMessage[],
   timeoutMs: number,
-  maxTokens: number
+  maxTokens: number,
+  signal?: AbortSignal
 ) {
-  const baseUrl = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434/v1";
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
-    body: JSON.stringify({
-      messages,
-      max_tokens: maxTokens,
-      model: getOllamaModel(),
-      options: {
-        num_predict: maxTokens
-      },
-      response_format: { type: "json_object" },
-      stream: false,
-      temperature: 0.2
-    }),
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const requestSignal = combineAbortSignals([timeoutSignal, signal].filter(Boolean) as AbortSignal[]);
+  let response: Response;
+  try {
+    response = await fetch(getOllamaChatCompletionsUrl(), {
+      body: JSON.stringify({
+        messages,
+        max_tokens: maxTokens,
+        model: getOllamaModel(),
+        options: {
+          num_predict: maxTokens
+        },
+        response_format: { type: "json_object" },
+        stream: false,
+        temperature: 0.2
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+      signal: requestSignal
+    });
+  } catch (error) {
+    if (signal?.aborted) {
+      throw new Error("Generation stopped by user.");
+    }
+    if (timeoutSignal.aborted) {
+      throw new Error(
+        "Local AI request timed out before Ollama returned a response. Try a shorter transcript, a smaller model, or increase OLLAMA_API_TIMEOUT_MS."
+      );
+    }
+    throw new Error(getOllamaConnectionErrorMessage());
+  }
 
   if (!response.ok) {
-    throw new Error(`Ollama request failed with ${response.status}.`);
+    throw new Error(
+      `Ollama request failed with ${response.status}. Check that model "${getOllamaModel()}" is installed and that OLLAMA_BASE_URL points to your local Ollama server.`
+    );
   }
 
   const body = (await response.json()) as {
@@ -662,6 +874,31 @@ async function callOllamaContent(
   return content;
 }
 
+function combineAbortSignals(signals: AbortSignal[]) {
+  if (signals.length === 1) {
+    return signals[0];
+  }
+  if ("any" in AbortSignal) {
+    return AbortSignal.any(signals);
+  }
+
+  const controller = new AbortController();
+  for (const signal of signals) {
+    if (signal.aborted) {
+      controller.abort();
+      break;
+    }
+    signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  return controller.signal;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new Error("Meaning-unit generation was stopped.");
+  }
+}
+
 function parseJsonObject<T>(content: string): T {
   const stripped = content
     .trim()
@@ -676,10 +913,6 @@ function parseJsonObject<T>(content: string): T {
   }
 
   return JSON.parse(stripped.slice(start, end + 1)) as T;
-}
-
-function getOllamaModel() {
-  return process.env.OLLAMA_MODEL ?? "qwen3:8b";
 }
 
 function getOllamaTimeoutMs() {
@@ -818,7 +1051,8 @@ function fallbackMeaningUnitsFromChunk(
         uncertainty:
           "Generated by local fallback because the Ollama meaning-unit chunk failed.",
         humanStatus: "Draft",
-        reviewerStatus: "Warning"
+        reviewerStatus: "Warning",
+        analysisExcluded: false
       } satisfies MeaningUnit;
     })
     .filter((unit) => unit.excerpt);
@@ -884,14 +1118,16 @@ function normalizeMeaningUnits(
           item.reviewerStatus === "Warning" ||
           item.reviewerStatus === "Major issue"
             ? item.reviewerStatus
-            : "Not run"
+            : "Not run",
+        analysisExcluded: false
       } satisfies MeaningUnit;
     })
     .filter((item) => item.excerpt && item.aiSummary);
 }
 
 function normalizeCategories(
-  items: Array<Partial<CategoryNode>>
+  items: Array<Partial<CategoryNode>>,
+  source: CategoryNode["source"] = "ai"
 ): CategoryNode[] {
   return items
     .map((item, index) => ({
@@ -899,34 +1135,110 @@ function normalizeCategories(
       name: cleanText(item.name) || `Category ${index + 1}`,
       definition: cleanText(item.definition),
       includedUnitIds: numberArray(item.includedUnitIds),
-      subcategories: normalizeCategories(item.subcategories ?? [])
+      source,
+      subcategories: normalizeCategories(item.subcategories ?? [], source)
     }))
     .map((item) =>
       item.subcategories.length ? item : { ...item, subcategories: undefined }
     );
 }
 
+function fallbackCategoriesFromUnits(units: MeaningUnit[]): CategoryNode[] {
+  const topLevelCount = Math.min(4, Math.max(2, Math.ceil(units.length / 4)));
+  const groupSize = Math.ceil(units.length / topLevelCount);
+  const categories: CategoryNode[] = [];
+
+  for (let index = 0; index < units.length; index += groupSize) {
+    const group = units.slice(index, index + groupSize);
+    const firstSummary = group[0]?.humanSummary || group[0]?.aiSummary || "";
+    const name = fallbackCategoryName(firstSummary, categories.length + 1);
+    categories.push({
+      id: `cat_fallback_${String(categories.length + 1).padStart(3, "0")}`,
+      name,
+      definition:
+        "Draft grouping from confirmed meaning-unit summaries; review and refine.",
+      includedUnitIds: group.map((unit) => unit.number),
+      source: "fallback"
+    });
+  }
+
+  return categories;
+}
+
+function fallbackCategoryName(summary: string, index: number) {
+  const cleaned = cleanText(summary).replace(/\s+/g, " ");
+  if (!cleaned) {
+    return `Draft category ${index}`;
+  }
+
+  const words = cleaned.split(" ").filter(Boolean);
+  if (words.length > 1) {
+    return `Draft category ${index}: ${words.slice(0, 6).join(" ")}`;
+  }
+
+  return `Draft category ${index}: ${cleaned.slice(0, 18)}`;
+}
+
 function normalizeReviewerComments(
-  items: Array<Partial<ReviewerComment>>
+  items: Array<Partial<ReviewerComment>>,
+  workspace: ReviewerWorkspace
 ): ReviewerComment[] {
   return items
     .map((item, index) => {
-      const severity: ReviewerComment["severity"] =
-        item.severity === "Major issue" || item.severity === "Warning"
-          ? item.severity
-          : "Pass";
+      const severity = normalizeReviewerSeverity(item.severity);
+      const targetType =
+        item.targetType === "meaning_unit" ||
+        item.targetType === "summary" ||
+        item.targetType === "segment" ||
+        item.targetType === "category" ||
+        item.targetType === "subcategory" ||
+        item.targetType === "integrated_narrative" ||
+        item.targetType === "mode_output"
+          ? item.targetType
+          : workspace === "categories"
+            ? "mode_output"
+            : "summary";
+      const targetId =
+        cleanText(item.targetId) ||
+        cleanText(item.target) ||
+        `${workspace === "categories" ? "category" : "MU"}-${index + 1}`;
+      const issueType = cleanText(item.issueType) || cleanText(item.agent) || "Protocol check";
+      const shortTitle =
+        cleanText((item as { shortTitle?: string }).shortTitle) || issueType;
 
       return {
         id: `rev_ai_${String(index + 1).padStart(3, "0")}`,
-        agent: cleanText(item.agent) || "GDIQR Reviewer",
-        target: cleanText(item.target) || "Analysis",
+        agent:
+          workspace === "categories"
+            ? "GDIQR Category Review"
+            : "GDIQR Meaning Units Review",
+        target: `${targetType}:${targetId}`,
+        targetType,
+        targetId,
+        issueType,
+        workspace,
         severity,
-        comment: cleanText(item.comment),
+        status: "unresolved" as const,
+        comment:
+          cleanText(item.comment) ||
+          cleanText((item as { explanation?: string }).explanation) ||
+          shortTitle,
         suggestedAction: cleanText(item.suggestedAction),
-        resolved: Boolean(item.resolved)
+        resolved: false
       };
     })
     .filter((item) => item.comment);
+}
+
+function normalizeReviewerSeverity(value: unknown): ReviewerComment["severity"] {
+  const cleaned = cleanText(value).toLowerCase();
+  if (cleaned === "major" || cleaned === "major issue") {
+    return "major";
+  }
+  if (cleaned === "warning") {
+    return "warning";
+  }
+  return "info";
 }
 
 function cleanText(value: unknown) {

@@ -5,12 +5,19 @@ export type WorkflowStep =
   | "segments"
   | "meaning-units"
   | "categories"
-  | "reviewers"
   | "export";
 
-export type HumanStatus = "Draft" | "Accepted" | "Edited" | "Needs review";
+export type HumanStatus =
+  | "Draft"
+  | "Accepted"
+  | "Edited"
+  | "Needs review"
+  | "Excluded";
 export type ReviewerStatus = "Not run" | "Pass" | "Warning" | "Major issue";
 export type CategoryMode = "A" | "B" | "C";
+export type ReviewerWorkspace = "meaning-units" | "categories";
+export type ReviewerIssueStatus = "unresolved" | "resolved" | "dismissed";
+export type ReviewerIssueSeverity = "info" | "warning" | "major";
 export type SegmentStatus =
   | "Draft"
   | "Needs Review"
@@ -83,6 +90,8 @@ export interface MeaningUnit {
   uncertainty?: string;
   humanStatus: HumanStatus;
   reviewerStatus: ReviewerStatus;
+  analysisExcluded: boolean;
+  exclusionReason?: string;
 }
 
 export interface CategoryNode {
@@ -90,6 +99,7 @@ export interface CategoryNode {
   name: string;
   definition: string;
   includedUnitIds: number[];
+  source?: "ai" | "fallback" | "researcher_confirmed";
   subcategories?: CategoryNode[];
 }
 
@@ -97,10 +107,25 @@ export interface ReviewerComment {
   id: string;
   agent: string;
   target: string;
-  severity: "Pass" | "Warning" | "Major issue";
+  targetType:
+    | "meaning_unit"
+    | "summary"
+    | "segment"
+    | "category"
+    | "subcategory"
+    | "integrated_narrative"
+    | "mode_output";
+  targetId: string;
+  issueType: string;
+  workspace: ReviewerWorkspace;
+  severity: ReviewerIssueSeverity;
+  status: ReviewerIssueStatus;
   comment: string;
   suggestedAction: string;
   resolved: boolean;
+  createdAt?: string;
+  resolvedAt?: string;
+  researcherMemo?: string;
 }
 
 export interface AuditEvent {

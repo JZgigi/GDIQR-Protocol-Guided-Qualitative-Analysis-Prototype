@@ -13,3 +13,10 @@ pnpm-debug.log*
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+outputs/
+GDIQR_Reference/
+local_docs/
+*.pptx
+DEMO_SETUP_GUIDE_FOR_NON_TECHNICAL_USER.md
+prototype_intro_slide_outline.md
+prototype_intro_speaker_notes.md

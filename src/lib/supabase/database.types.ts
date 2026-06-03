@@ -150,8 +150,15 @@ export interface Database {
           human_summary: string;
           tentative_interpretation: string | null;
           uncertainty: string | null;
-          human_status: "Draft" | "Accepted" | "Edited" | "Needs review";
+          human_status:
+            | "Draft"
+            | "Accepted"
+            | "Edited"
+            | "Needs review"
+            | "Excluded";
           reviewer_status: "Not run" | "Pass" | "Warning" | "Major issue";
+          analysis_excluded: boolean;
+          exclusion_reason: string | null;
           updated_at: string;
         };
         Insert: {
@@ -166,8 +173,15 @@ export interface Database {
           human_summary?: string;
           tentative_interpretation?: string | null;
           uncertainty?: string | null;
-          human_status?: "Draft" | "Accepted" | "Edited" | "Needs review";
+          human_status?:
+            | "Draft"
+            | "Accepted"
+            | "Edited"
+            | "Needs review"
+            | "Excluded";
           reviewer_status?: "Not run" | "Pass" | "Warning" | "Major issue";
+          analysis_excluded?: boolean;
+          exclusion_reason?: string | null;
           updated_at?: string;
         };
         Update: Partial<

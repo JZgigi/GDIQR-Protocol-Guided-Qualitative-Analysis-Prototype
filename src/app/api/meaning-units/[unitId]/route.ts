@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { updateMeaningUnit } from "@/lib/gdiqr-repository";
+import {
+  deleteMeaningUnit,
+  updateMeaningUnit
+} from "@/lib/gdiqr-repository";
 import type { HumanStatus } from "@/lib/types";
 
 export async function PATCH(
@@ -8,6 +11,8 @@ export async function PATCH(
 ) {
   const { unitId } = await context.params;
   const body = (await request.json().catch(() => ({}))) as {
+    analysisExcluded?: boolean;
+    exclusionReason?: string | null;
     humanStatus?: HumanStatus;
     humanSummary?: string;
     speaker?: string;
@@ -15,6 +20,8 @@ export async function PATCH(
 
   try {
     const result = await updateMeaningUnit({
+      analysisExcluded: body.analysisExcluded,
+      exclusionReason: body.exclusionReason,
       humanStatus: body.humanStatus,
       humanSummary: body.humanSummary,
       speaker: body.speaker,
@@ -25,6 +32,23 @@ export async function PATCH(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Update failed." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
+  _request: NextRequest,
+  context: { params: Promise<{ unitId: string }> }
+) {
+  const { unitId } = await context.params;
+
+  try {
+    const result = await deleteMeaningUnit({ unitId });
+    return NextResponse.json(result);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Delete failed." },
       { status: 500 }
     );
   }

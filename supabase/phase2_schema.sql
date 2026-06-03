@@ -70,8 +70,10 @@ create table if not exists public.meaning_units (
   human_summary text not null default '',
   tentative_interpretation text,
   uncertainty text,
-  human_status text not null default 'Draft' check (human_status in ('Draft', 'Accepted', 'Edited', 'Needs review')),
+  human_status text not null default 'Draft' check (human_status in ('Draft', 'Accepted', 'Edited', 'Needs review', 'Excluded')),
   reviewer_status text not null default 'Not run' check (reviewer_status in ('Not run', 'Pass', 'Warning', 'Major issue')),
+  analysis_excluded boolean not null default false,
+  exclusion_reason text,
   updated_at timestamptz not null default now(),
   unique (project_id, unit_number)
 );

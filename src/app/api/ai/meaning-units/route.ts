@@ -10,6 +10,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
+    background?: boolean;
     caseId?: string;
     lightInterpretation?: boolean;
     projectId?: string;
@@ -25,6 +26,38 @@ export async function POST(request: NextRequest) {
   const projectId =
     body.projectId ?? process.env.GDIQR_DEFAULT_PROJECT_ID ?? "proj_student_wellbeing";
 
+  if (body.background === false) {
+    try {
+      addRunEvent(runId, "Starting meaning-unit job");
+      const result = await runMeaningUnitGeneration({
+        abortSignal: request.signal,
+        caseId: body.caseId,
+        lightInterpretation: body.lightInterpretation,
+        projectId,
+        runId,
+        segmentId: body.segmentId,
+        startingNumber: body.startingNumber,
+        transcript: body.transcript
+      });
+
+      return NextResponse.json({
+        ...result,
+        runId,
+        started: false
+      });
+    } catch (error) {
+      return NextResponse.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Meaning-unit generation failed."
+        },
+        { status: request.signal.aborted ? 499 : 500 }
+      );
+    }
+  }
+
   addRunEvent(runId, "Queued background meaning-unit job");
   setTimeout(() => {
     void runMeaningUnitGeneration({
@@ -35,7 +68,7 @@ export async function POST(request: NextRequest) {
       segmentId: body.segmentId,
       startingNumber: body.startingNumber,
       transcript: body.transcript
-    });
+    }).catch(() => undefined);
   }, 0);
 
   return NextResponse.json(
@@ -56,6 +89,7 @@ function formatDuration(ms: number) {
 }
 
 async function runMeaningUnitGeneration({
+  abortSignal,
   lightInterpretation,
   projectId,
   runId,
@@ -64,6 +98,7 @@ async function runMeaningUnitGeneration({
   startingNumber,
   transcript
 }: {
+  abortSignal?: AbortSignal;
   caseId?: string;
   lightInterpretation?: boolean;
   projectId: string;
@@ -91,6 +126,7 @@ async function runMeaningUnitGeneration({
       project: workspace.project,
       runId,
       caseId,
+      abortSignal,
       segmentId,
       startingNumber,
       transcript: sourceTranscript
@@ -118,11 +154,17 @@ async function runMeaningUnitGeneration({
         : saveResult.reason ?? "Meaning units were generated but not persisted"
     );
     finishRunLog(runId);
+    return {
+      meaningUnits: saveResult.units ?? result.meaningUnits,
+      persisted: saveResult.saved,
+      provider: result.provider
+    };
   } catch (error) {
     const message =
       error instanceof Error
         ? error.message
         : "Meaning-unit generation failed.";
     failRunLog(runId, message);
+    throw error;
   }
 }

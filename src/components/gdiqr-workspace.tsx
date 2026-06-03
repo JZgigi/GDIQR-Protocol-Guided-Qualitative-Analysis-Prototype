@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
+  Ban,
   Bot,
   Check,
   ChevronRight,
@@ -16,9 +17,9 @@ import {
   Pencil,
   Play,
   RefreshCcw,
-  SearchCheck,
   Settings2,
   ShieldCheck,
+  Trash2,
   Upload
 } from "lucide-react";
 import type {
@@ -29,6 +30,7 @@ import type {
   MeaningUnit,
   Project,
   ReviewerComment,
+  ReviewerWorkspace,
   SegmentStatus,
   TranscriptionJobRecord,
   TranscriptSegment,
@@ -48,7 +50,6 @@ const steps: Array<{
   { id: "segments", label: "Segments", icon: GitBranch },
   { id: "meaning-units", label: "Meaning Units", icon: Layers3 },
   { id: "categories", label: "Categories", icon: FolderKanban },
-  { id: "reviewers", label: "Reviewers", icon: SearchCheck },
   { id: "export", label: "Export", icon: Download }
 ];
 
@@ -114,20 +115,36 @@ export function GdiqrWorkspace({
   const [reviewerOutputs, setReviewerOutputs] = useState(reviewerComments);
   const [displayAuditEvents, setDisplayAuditEvents] = useState(auditEvents);
   const [narrative, setNarrative] = useState(integratedNarrative);
+  const [categoryDraftNotice, setCategoryDraftNotice] = useState("");
+  const [categoryDraftIsFallback, setCategoryDraftIsFallback] = useState(false);
+  const [allSegmentsProcessedForModeC, setAllSegmentsProcessedForModeC] =
+    useState(false);
   const [apiDataSource, setApiDataSource] = useState(dataSource);
   const [apiStatus, setApiStatus] = useState(
     supabaseConfigured
       ? "Workspace ready. Start by uploading audio or importing a transcript."
       : "Supabase is not connected yet. Add your Supabase settings before testing with real data."
   );
-  const [reviewerHasRun, setReviewerHasRun] = useState(true);
   const [selectedAudioFile, setSelectedAudioFile] = useState<File | null>(null);
   const [uploadLanguage, setUploadLanguage] =
     useState<Project["language"]>(project.language);
   const [isUploadingAudio, setIsUploadingAudio] = useState(false);
+  const [isAutoSplittingTranscript, setIsAutoSplittingTranscript] =
+    useState(false);
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [isGeneratingMeaningUnits, setIsGeneratingMeaningUnits] =
     useState(false);
+  const [isAcceptingMeaningUnits, setIsAcceptingMeaningUnits] = useState(false);
+  const [meaningUnitGenerationScope, setMeaningUnitGenerationScope] =
+    useState<"all" | "selected">("selected");
+  const [meaningUnitSegmentId, setMeaningUnitSegmentId] = useState(
+    segments[0]?.id ?? ""
+  );
+  const [generationProgress, setGenerationProgress] = useState<{
+    current: number;
+    label?: string;
+    total: number;
+  } | null>(null);
   const [isRunningCategories, setIsRunningCategories] = useState(false);
   const [isRunningReviewer, setIsRunningReviewer] = useState(false);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
@@ -139,6 +156,11 @@ export function GdiqrWorkspace({
   const [isConfirmingTranscript, setIsConfirmingTranscript] = useState(false);
   const [activeMeaningUnitRunId, setActiveMeaningUnitRunId] = useState("");
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
+  const [muReviewOpen, setMuReviewOpen] = useState(true);
+  const [categoryReviewOpen, setCategoryReviewOpen] = useState(true);
+  const [expandedReviewIssueIds, setExpandedReviewIssueIds] = useState<
+    string[]
+  >([]);
   const [selectedSegmentId, setSelectedSegmentId] = useState(
     segments[0]?.id ?? ""
   );
@@ -150,6 +172,7 @@ export function GdiqrWorkspace({
   );
   const [isSavingSegment, setIsSavingSegment] = useState(false);
   const segmentTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const meaningUnitAbortControllerRef = useRef<AbortController | null>(null);
 
   async function loadRunLogs() {
     const response = await fetch("/api/run-logs", { cache: "no-store" });
@@ -220,6 +243,7 @@ export function GdiqrWorkspace({
   useEffect(() => {
     if (displaySegments.length === 0) {
       setSelectedSegmentId("");
+      setMeaningUnitSegmentId("");
       setSegmentDraftTitle("");
       setSegmentDraftText("");
       return;
@@ -233,7 +257,13 @@ export function GdiqrWorkspace({
     }
     setSegmentDraftTitle(segment.topicLabel || segment.speakerInfo);
     setSegmentDraftText(segment.text);
-  }, [displaySegments, selectedSegmentId]);
+    if (!displaySegments.some((item) => item.id === meaningUnitSegmentId)) {
+      const readySegment =
+        displaySegments.find((item) => canRunMeaningUnitsForSegment(item)) ??
+        displaySegments[0];
+      setMeaningUnitSegmentId(readySegment.id);
+    }
+  }, [displaySegments, meaningUnitSegmentId, selectedSegmentId]);
 
   const completedSteps = useMemo(
     () => {
@@ -253,9 +283,6 @@ export function GdiqrWorkspace({
       if (displayCategories.length > 0) {
         completed.add("categories");
       }
-      if (reviewerOutputs.length > 0) {
-        completed.add("reviewers");
-      }
       return completed;
     },
     [
@@ -263,7 +290,6 @@ export function GdiqrWorkspace({
       displayCategories.length,
       displaySegments.length,
       editableTranscript,
-      reviewerOutputs.length,
       units.length
     ]
   );
@@ -303,25 +329,68 @@ export function GdiqrWorkspace({
       ),
     [displaySegments]
   );
-  const activeMeaningUnitSegment =
-    selectedSegment && canRunMeaningUnitsForSegment(selectedSegment)
-      ? selectedSegment
-      : readySegments[0];
+  const selectedMeaningUnitSegment = useMemo(
+    () =>
+      displaySegments.find((segment) => segment.id === meaningUnitSegmentId) ??
+      null,
+    [displaySegments, meaningUnitSegmentId]
+  );
   const canGenerateMeaningUnits = Boolean(
-    transcriptConfirmed && readySegments.length > 0
+    transcriptConfirmed &&
+      (meaningUnitGenerationScope === "all"
+        ? readySegments.length > 0
+        : selectedMeaningUnitSegment &&
+          canRunMeaningUnitsForSegment(selectedMeaningUnitSegment))
   );
   const confirmedMeaningUnits = useMemo(
     () => units.filter((unit) => isConfirmedMeaningUnit(unit)),
     [units]
   );
-  const canRunCategories = confirmedMeaningUnits.length > 0;
+  const unconfirmedMeaningUnits = useMemo(
+    () => units.filter((unit) => !isConfirmedMeaningUnit(unit)),
+    [units]
+  );
+  const excludedMeaningUnits = useMemo(
+    () => units.filter((unit) => unit.analysisExcluded),
+    [units]
+  );
+  const hasTemporaryFallbackCategories =
+    categoryDraftIsFallback || displayCategories.some(isFallbackCategory);
+  const canRunCategories =
+    confirmedMeaningUnits.length > 0 &&
+    (mode === "A" ||
+      (mode === "B" && displayCategories.length > 0 && !hasTemporaryFallbackCategories) ||
+      (mode === "C" &&
+        displayCategories.length > 0 &&
+        !hasTemporaryFallbackCategories &&
+        allSegmentsProcessedForModeC));
   const canRunReviewer = units.length > 0;
+  const meaningUnitReviewIssues = useMemo(
+    () => reviewerOutputs.filter((comment) => comment.workspace === "meaning-units"),
+    [reviewerOutputs]
+  );
+  const categoryReviewIssues = useMemo(
+    () => reviewerOutputs.filter((comment) => comment.workspace === "categories"),
+    [reviewerOutputs]
+  );
   const canExport = Boolean(
     editableTranscript.trim() ||
       units.length ||
       displayCategories.length ||
       reviewerOutputs.length
   );
+  const generationTargetLabel =
+    meaningUnitGenerationScope === "all"
+      ? "All Segments"
+      : selectedMeaningUnitSegment?.segmentId ?? "Selected Segment";
+  const selectedSegmentAlreadyHasUnits = Boolean(
+    selectedMeaningUnitSegment &&
+      units.some((unit) => unit.segmentId === selectedMeaningUnitSegment.segmentId)
+  );
+  const generationButtonLabel =
+    meaningUnitGenerationScope === "all"
+      ? "Generate Meaning Units for All Segments"
+      : `${selectedSegmentAlreadyHasUnits ? "Regenerate" : "Generate"} Meaning Units for ${selectedMeaningUnitSegment?.segmentId ?? "Selected Segment"}`;
 
   function applyWorkspace(workspace: WorkspaceData) {
     setCurrentProject(workspace.project);
@@ -342,6 +411,8 @@ export function GdiqrWorkspace({
     setReviewerOutputs(workspace.reviewerComments);
     setDisplayAuditEvents(workspace.auditEvents);
     setNarrative(workspace.integratedNarrative);
+    setCategoryDraftNotice("");
+    setCategoryDraftIsFallback(false);
     setApiDataSource(workspace.dataSource);
     setApiStatus("Workspace refreshed.");
   }
@@ -785,9 +856,126 @@ export function GdiqrWorkspace({
     }
   }
 
-  async function generateMeaningUnits(segment = selectedSegment) {
-    if (!segment) {
-      setApiStatus("Create and review a segment before generating meaning units.");
+  async function autoSplitTranscriptSegments() {
+    if (!editableTranscript.trim()) {
+      setApiStatus(
+        "No transcript text found. Please confirm or edit the transcript before auto-splitting."
+      );
+      return;
+    }
+    if (!transcriptConfirmed) {
+      setApiStatus("Confirm the transcript before auto-splitting segments.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Auto-splitting will replace the current segment list. Existing meaning units linked to these segments may need to be regenerated. Continue?"
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsAutoSplittingTranscript(true);
+    setApiStatus("Auto-splitting transcript into draft segments...");
+
+    try {
+      const response = await fetch("/api/segments/auto-split", {
+        body: JSON.stringify({
+          caseId: selectedSegment?.caseId ?? "CASE-001",
+          projectId: currentProject.id,
+          researchQuestion: currentProject.researchQuestion,
+          transcript: editableTranscript
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        notice?: string;
+        reason?: string;
+        saved?: boolean;
+        segments?: TranscriptSegment[];
+      };
+      if (!response.ok || !result.saved || !result.segments) {
+        setApiStatus(
+          result.error ?? result.reason ?? "Auto-split transcript failed."
+        );
+        return;
+      }
+
+      setDisplaySegments(result.segments);
+      setSelectedSegmentId(result.segments[0]?.id ?? "");
+      setUnits([]);
+      setDisplayCategories([]);
+      setReviewerOutputs([]);
+      setNarrative("");
+      setApiStatus(
+        result.notice ??
+          `Created ${result.segments.length} draft segment${result.segments.length === 1 ? "" : "s"}. Auto-generated segments must be reviewed before analysis.`
+      );
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error ? error.message : "Auto-split transcript failed."
+      );
+    } finally {
+      setIsAutoSplittingTranscript(false);
+    }
+  }
+
+  async function generateMeaningUnitsForSegment(
+    segment: TranscriptSegment,
+    signal: AbortSignal
+  ) {
+    const response = await fetchWithTimeout("/api/ai/meaning-units", {
+      body: JSON.stringify({
+        background: false,
+        caseId: segment.caseId,
+        lightInterpretation,
+        projectId: currentProject.id,
+        segmentId: segment.segmentId,
+        startingNumber: segment.startingMuNumber,
+        transcript: segment.text
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+      signal,
+      timeoutMs: 900000
+    });
+
+    if (!response.ok) {
+      const errorResult = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      throw new Error(errorResult.error ?? "Meaning-unit API failed");
+    }
+
+    const result = (await response.json()) as {
+      meaningUnits?: MeaningUnit[];
+      persisted?: boolean;
+      provider?: string;
+    };
+
+    const newUnits = result.meaningUnits;
+    if (newUnits) {
+      setUnits((current) =>
+        [
+          ...current.filter((unit) => unit.segmentId !== segment.segmentId),
+          ...newUnits
+        ].sort((left, right) => left.number - right.number)
+      );
+      setDisplaySegments((current) =>
+        current.map((item) =>
+          item.id === segment.id ? { ...item, status: "Analysed" } : item
+        )
+      );
+    }
+
+    return result;
+  }
+
+  async function generateMeaningUnits(segmentOverride?: TranscriptSegment | null) {
+    if (displaySegments.length === 0) {
+      setApiStatus("Create and review segments before generating meaning units.");
       return;
     }
     if (!transcriptConfirmed) {
@@ -796,76 +984,121 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    if (!canRunMeaningUnitsForSegment(segment)) {
+    const requestedSegments = segmentOverride
+      ? [segmentOverride]
+      : meaningUnitGenerationScope === "all"
+        ? readySegments
+        : selectedMeaningUnitSegment
+          ? [selectedMeaningUnitSegment]
+          : [];
+
+    if (requestedSegments.length === 0) {
       setApiStatus(
-        "Mark this segment as Ready for MU Analysis before running local AI."
+        meaningUnitGenerationScope === "all"
+          ? "No segments are ready. Mark at least one segment as Ready for MU Analysis first."
+          : "Choose a segment and mark it as Ready for MU Analysis before generating meaning units."
       );
       return;
     }
 
+    const notReadySegment = requestedSegments.find(
+      (item) => !canRunMeaningUnitsForSegment(item)
+    );
+    if (notReadySegment) {
+      setApiStatus(
+        `${notReadySegment.segmentId} is not ready. Mark it as Ready for MU Analysis before running local AI.`
+      );
+      return;
+    }
+
+    const controller = new AbortController();
+    meaningUnitAbortControllerRef.current = controller;
     setIsGeneratingMeaningUnits(true);
-    setApiStatus(
-      `Generating meaning units for ${segment.segmentId}. The activity panel will show each chunk.`
+    setGenerationProgress(
+      requestedSegments.length > 1
+        ? { current: 0, total: requestedSegments.length }
+        : { current: 1, label: requestedSegments[0].segmentId, total: 1 }
     );
 
     try {
-      const response = await fetchWithTimeout("/api/ai/meaning-units", {
-        body: JSON.stringify({
-          caseId: segment.caseId,
-          lightInterpretation,
-          projectId: currentProject.id,
-          segmentId: segment.segmentId,
-          startingNumber: segment.startingMuNumber,
-          transcript: segment.text
-        }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-        timeoutMs: 30000
-      });
-      if (!response.ok) {
-        const errorResult = (await response.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        setApiStatus(errorResult.error ?? "Meaning-unit API failed");
-        return;
-      }
-      const result = (await response.json()) as {
-        meaningUnits?: MeaningUnit[];
-        persisted?: boolean;
-        provider?: string;
-        runId?: string;
-        started?: boolean;
-      };
-      if (result.started && result.runId) {
-        setActiveMeaningUnitRunId(result.runId);
+      for (const [index, segment] of requestedSegments.entries()) {
+        if (controller.signal.aborted) {
+          break;
+        }
+        setGenerationProgress({
+          current: index + 1,
+          label: segment.segmentId,
+          total: requestedSegments.length
+        });
         setApiStatus(
-          `Meaning-unit generation started for ${segment.segmentId}. Leave this page open and watch the activity panel for progress.`
+          requestedSegments.length > 1
+            ? `Generating meaning units for all segments... ${segment.segmentId} (${index + 1} of ${requestedSegments.length})`
+            : `Generating meaning units for ${segment.segmentId}...`
         );
-        return;
+        await generateMeaningUnitsForSegment(segment, controller.signal);
       }
-      if (result.meaningUnits) {
-        setUnits(result.meaningUnits);
-        setIsGeneratingMeaningUnits(false);
+      if (!controller.signal.aborted) {
         setApiStatus(
-          `Meaning-unit API applied from ${result.provider ?? aiProvider}${
-            result.persisted ? " and saved to Supabase" : ""
-          }`
+          requestedSegments.length > 1
+            ? `Meaning-unit generation completed for ${requestedSegments.length} segment${requestedSegments.length === 1 ? "" : "s"}.`
+            : `Meaning-unit generation completed for ${requestedSegments[0].segmentId}.`
         );
       }
     } catch (error) {
-      setIsGeneratingMeaningUnits(false);
+      if (controller.signal.aborted) {
+        setApiStatus("Generation stopped by user.");
+        return;
+      }
       setApiStatus(
         error instanceof Error ? error.message : "Meaning-unit API failed"
       );
+    } finally {
+      meaningUnitAbortControllerRef.current = null;
+      setIsGeneratingMeaningUnits(false);
+      setGenerationProgress(null);
     }
   }
 
-  async function runCategories() {
+  function stopMeaningUnitGeneration() {
+    meaningUnitAbortControllerRef.current?.abort();
+    meaningUnitAbortControllerRef.current = null;
+    setIsGeneratingMeaningUnits(false);
+    setGenerationProgress(null);
+    setApiStatus("Generation stopped by user.");
+  }
+
+  async function runCategories(options: { allowFallbackRegenerate?: boolean } = {}) {
     if (confirmedMeaningUnits.length === 0) {
       setApiStatus(
         "Accept or edit meaning-unit summaries before creating categories. Categories only use confirmed summaries."
       );
       return;
+    }
+    if (mode === "B" && displayCategories.length === 0) {
+      setApiStatus("Run Mode A first. Mode B refines an existing category system.");
+      return;
+    }
+    if (
+      (mode === "B" || mode === "C") &&
+      hasTemporaryFallbackCategories &&
+      !options.allowFallbackRegenerate
+    ) {
+      setApiStatus(
+        "This category set is a temporary fallback draft. Regenerate it or explicitly accept it for prototype testing before running Mode B/C."
+      );
+      return;
+    }
+    if (mode === "C") {
+      if (displayCategories.length === 0) {
+        setApiStatus("Run Mode A and Mode B before final Mode C integration.");
+        return;
+      }
+      if (!allSegmentsProcessedForModeC) {
+        setApiStatus(
+          "Confirm that all segments in this transcript have been processed and reviewed before running Mode C."
+        );
+        return;
+      }
     }
 
     setIsRunningCategories(true);
@@ -876,6 +1109,7 @@ export function GdiqrWorkspace({
         body: JSON.stringify({
           mode,
           projectId: currentProject.id,
+          allBatchesProcessed: allSegmentsProcessedForModeC,
           units: confirmedMeaningUnits
         }),
         headers: { "Content-Type": "application/json" },
@@ -891,16 +1125,27 @@ export function GdiqrWorkspace({
       }
       const result = (await response.json()) as {
         categories?: CategoryNode[];
+        categoryRevisions?: string[];
         integratedNarrative?: string;
+        isFallbackDraft?: boolean;
         persisted?: boolean;
         provider?: string;
+        uncertainties?: string[];
       };
       if (result.categories) {
         setDisplayCategories(result.categories);
       }
       setNarrative(result.integratedNarrative ?? "");
+      setCategoryDraftIsFallback(Boolean(result.isFallbackDraft));
+      const warning =
+        result.uncertainties?.[0] ?? result.categoryRevisions?.[0] ?? "";
+      setCategoryDraftNotice(
+        result.isFallbackDraft
+          ? "AI returned empty output. A temporary fallback draft was created to keep the workflow testable. Please review or regenerate. It has not been saved as final project categories."
+          : warning
+      );
       setApiStatus(
-        `Category API Mode ${mode} applied from ${result.provider ?? aiProvider}${
+        `${warning ? `${warning} ` : ""}Category API Mode ${mode} applied from ${result.provider ?? aiProvider}${
           result.persisted ? " and saved to Supabase" : ""
         }`
       );
@@ -913,18 +1158,86 @@ export function GdiqrWorkspace({
     }
   }
 
-  async function runReviewer() {
+  async function acceptTemporaryCategoryDraft() {
+    if (!hasTemporaryFallbackCategories || displayCategories.length === 0) {
+      setApiStatus("No temporary fallback category draft is available to accept.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "This will save the temporary fallback category draft to Supabase for prototype testing. Only continue if you have reviewed it and accept it as a researcher-confirmed draft."
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsRunningCategories(true);
+    setApiStatus("Saving researcher-confirmed temporary category draft...");
+    try {
+      const response = await fetchWithTimeout("/api/ai/categories", {
+        body: JSON.stringify({
+          acceptFallbackDraft: true,
+          categories: displayCategories,
+          integratedNarrative: narrative,
+          mode,
+          projectId: currentProject.id
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+        timeoutMs: 120000
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        categories?: CategoryNode[];
+        error?: string;
+        integratedNarrative?: string;
+        persisted?: boolean;
+      };
+      if (!response.ok || !result.persisted) {
+        setApiStatus(result.error ?? "Temporary category draft could not be saved.");
+        return;
+      }
+      setDisplayCategories(result.categories ?? displayCategories);
+      setNarrative(result.integratedNarrative ?? narrative);
+      setCategoryDraftIsFallback(false);
+      setCategoryDraftNotice(
+        "Temporary fallback draft saved after explicit researcher confirmation. Review/refine it before using it as final analysis."
+      );
+      setApiStatus("Temporary category draft saved to Supabase after researcher confirmation.");
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error
+          ? error.message
+          : "Temporary category draft could not be saved."
+      );
+    } finally {
+      setIsRunningCategories(false);
+    }
+  }
+
+  async function runReviewer(reviewerWorkspace: ReviewerWorkspace) {
     if (units.length === 0) {
       setApiStatus("Generate meaning units before running reviewer checks.");
       return;
     }
+    if (reviewerWorkspace === "categories" && displayCategories.length === 0) {
+      setApiStatus("Create categories before running the category review.");
+      return;
+    }
 
     setIsRunningReviewer(true);
-    setApiStatus("Running reviewer checks on the current analysis...");
+    setApiStatus(
+      reviewerWorkspace === "categories"
+        ? "Running GDIQR category check..."
+        : "Running GDIQR meaning-unit check..."
+    );
 
     try {
       const response = await fetchWithTimeout("/api/ai/reviewer", {
-        body: JSON.stringify({ projectId: currentProject.id, units }),
+        body: JSON.stringify({
+          mode,
+          projectId: currentProject.id,
+          workspace: reviewerWorkspace
+        }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
         timeoutMs: 900000
@@ -941,10 +1254,12 @@ export function GdiqrWorkspace({
         persisted?: boolean;
         provider?: string;
       };
-      setReviewerOutputs(result.comments ?? []);
-      setReviewerHasRun(true);
+      setReviewerOutputs((current) => [
+        ...current.filter((comment) => comment.workspace !== reviewerWorkspace),
+        ...(result.comments ?? [])
+      ]);
       setApiStatus(
-        `Reviewer API applied from ${result.provider ?? aiProvider}${
+        `GDIQR review applied from ${result.provider ?? aiProvider}${
           result.persisted ? " and saved to Supabase" : ""
         }`
       );
@@ -955,6 +1270,58 @@ export function GdiqrWorkspace({
     }
   }
 
+  async function updateReviewerIssue(
+    commentId: string,
+    updates: { memo?: string; status?: ReviewerComment["status"] }
+  ) {
+    const response = await fetch(`/api/reviewer-comments/${commentId}`, {
+      body: JSON.stringify({
+        ...updates,
+        projectId: currentProject.id
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH"
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      comment?: ReviewerComment;
+      error?: string;
+      saved?: boolean;
+    };
+    if (!response.ok || !result.saved || !result.comment) {
+      setApiStatus(result.error ?? "Reviewer issue update failed.");
+      return;
+    }
+    setReviewerOutputs((current) =>
+      current.map((comment) =>
+        comment.id === result.comment?.id ? result.comment : comment
+      )
+    );
+    setApiStatus("Reviewer issue updated.");
+  }
+
+  function viewReviewerTarget(comment: ReviewerComment) {
+    const targetId =
+      comment.targetType === "category" || comment.targetType === "subcategory"
+        ? `category-${comment.targetId}`
+        : comment.targetType === "integrated_narrative"
+          ? "integrated-narrative"
+          : comment.targetId.replace(/^MU/i, "mu-");
+    const step =
+      comment.workspace === "categories" ? "categories" : "meaning-units";
+    setActiveStep(step);
+    window.setTimeout(() => {
+      document.getElementById(targetId)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center"
+      });
+      document.getElementById(targetId)?.classList.add("target-highlight");
+      window.setTimeout(
+        () => document.getElementById(targetId)?.classList.remove("target-highlight"),
+        1800
+      );
+    }, 80);
+  }
+
   function updateHumanSummary(unitId: string, value: string) {
     setUnits((current) =>
       current.map((unit) =>
@@ -963,6 +1330,83 @@ export function GdiqrWorkspace({
           : unit
       )
     );
+  }
+
+  async function saveMeaningUnitHumanSummary(unitId: string) {
+    const unit = units.find((item) => item.id === unitId);
+    if (!unit) {
+      return;
+    }
+
+    const response = await fetch(`/api/meaning-units/${unitId}`, {
+      body: JSON.stringify({
+        humanStatus: unit.humanStatus,
+        humanSummary: unit.humanSummary
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH"
+    });
+    if (!response.ok) {
+      setApiStatus("Meaning-unit summary edit could not be saved. Try again.");
+      return;
+    }
+    setApiStatus("Meaning-unit summary edit saved.");
+  }
+
+  async function acceptAllReviewedMeaningUnits() {
+    const includableUnits = units.filter((unit) => !unit.analysisExcluded);
+    if (includableUnits.length === 0) {
+      setApiStatus("Generate meaning units before accepting summaries.");
+      return;
+    }
+
+    setIsAcceptingMeaningUnits(true);
+    setApiStatus("Saving accepted meaning-unit summaries...");
+
+    try {
+      const results = await Promise.all(
+        includableUnits.map(async (unit) => {
+          const response = await fetch(`/api/meaning-units/${unit.id}`, {
+            body: JSON.stringify({
+              humanStatus: "Accepted",
+              humanSummary: unit.humanSummary || unit.aiSummary
+            }),
+            headers: { "Content-Type": "application/json" },
+            method: "PATCH"
+          });
+          if (!response.ok) {
+            throw new Error(`Could not save MU #${unit.number}.`);
+          }
+          return (await response.json()) as {
+            meaningUnit?: MeaningUnit;
+          };
+        })
+      );
+
+      const savedUnits = results
+        .map((result) => result.meaningUnit)
+        .filter((unit): unit is MeaningUnit => Boolean(unit));
+      setUnits((current) =>
+        current.map(
+          (unit) =>
+            savedUnits.find((savedUnit) => savedUnit.id === unit.id) ?? {
+              ...unit,
+              humanStatus: "Accepted"
+            }
+        )
+      );
+      setApiStatus(
+        "Meaning-unit summaries accepted. You can now run category Mode A/B/C."
+      );
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error
+          ? error.message
+          : "Could not accept meaning-unit summaries."
+      );
+    } finally {
+      setIsAcceptingMeaningUnits(false);
+    }
   }
 
   async function updateMeaningUnitSpeaker(unitId: string, speaker: string) {
@@ -987,6 +1431,98 @@ export function GdiqrWorkspace({
       return;
     }
     setApiStatus("Speaker correction saved for this meaning unit.");
+  }
+
+  async function setMeaningUnitExcluded(unit: MeaningUnit, excluded: boolean) {
+    const reason = excluded
+      ? window.prompt(
+          "Why should this MU be excluded from analysis?",
+          unit.speaker === "Interviewer"
+            ? "Interviewer opening/question, not participant experience"
+            : "Not relevant for GDIQR analysis"
+        )
+      : null;
+    if (excluded && reason === null) {
+      return;
+    }
+
+    setUnits((current) =>
+      current.map((item) =>
+        item.id === unit.id
+          ? {
+              ...item,
+              analysisExcluded: excluded,
+              exclusionReason: excluded ? reason || "Excluded from analysis" : undefined,
+              humanStatus: excluded ? "Excluded" : "Needs review"
+            }
+          : item
+      )
+    );
+    setDisplayCategories([]);
+    setNarrative("");
+    setCategoryDraftNotice("");
+    setCategoryDraftIsFallback(false);
+    setApiStatus(excluded ? "Excluding meaning unit..." : "Restoring meaning unit...");
+
+    const response = await fetch(`/api/meaning-units/${unit.id}`, {
+      body: JSON.stringify({
+        analysisExcluded: excluded,
+        exclusionReason: excluded ? reason || "Excluded from analysis" : null
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH"
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      meaningUnit?: MeaningUnit;
+      saved?: boolean;
+    };
+    if (!response.ok || !result.saved) {
+      setApiStatus(result.error ?? "Meaning-unit exclusion could not be saved.");
+      return;
+    }
+    if (result.meaningUnit) {
+      setUnits((current) =>
+        current.map((item) =>
+          item.id === result.meaningUnit?.id ? result.meaningUnit : item
+        )
+      );
+    }
+    setApiStatus(
+      excluded
+        ? "Meaning unit excluded from category analysis. Existing categories were cleared; rerun categories when ready."
+        : "Meaning unit restored for analysis. Review and accept it before categories."
+    );
+  }
+
+  async function deleteMeaningUnitFromWorkspace(unit: MeaningUnit) {
+    const confirmed = window.confirm(
+      `Delete MU #${unit.number}? This removes it from the workspace and clears existing categories because category results may reference it. Use Exclude instead if you want to keep an audit-visible record.`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setApiStatus(`Deleting MU #${unit.number}...`);
+    const response = await fetch(`/api/meaning-units/${unit.id}`, {
+      method: "DELETE"
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      deleted?: boolean;
+      error?: string;
+    };
+    if (!response.ok || !result.deleted) {
+      setApiStatus(result.error ?? "Meaning unit could not be deleted.");
+      return;
+    }
+    setUnits((current) => current.filter((item) => item.id !== unit.id));
+    setDisplayCategories([]);
+    setNarrative("");
+    setCategoryDraftNotice("");
+    setCategoryDraftIsFallback(false);
+    setApiStatus(
+      `MU #${unit.number} deleted. Existing categories were cleared; rerun categories when ready.`
+    );
   }
 
   function returnToTranscriptForUnit(unit: MeaningUnit) {
@@ -1190,11 +1726,11 @@ export function GdiqrWorkspace({
           <button
             className="button soft"
             disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
-            onClick={() => void generateMeaningUnits(activeMeaningUnitSegment)}
+            onClick={() => void generateMeaningUnits()}
             type="button"
             title={
               transcriptConfirmed
-                ? "Run local AI for the selected ready segment"
+                ? `Run local AI for ${generationTargetLabel}`
                 : "Confirm the transcript before running AI analysis"
             }
           >
@@ -1500,6 +2036,8 @@ export function GdiqrWorkspace({
                       Supported transcript files: TXT, MD, VTT, SRT, DOCX, and
                       PDF. You can also paste text below. The app will prepare
                       the text, then ask you to review it before analysis.
+                      For shared-link demos, use a short anonymised transcript
+                      or test text only. Files over 5 MB are not accepted.
                     </p>
                   </div>
                   <div className="upload-controls">
@@ -1735,10 +2273,36 @@ export function GdiqrWorkspace({
                 <div className="mini-card soft">
                   <span className="label">Segment Manager</span>
                   <p className="small">
-                    Review and adjust segment boundaries before analysis. Only
-                    segments marked Ready for MU Analysis are sent to local AI,
-                    one segment at a time.
+                    Auto-generated segments are draft processing chunks, not
+                    meaning units. Review and adjust boundaries before analysis.
+                    Only segments marked Ready for MU Analysis are sent to
+                    local AI, one segment at a time.
                   </p>
+                  <div className="button-row">
+                    <button
+                      className="button primary"
+                      disabled={
+                        isAutoSplittingTranscript ||
+                        !editableTranscript.trim() ||
+                        !transcriptConfirmed
+                      }
+                      onClick={() => void autoSplitTranscriptSegments()}
+                      title={
+                        transcriptConfirmed
+                          ? "Create draft segments from the confirmed transcript"
+                          : "Confirm the transcript before auto-splitting"
+                      }
+                      type="button"
+                    >
+                      <GitBranch size={18} />
+                      {isAutoSplittingTranscript
+                        ? "Auto-splitting..."
+                        : "Auto-split transcript"}
+                    </button>
+                    <span className="badge warning">
+                      Auto-generated segments must be reviewed before analysis.
+                    </span>
+                  </div>
                 </div>
                 {displaySegments.length === 0 && (
                   <EmptyState text="No segments yet. Upload and transcribe audio first; the app will create the first working segment from the transcript." />
@@ -1762,6 +2326,9 @@ export function GdiqrWorkspace({
                             <p className="small">
                               {segment.text.slice(0, 120)}
                               {segment.text.length > 120 ? "..." : ""}
+                            </p>
+                            <p className="small">
+                              {approximateWordCount(segment.text)} words
                             </p>
                           </div>
                           <StatusBadge label={segment.status} />
@@ -1819,7 +2386,8 @@ export function GdiqrWorkspace({
                           <p className="small">
                             Starting MU #{selectedSegment.startingMuNumber} ·{" "}
                             {selectedSegment.startTimestamp} to{" "}
-                            {selectedSegment.endTimestamp}
+                            {selectedSegment.endTimestamp} ·{" "}
+                            {approximateWordCount(selectedSegment.text)} words
                           </p>
                           <label className="label" htmlFor="segment-editor">
                             Editable segment text
@@ -1927,7 +2495,9 @@ export function GdiqrWorkspace({
             )}
 
             {activeStep === "meaning-units" && (
-              <div className="section-body grid">
+              <div className="section-body">
+                <div className="review-layout">
+                  <div className="grid">
                 <div className="mini-card soft">
                   <span className="label">Before categorising</span>
                   <p className="small">
@@ -1939,15 +2509,75 @@ export function GdiqrWorkspace({
                     category work is based on the right text.
                   </p>
                 </div>
+                <div className="mini-card soft">
+                  <span className="label">Meaning Units Generation Scope</span>
+                  <div className="scope-options">
+                    <label className="scope-option">
+                      <input
+                        checked={meaningUnitGenerationScope === "all"}
+                        disabled={isGeneratingMeaningUnits}
+                        name="mu-generation-scope"
+                        onChange={() => setMeaningUnitGenerationScope("all")}
+                        type="radio"
+                      />
+                      <span>All segments</span>
+                    </label>
+                    <label className="scope-option">
+                      <input
+                        checked={meaningUnitGenerationScope === "selected"}
+                        disabled={isGeneratingMeaningUnits}
+                        name="mu-generation-scope"
+                        onChange={() => setMeaningUnitGenerationScope("selected")}
+                        type="radio"
+                      />
+                      <span>Selected segment only</span>
+                    </label>
+                  </div>
+                  <div className="upload-controls">
+                    <label className="label" htmlFor="mu-segment-select">
+                      Segment
+                    </label>
+                    <select
+                      className="field"
+                      disabled={
+                        isGeneratingMeaningUnits ||
+                        meaningUnitGenerationScope === "all"
+                      }
+                      id="mu-segment-select"
+                      onChange={(event) =>
+                        setMeaningUnitSegmentId(event.target.value)
+                      }
+                      value={meaningUnitSegmentId}
+                    >
+                      {displaySegments.map((segment) => (
+                        <option key={segment.id} value={segment.id}>
+                          {segment.segmentId} — {segment.topicLabel} ({segment.status})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <p className="small">
+                    Only segments marked Ready for MU Analysis will run. All
+                    segments mode processes ready segments one by one and keeps
+                    completed results if you stop later.
+                  </p>
+                  {generationProgress && (
+                    <p className="small">
+                      {generationProgress.total > 1
+                        ? `Generating meaning units for all segments... ${generationProgress.label ?? ""} (${generationProgress.current} of ${generationProgress.total})`
+                        : `Generating meaning units for ${generationProgress.label ?? generationTargetLabel}...`}
+                    </p>
+                  )}
+                </div>
                 <div className="button-row">
                   <button
                     className="button primary"
                     disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
-                    onClick={() => void generateMeaningUnits(activeMeaningUnitSegment)}
+                    onClick={() => void generateMeaningUnits()}
                     type="button"
                     title={
                       transcriptConfirmed
-                        ? "Generate meaning units from a ready segment"
+                        ? `Generate meaning units for ${generationTargetLabel}`
                         : "Confirm the transcript before generating meaning units"
                     }
                   >
@@ -1955,17 +2585,38 @@ export function GdiqrWorkspace({
                     {isGeneratingMeaningUnits
                       ? "Generating MUs..."
                       : transcriptConfirmed
-                        ? "Generate draft MUs for ready segment"
+                        ? generationButtonLabel
                         : "Confirm transcript first"}
                   </button>
                   <button
+                    className="button soft"
+                    disabled={units.length === 0 || isAcceptingMeaningUnits}
+                    onClick={() => void acceptAllReviewedMeaningUnits()}
+                    title="After reviewing the generated summaries, accept them so categories can use them."
+                    type="button"
+                  >
+                    <Check size={18} />
+                    {isAcceptingMeaningUnits
+                      ? "Saving accepted MUs..."
+                      : "Accept all reviewed summaries"}
+                  </button>
+                  {isGeneratingMeaningUnits && (
+                    <button
+                      className="button danger"
+                      onClick={stopMeaningUnitGeneration}
+                      type="button"
+                    >
+                      Stop generation
+                    </button>
+                  )}
+                  <button
                     className="button"
                     disabled={!canRunReviewer || isRunningReviewer}
-                    onClick={runReviewer}
+                    onClick={() => void runReviewer("meaning-units")}
                     type="button"
                   >
                     <ShieldCheck size={18} />
-                    Run reviewer
+                    Run GDIQR check
                   </button>
                   <span className="badge">
                     Light interpretation: {lightInterpretation ? "ON" : "OFF"}
@@ -1996,11 +2647,16 @@ export function GdiqrWorkspace({
                       </thead>
                       <tbody>
                         {units.map((unit) => (
-                          <tr key={unit.id}>
+                          <tr
+                            className={unit.analysisExcluded ? "excluded-row" : ""}
+                            id={`mu-${unit.number}`}
+                            key={unit.id}
+                          >
                             <td className="mono">#{unit.number}</td>
                             <td>
                               <select
                                 className="select compact"
+                                disabled={unit.analysisExcluded}
                                 onChange={(event) =>
                                   void updateMeaningUnitSpeaker(
                                     unit.id,
@@ -2014,11 +2670,24 @@ export function GdiqrWorkspace({
                                 <option value="Unknown">Unknown</option>
                               </select>
                             </td>
-                            <td>{unit.excerpt}</td>
+                            <td>
+                              {unit.excerpt}
+                              {unit.analysisExcluded && (
+                                <p className="small">
+                                  Excluded:{" "}
+                                  {unit.exclusionReason ||
+                                    "Not used for category analysis"}
+                                </p>
+                              )}
+                            </td>
                             <td>{unit.aiSummary}</td>
                             <td>
                               <textarea
                                 className="field"
+                                disabled={unit.analysisExcluded}
+                                onBlur={() =>
+                                  void saveMeaningUnitHumanSummary(unit.id)
+                                }
                                 onChange={(event) =>
                                   updateHumanSummary(unit.id, event.target.value)
                                 }
@@ -2036,21 +2705,51 @@ export function GdiqrWorkspace({
                             </td>
                             <td>
                               <div className="button-row">
+                                {!unit.analysisExcluded && (
+                                  <button
+                                    className="button icon"
+                                    onClick={() => markAccepted(unit.id)}
+                                    title="Accept meaning unit"
+                                    type="button"
+                                  >
+                                    <Check size={18} />
+                                  </button>
+                                )}
                                 <button
                                   className="button icon"
-                                  onClick={() => markAccepted(unit.id)}
-                                  title="Accept meaning unit"
-                                  type="button"
-                                >
-                                  <Check size={18} />
-                                </button>
-                                <button
-                                  className="button icon"
+                                  disabled={unit.analysisExcluded}
                                   onClick={() => returnToTranscriptForUnit(unit)}
                                   title="Fix source transcript and regenerate"
                                   type="button"
                                 >
                                   <Pencil size={18} />
+                                </button>
+                                <button
+                                  className="button icon"
+                                  onClick={() =>
+                                    void setMeaningUnitExcluded(
+                                      unit,
+                                      !unit.analysisExcluded
+                                    )
+                                  }
+                                  title={
+                                    unit.analysisExcluded
+                                      ? "Restore MU to analysis"
+                                      : "Exclude MU from category analysis"
+                                  }
+                                  type="button"
+                                >
+                                  <Ban size={18} />
+                                </button>
+                                <button
+                                  className="button icon danger"
+                                  onClick={() =>
+                                    void deleteMeaningUnitFromWorkspace(unit)
+                                  }
+                                  title="Delete meaning unit"
+                                  type="button"
+                                >
+                                  <Trash2 size={18} />
                                 </button>
                               </div>
                             </td>
@@ -2060,11 +2759,47 @@ export function GdiqrWorkspace({
                     </table>
                   </div>
                 )}
+                  </div>
+                  <ReviewerPanel
+                    expandedIssueIds={expandedReviewIssueIds}
+                    isOpen={muReviewOpen}
+                    issues={meaningUnitReviewIssues}
+                    isRunning={isRunningReviewer}
+                    onAddMemo={(issue) => {
+                      const memo = window.prompt(
+                        "Researcher memo for this reviewer issue:",
+                        issue.researcherMemo ?? ""
+                      );
+                      if (memo !== null) {
+                        void updateReviewerIssue(issue.id, { memo });
+                      }
+                    }}
+                    onDismiss={(issue) =>
+                      void updateReviewerIssue(issue.id, { status: "dismissed" })
+                    }
+                    onResolve={(issue) =>
+                      void updateReviewerIssue(issue.id, { status: "resolved" })
+                    }
+                    onRun={() => void runReviewer("meaning-units")}
+                    onToggle={() => setMuReviewOpen((value) => !value)}
+                    onToggleIssue={(issueId) =>
+                      setExpandedReviewIssueIds((current) =>
+                        current.includes(issueId)
+                          ? current.filter((id) => id !== issueId)
+                          : [...current, issueId]
+                      )
+                    }
+                    onView={viewReviewerTarget}
+                    title="GDIQR Review"
+                  />
+                </div>
               </div>
             )}
 
             {activeStep === "categories" && (
-              <div className="section-body grid">
+              <div className="section-body">
+                <div className="review-layout">
+                  <div className="grid">
                 <div className="mini-card soft">
                   <span className="label">Category readiness</span>
                   <p className="small">
@@ -2073,6 +2808,35 @@ export function GdiqrWorkspace({
                     based on confirmed participant meaning rather than raw
                     transcript text.
                   </p>
+                  <div className="button-row">
+                    <span
+                      className={`badge ${
+                        confirmedMeaningUnits.length > 0 ? "" : "warning"
+                      }`}
+                    >
+                      Confirmed summaries: {confirmedMeaningUnits.length} /{" "}
+                      {units.length - excludedMeaningUnits.length}
+                    </span>
+                    {excludedMeaningUnits.length > 0 && (
+                      <span className="badge warning">
+                        Excluded MUs: {excludedMeaningUnits.length}
+                      </span>
+                    )}
+                    {units.length > 0 && confirmedMeaningUnits.length === 0 && (
+                      <button
+                        className="button soft"
+                        onClick={() => setActiveStep("meaning-units")}
+                        type="button"
+                      >
+                        Review and accept MUs first
+                      </button>
+                    )}
+                    {hasTemporaryFallbackCategories && (
+                      <span className="badge warning">
+                        Temporary fallback draft
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="mode-selector">
                   <ModeButton
@@ -2094,19 +2858,103 @@ export function GdiqrWorkspace({
                     onClick={() => setMode("C")}
                   />
                 </div>
+                {mode === "C" && (
+                  <div className="mini-card soft">
+                    <label className="scope-option">
+                      <input
+                        checked={allSegmentsProcessedForModeC}
+                        onChange={(event) =>
+                          setAllSegmentsProcessedForModeC(event.target.checked)
+                        }
+                        type="checkbox"
+                      />
+                      <span>
+                        I confirm all segments in this transcript have been
+                        processed, reviewed, and accepted for final integration.
+                      </span>
+                    </label>
+                    <p className="small">
+                      Mode C should only be used after the single-transcript
+                      batch is complete. It creates the final structure and
+                      integrated narrative.
+                    </p>
+                  </div>
+                )}
+                {categoryDraftNotice && (
+                  <div
+                    className={`mini-card ${
+                      hasTemporaryFallbackCategories ? "warning-card" : "soft"
+                    }`}
+                  >
+                    <span className="label">
+                      {hasTemporaryFallbackCategories
+                        ? "Temporary fallback draft"
+                        : "Category note"}
+                    </span>
+                    <p className="small">{categoryDraftNotice}</p>
+                    {hasTemporaryFallbackCategories && (
+                      <div className="button-row">
+                        <button
+                          className="button primary"
+                          disabled={isRunningCategories}
+                          onClick={() =>
+                            void runCategories({ allowFallbackRegenerate: true })
+                          }
+                          type="button"
+                        >
+                          <Bot size={18} />
+                          Regenerate Mode {mode}
+                        </button>
+                        <button
+                          className="button"
+                          disabled={isRunningCategories}
+                          onClick={() => void acceptTemporaryCategoryDraft()}
+                          type="button"
+                        >
+                          <Check size={18} />
+                          Accept temporary draft for prototype
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="button-row">
                   <button
                     className="button primary"
                     disabled={!canRunCategories || isRunningCategories}
-                    onClick={runCategories}
+                    onClick={() => void runCategories()}
+                    title={
+                      canRunCategories
+                        ? `Run Mode ${mode} using confirmed MU summaries`
+                        : getCategoryRunDisabledReason({
+                            allSegmentsProcessedForModeC,
+                            confirmedMeaningUnits: confirmedMeaningUnits.length,
+                            hasTemporaryFallbackCategories,
+                            mode,
+                            categoryCount: displayCategories.length
+                          })
+                    }
                     type="button"
                   >
                     <Bot size={18} />
-                    {isRunningCategories ? `Running Mode ${mode}...` : `Run Mode ${mode}`}
+                    {isRunningCategories
+                      ? `Running Mode ${mode}...`
+                      : hasTemporaryFallbackCategories
+                        ? `Regenerate Mode ${mode}`
+                        : `Run Mode ${mode}`}
+                  </button>
+                  <button
+                    className="button"
+                    disabled={!displayCategories.length || isRunningReviewer}
+                    onClick={() => void runReviewer("categories")}
+                    type="button"
+                  >
+                    <ShieldCheck size={18} />
+                    Run category check
                   </button>
                   {mode === "C" && (
                     <span className="badge warning">
-                      Confirmation required: all batches processed
+                      Confirmation required: transcript batch complete
                     </span>
                   )}
                 </div>
@@ -2122,47 +2970,43 @@ export function GdiqrWorkspace({
                 {mode === "C" && (
                   <div className="mini-card soft">
                     <span className="label">Integrated narrative</span>
-                    <p>{narrative}</p>
+                    <p id="integrated-narrative">{narrative}</p>
                   </div>
                 )}
-              </div>
-            )}
-
-            {activeStep === "reviewers" && (
-              <div className="section-body grid">
-                <div className="button-row">
-                  <button
-                    className="button primary"
-                    disabled={!canRunReviewer || isRunningReviewer}
-                    onClick={runReviewer}
-                    type="button"
-                  >
-                    <SearchCheck size={18} />
-                    {isRunningReviewer ? "Running reviewers..." : "Run reviewer agents"}
-                  </button>
-                  <span className="badge">
-                    {reviewerHasRun ? "Reviewer output ready" : "Not run"}
-                  </span>
+                  </div>
+                  <ReviewerPanel
+                    expandedIssueIds={expandedReviewIssueIds}
+                    isOpen={categoryReviewOpen}
+                    issues={categoryReviewIssues}
+                    isRunning={isRunningReviewer}
+                    onAddMemo={(issue) => {
+                      const memo = window.prompt(
+                        "Researcher memo for this reviewer issue:",
+                        issue.researcherMemo ?? ""
+                      );
+                      if (memo !== null) {
+                        void updateReviewerIssue(issue.id, { memo });
+                      }
+                    }}
+                    onDismiss={(issue) =>
+                      void updateReviewerIssue(issue.id, { status: "dismissed" })
+                    }
+                    onResolve={(issue) =>
+                      void updateReviewerIssue(issue.id, { status: "resolved" })
+                    }
+                    onRun={() => void runReviewer("categories")}
+                    onToggle={() => setCategoryReviewOpen((value) => !value)}
+                    onToggleIssue={(issueId) =>
+                      setExpandedReviewIssueIds((current) =>
+                        current.includes(issueId)
+                          ? current.filter((id) => id !== issueId)
+                          : [...current, issueId]
+                      )
+                    }
+                    onView={viewReviewerTarget}
+                    title="Category Review"
+                  />
                 </div>
-                {reviewerOutputs.length === 0 ? (
-                  <EmptyState text="No reviewer comments yet. Run reviewer agents after meaning units are available." />
-                ) : (
-                  <div className="grid two">
-                    {reviewerOutputs.map((comment) => (
-                      <div className="mini-card" key={comment.id}>
-                      <div className="category-header">
-                        <div>
-                          <span className="label">{comment.agent}</span>
-                          <h3>{comment.target}</h3>
-                        </div>
-                        <StatusBadge label={comment.severity} />
-                      </div>
-                      <p>{comment.comment}</p>
-                      <p className="small">{comment.suggestedAction}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             )}
 
@@ -2238,7 +3082,8 @@ function StatusBadge({ label }: { label: string }) {
     ? "badge warning"
     : lowered.includes("major") ||
         lowered.includes("needs") ||
-        lowered.includes("failed")
+        lowered.includes("failed") ||
+        lowered.includes("excluded")
       ? "badge danger"
       : lowered.includes("pass") ||
           lowered.includes("accepted") ||
@@ -2316,7 +3161,24 @@ function canRunMeaningUnitsForSegment(segment: TranscriptSegment) {
 }
 
 function isConfirmedMeaningUnit(unit: MeaningUnit) {
-  return unit.humanStatus === "Accepted" || unit.humanStatus === "Edited";
+  return (
+    !unit.analysisExcluded &&
+    (unit.humanStatus === "Accepted" || unit.humanStatus === "Edited")
+  );
+}
+
+function approximateWordCount(text: string) {
+  const latinWords = text.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?/g);
+  if (latinWords && latinWords.length > 0) {
+    return latinWords.length;
+  }
+
+  const cjkCharacters = text.match(/[\u3400-\u9fff]/g);
+  if (cjkCharacters && cjkCharacters.length > 0) {
+    return Math.ceil(cjkCharacters.length / 2);
+  }
+
+  return text.trim() ? 1 : 0;
 }
 
 function getSegmentSplitIndex(text: string, cursorPosition?: number | null) {
@@ -2352,6 +3214,45 @@ function extractPrivacyReviewMarkers(transcript: string) {
   );
 }
 
+function isFallbackCategory(category: CategoryNode): boolean {
+  return (
+    category.source === "fallback" ||
+    category.id.startsWith("cat_fallback") ||
+    Boolean(category.subcategories?.some(isFallbackCategory))
+  );
+}
+
+function getCategoryRunDisabledReason({
+  allSegmentsProcessedForModeC,
+  categoryCount,
+  confirmedMeaningUnits,
+  hasTemporaryFallbackCategories,
+  mode
+}: {
+  allSegmentsProcessedForModeC: boolean;
+  categoryCount: number;
+  confirmedMeaningUnits: number;
+  hasTemporaryFallbackCategories: boolean;
+  mode: CategoryMode;
+}) {
+  if (confirmedMeaningUnits === 0) {
+    return "Accept or edit meaning-unit summaries before running categories";
+  }
+  if (hasTemporaryFallbackCategories && (mode === "B" || mode === "C")) {
+    return "Regenerate or explicitly accept the temporary fallback draft before Mode B/C";
+  }
+  if (mode === "B" && categoryCount === 0) {
+    return "Run Mode A first; Mode B refines an existing category system";
+  }
+  if (mode === "C" && categoryCount === 0) {
+    return "Run Mode A and Mode B before final Mode C integration";
+  }
+  if (mode === "C" && !allSegmentsProcessedForModeC) {
+    return "Confirm all segments in this transcript have been processed and reviewed before Mode C";
+  }
+  return `Run Mode ${mode} using confirmed MU summaries`;
+}
+
 function getStepCopy(step: WorkflowStep) {
   switch (step) {
     case "upload":
@@ -2362,8 +3263,6 @@ function getStepCopy(step: WorkflowStep) {
       return "Review each meaning unit before moving on. If a unit is assigned to the wrong speaker or the excerpt is wrong, return to the transcript, correct it, confirm again, and regenerate.";
     case "categories":
       return "Build categories only after meaning units have been reviewed. Mode A starts construction, Mode B refines it, and Mode C integrates the final structure.";
-    case "reviewers":
-      return "Run checks for coverage, coherence, GDIQR discipline, and unresolved uncertainty.";
     case "export":
       return "Download the reviewed transcript, meaning units, categories, reviewer notes, and audit trail.";
     default:
@@ -2459,6 +3358,15 @@ async function fetchWithTimeout(
   options: RequestInit & { timeoutMs: number }
 ) {
   const controller = new AbortController();
+  if (options.signal) {
+    if (options.signal.aborted) {
+      controller.abort();
+    } else {
+      options.signal.addEventListener("abort", () => controller.abort(), {
+        once: true
+      });
+    }
+  }
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs);
 
   try {
@@ -2469,6 +3377,9 @@ async function fetchWithTimeout(
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
+      if (options.signal?.aborted) {
+        throw new Error("Generation stopped by user.");
+      }
       throw new Error(
         "Local AI request timed out in the browser. Check the live log panel to see whether the server is still processing chunks, or increase OLLAMA_API_TIMEOUT_MS / reduce TRANSCRIPT_MU_CHUNK_CHARS."
       );
@@ -2503,6 +3414,8 @@ function buildMeaningUnitCsv(units: MeaningUnit[]) {
       "humanSummary",
       "humanStatus",
       "reviewerStatus",
+      "analysisExcluded",
+      "exclusionReason",
       "uncertainty"
     ],
     ...units.map((unit) => [
@@ -2515,6 +3428,8 @@ function buildMeaningUnitCsv(units: MeaningUnit[]) {
       unit.humanSummary,
       unit.humanStatus,
       unit.reviewerStatus,
+      unit.analysisExcluded ? "true" : "false",
+      unit.exclusionReason ?? "",
       unit.uncertainty ?? ""
     ])
   ];
@@ -2565,22 +3480,224 @@ function ModeButton({
   );
 }
 
-function CategoryBlock({ category }: { category: CategoryNode }) {
+function ReviewerPanel({
+  expandedIssueIds,
+  isOpen,
+  issues,
+  isRunning,
+  onAddMemo,
+  onDismiss,
+  onResolve,
+  onRun,
+  onToggle,
+  onToggleIssue,
+  onView,
+  title
+}: {
+  expandedIssueIds: string[];
+  isOpen: boolean;
+  issues: ReviewerComment[];
+  isRunning: boolean;
+  onAddMemo: (issue: ReviewerComment) => void;
+  onDismiss: (issue: ReviewerComment) => void;
+  onResolve: (issue: ReviewerComment) => void;
+  onRun: () => void;
+  onToggle: () => void;
+  onToggleIssue: (issueId: string) => void;
+  onView: (issue: ReviewerComment) => void;
+  title: string;
+}) {
+  const activeIssues = issues.filter((issue) => issue.status !== "dismissed");
+  const warningCount = activeIssues.filter(
+    (issue) => issue.severity === "warning"
+  ).length;
+  const majorCount = activeIssues.filter((issue) => issue.severity === "major")
+    .length;
+  const resolvedCount = issues.filter((issue) => issue.status === "resolved")
+    .length;
+  const dismissedCount = issues.filter((issue) => issue.status === "dismissed")
+    .length;
+  const groupedIssues = groupReviewerIssues(activeIssues);
+
   return (
-    <article className="category">
+    <aside className={`review-panel ${isOpen ? "" : "collapsed"}`}>
+      <div className="category-header">
+        <div>
+          <span className="badge blue">Protocol check</span>
+          <h3>{title}</h3>
+          <p className="small">{reviewSummaryText(issues, warningCount, majorCount)}</p>
+        </div>
+        <button className="button icon" onClick={onToggle} type="button">
+          {isOpen ? "−" : "+"}
+        </button>
+      </div>
+      {isOpen && (
+        <div className="review-panel-body">
+          <div className="button-row">
+            <button
+              className="button primary"
+              disabled={isRunning}
+              onClick={onRun}
+              type="button"
+            >
+              <ShieldCheck size={18} />
+              {isRunning ? "Checking..." : "Run check"}
+            </button>
+            <span className="badge">
+              {activeIssues.length} active · {resolvedCount} resolved
+            </span>
+            {dismissedCount > 0 && (
+              <span className="badge blue">{dismissedCount} dismissed</span>
+            )}
+          </div>
+          {issues.length === 0 ? (
+            <EmptyState text="Review not yet run. Use this as a lightweight GDIQR audit after AI output is available." />
+          ) : activeIssues.length === 0 ? (
+            <EmptyState text="No active review issues. Dismissed and resolved items remain in the audit trail." />
+          ) : (
+            Object.entries(groupedIssues).map(([group, groupIssues]) => (
+              <div className="review-group" key={group}>
+                <span className="label">{group}</span>
+                {groupIssues.map((issue) => {
+                  const expanded = expandedIssueIds.includes(issue.id);
+                  return (
+                    <article className="review-issue" key={issue.id}>
+                      <button
+                        className="review-issue-header"
+                        onClick={() => onToggleIssue(issue.id)}
+                        type="button"
+                      >
+                        <div>
+                          <strong>{issue.issueType}</strong>
+                          <p className="small">{issue.target}</p>
+                        </div>
+                        <StatusBadge label={issue.severity} />
+                      </button>
+                      {expanded && (
+                        <div className="review-issue-body">
+                          <p>{issue.comment}</p>
+                          <p className="small">
+                            <strong>Suggested action:</strong>{" "}
+                            {issue.suggestedAction || "Researcher review needed."}
+                          </p>
+                          {issue.researcherMemo && (
+                            <p className="small">
+                              <strong>Memo:</strong> {issue.researcherMemo}
+                            </p>
+                          )}
+                          <div className="button-row">
+                            <button
+                              className="button"
+                              onClick={() => onView(issue)}
+                              type="button"
+                            >
+                              View target
+                            </button>
+                            <button
+                              className="button"
+                              disabled={issue.status === "resolved"}
+                              onClick={() => onResolve(issue)}
+                              type="button"
+                            >
+                              Mark resolved
+                            </button>
+                            <button
+                              className="button"
+                              onClick={() => onDismiss(issue)}
+                              type="button"
+                            >
+                              Dismiss
+                            </button>
+                            <button
+                              className="button"
+                              onClick={() => onAddMemo(issue)}
+                              type="button"
+                            >
+                              Add memo
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function reviewSummaryText(
+  issues: ReviewerComment[],
+  warningCount: number,
+  majorCount: number
+) {
+  if (issues.length === 0) {
+    return "Review not yet run";
+  }
+  if (majorCount === 0 && warningCount === 0) {
+    return "No major issues found";
+  }
+  return `${warningCount} warning${warningCount === 1 ? "" : "s"}, ${majorCount} major issue${majorCount === 1 ? "" : "s"}`;
+}
+
+function groupReviewerIssues(issues: ReviewerComment[]) {
+  return issues.reduce<Record<string, ReviewerComment[]>>((groups, issue) => {
+    const group = reviewerGroupLabel(issue.issueType);
+    groups[group] = [...(groups[group] ?? []), issue];
+    return groups;
+  }, {});
+}
+
+function reviewerGroupLabel(issueType: string) {
+  const normalized = issueType.toLowerCase();
+  if (normalized.includes("coverage")) {
+    return "Coverage";
+  }
+  if (normalized.includes("over") || normalized.includes("interpret")) {
+    return "Over-interpretation";
+  }
+  if (normalized.includes("light")) {
+    return "Light interpretation";
+  }
+  if (normalized.includes("uncertain")) {
+    return "Uncertainty";
+  }
+  if (normalized.includes("category") || normalized.includes("coherence")) {
+    return "Category coherence";
+  }
+  if (normalized.includes("integration") || normalized.includes("narrative")) {
+    return "Integration limits";
+  }
+  return "Rule compliance";
+}
+
+function CategoryBlock({ category }: { category: CategoryNode }) {
+  const isFallback = isFallbackCategory(category);
+  return (
+    <article
+      className={`category ${isFallback ? "temporary-draft" : ""}`}
+      id={`category-${category.id}`}
+    >
       <div className="category-header">
         <div>
           <h3 className="category-title">{category.name}</h3>
           <p className="small">{category.definition}</p>
         </div>
-        <span className="badge">
-          Units {category.includedUnitIds.join(", ")}
-        </span>
+        <div className="button-row">
+          {isFallback && <span className="badge warning">Fallback draft</span>}
+          <span className="badge">
+            Units {category.includedUnitIds.join(", ")}
+          </span>
+        </div>
       </div>
       {category.subcategories && category.subcategories.length > 0 && (
         <div className="subcategories">
           {category.subcategories.map((subcategory) => (
-            <div key={subcategory.id}>
+            <div id={`category-${subcategory.id}`} key={subcategory.id}>
               <strong>{subcategory.name}</strong>
               <p className="small">{subcategory.definition}</p>
               <span className="badge blue">

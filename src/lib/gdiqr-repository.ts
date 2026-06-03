@@ -6,11 +6,13 @@ import type {
   MeaningUnit,
   Project,
   ReviewerComment,
+  ReviewerIssueStatus,
   TranscriptionJobRecord,
   TranscriptSegment
 } from "@/lib/types";
 import { createSupabaseServerClient, hasSupabaseConfig } from "./supabase/server";
 import type { Database } from "./supabase/database.types";
+import { autoSplitTranscript } from "./auto-segmenter";
 
 type AudioFileRow = Database["public"]["Tables"]["audio_files"]["Row"];
 type CategoryRow = Database["public"]["Tables"]["categories"]["Row"];
@@ -706,11 +708,15 @@ export async function createAudioPreviewUrl({
 }
 
 export async function updateMeaningUnit({
+  analysisExcluded,
+  exclusionReason,
   humanStatus,
   humanSummary,
   speaker,
   unitId
 }: {
+  analysisExcluded?: boolean;
+  exclusionReason?: string | null;
   humanStatus?: MeaningUnit["humanStatus"];
   humanSummary?: string;
   speaker?: string;
@@ -733,6 +739,15 @@ export async function updateMeaningUnit({
   if (speaker !== undefined) {
     updates.speaker = speaker;
   }
+  if (analysisExcluded !== undefined) {
+    updates.analysis_excluded = analysisExcluded;
+    updates.human_status = analysisExcluded ? "Excluded" : "Needs review";
+    updates.exclusion_reason = analysisExcluded
+      ? exclusionReason ?? "Excluded from analysis by researcher"
+      : null;
+  } else if (exclusionReason !== undefined) {
+    updates.exclusion_reason = exclusionReason;
+  }
 
   const { data, error } = await supabase
     .from("meaning_units")
@@ -748,11 +763,66 @@ export async function updateMeaningUnit({
   await supabase.from("audit_events").insert({
     project_id: data.project_id,
     actor: "Researcher",
-    action: `Updated MU ${data.unit_number}`,
+    action:
+      analysisExcluded === undefined
+        ? `Updated MU ${data.unit_number}`
+        : analysisExcluded
+          ? `Excluded MU ${data.unit_number} from analysis`
+          : `Restored MU ${data.unit_number} to analysis`,
     target: data.id
   });
 
+  if (analysisExcluded !== undefined) {
+    await clearDerivedCategoryWork(data.project_id);
+  }
+
   return { saved: true, meaningUnit: mapMeaningUnit(data) };
+}
+
+export async function deleteMeaningUnit({
+  unitId
+}: {
+  unitId: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { deleted: false, reason: "Supabase is not configured." };
+  }
+
+  const { data, error } = await supabase
+    .from("meaning_units")
+    .delete()
+    .eq("id", unitId)
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await Promise.all([
+    supabase.from("audit_events").insert({
+      project_id: data.project_id,
+      actor: "Researcher",
+      action: `Deleted MU ${data.unit_number}`,
+      target: data.id
+    }),
+    clearDerivedCategoryWork(data.project_id)
+  ]);
+
+  return {
+    deleted: true,
+    meaningUnit: mapMeaningUnit(data)
+  };
+}
+
+async function clearDerivedCategoryWork(projectId: string) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return;
+  }
+
+  await supabase.from("category_systems").delete().eq("project_id", projectId);
 }
 
 export async function updateSegment({
@@ -1001,6 +1071,77 @@ export async function moveSegment({
   return { saved: true, segments: await loadSegments(projectId) };
 }
 
+export async function autoSplitSegmentsFromTranscript({
+  caseId = "CASE-001",
+  projectId = defaultProjectId,
+  researchQuestion,
+  transcript
+}: {
+  caseId?: string;
+  projectId?: string;
+  researchQuestion?: string;
+  transcript: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured.", segments: [] };
+  }
+
+  const trimmedTranscript = transcript.trim();
+  if (!trimmedTranscript) {
+    return {
+      saved: false,
+      reason:
+        "No transcript text found. Please confirm or edit the transcript before auto-splitting.",
+      segments: []
+    };
+  }
+
+  const splitResult = autoSplitTranscript(trimmedTranscript, {
+    researchQuestion
+  });
+  const now = Date.now();
+
+  await Promise.all([
+    supabase.from("segments").delete().eq("project_id", projectId),
+    supabase.from("meaning_units").delete().eq("project_id", projectId),
+    supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId)
+  ]);
+
+  const rows: Array<Database["public"]["Tables"]["segments"]["Insert"]> =
+    splitResult.segments.map((segment, index) => ({
+      id: stableId("seg", `${projectId}_${now}`, index + 1),
+      project_id: projectId,
+      case_id: caseId,
+      segment_id: `SEG-${String(index + 1).padStart(3, "0")}`,
+      speaker_info: segment.title,
+      start_timestamp: "00:00",
+      end_timestamp: "00:00",
+      starting_mu_number: index * 100 + 1,
+      status: "Needs review",
+      text: segment.text
+    }));
+
+  const { error } = await supabase.from("segments").insert(rows);
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: `Auto-split transcript into ${rows.length} segment${rows.length === 1 ? "" : "s"}`,
+    target: "Segment Manager"
+  });
+
+  return {
+    notice: splitResult.notice,
+    saved: true,
+    segments: await loadSegments(projectId)
+  };
+}
+
 export async function replaceMeaningUnitsForSegment({
   projectId = defaultProjectId,
   segmentId,
@@ -1035,7 +1176,9 @@ export async function replaceMeaningUnitsForSegment({
       tentative_interpretation: unit.tentativeInterpretation ?? null,
       uncertainty: unit.uncertainty ?? null,
       human_status: unit.humanStatus,
-      reviewer_status: unit.reviewerStatus
+      reviewer_status: unit.reviewerStatus,
+      analysis_excluded: unit.analysisExcluded,
+      exclusion_reason: unit.exclusionReason ?? null
     }));
 
   const { data, error } = await supabase
@@ -1098,7 +1241,9 @@ export async function replaceMeaningUnitsFromAi({
       tentative_interpretation: unit.tentativeInterpretation ?? null,
       uncertainty: unit.uncertainty ?? null,
       human_status: unit.humanStatus,
-      reviewer_status: unit.reviewerStatus
+      reviewer_status: unit.reviewerStatus,
+      analysis_excluded: unit.analysisExcluded,
+      exclusion_reason: unit.exclusionReason ?? null
     }));
 
   const { data, error } = await supabase
@@ -1183,10 +1328,12 @@ export async function saveCategorySystemFromAi({
 
 export async function replaceReviewerCommentsFromAi({
   comments,
-  projectId = defaultProjectId
+  projectId = defaultProjectId,
+  workspace
 }: {
   comments: ReviewerComment[];
   projectId?: string;
+  workspace?: ReviewerComment["workspace"];
 }) {
   const supabase = createSupabaseServerClient();
   if (!supabase) {
@@ -1196,7 +1343,13 @@ export async function replaceReviewerCommentsFromAi({
   await supabase
     .from("reviewer_comments")
     .delete()
-    .eq("project_id", projectId);
+    .eq("project_id", projectId)
+    .eq(
+      "agent",
+      workspace === "categories"
+        ? "GDIQR Category Review"
+        : "GDIQR Meaning Units Review"
+    );
 
   if (comments.length === 0) {
     return { saved: true, comments: [] };
@@ -1205,13 +1358,17 @@ export async function replaceReviewerCommentsFromAi({
   const rows: Array<
     Database["public"]["Tables"]["reviewer_comments"]["Insert"]
   > = comments.map((comment, index) => ({
-    id: stableId("rev", projectId, index + 1),
+    id: stableId(
+      "rev",
+      `${projectId}_${comment.workspace}_${Date.now()}`,
+      index + 1
+    ),
     project_id: projectId,
     agent: comment.agent,
     target: comment.target,
-    severity: comment.severity,
+    severity: toStoredReviewerSeverity(comment.severity),
     comment: comment.comment,
-    suggested_action: comment.suggestedAction,
+    suggested_action: encodeReviewerPayload(comment),
     resolved: comment.resolved
   }));
 
@@ -1228,14 +1385,77 @@ export async function replaceReviewerCommentsFromAi({
   await supabase.from("audit_events").insert({
     project_id: projectId,
     actor: "Reviewer",
-    action: `Generated ${comments.length} local AI reviewer comments`,
-    target: "Reviewer agents"
+    action: `Generated ${comments.length} ${workspace ?? "GDIQR"} reviewer issues`,
+    target: workspace ?? "Reviewer agents"
   });
 
   return {
     saved: true,
     comments: (data ?? []).map(mapReviewerComment)
   };
+}
+
+export async function updateReviewerComment({
+  commentId,
+  memo,
+  projectId = defaultProjectId,
+  status
+}: {
+  commentId: string;
+  memo?: string;
+  projectId?: string;
+  status?: ReviewerIssueStatus;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const { data: current, error: loadError } = await supabase
+    .from("reviewer_comments")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("id", commentId)
+    .single();
+  if (loadError) {
+    throw new Error(loadError.message);
+  }
+
+  const mapped = mapReviewerComment(current);
+  const nextStatus = status ?? mapped.status;
+  const nextComment: ReviewerComment = {
+    ...mapped,
+    researcherMemo: memo ?? mapped.researcherMemo,
+    resolved: nextStatus === "resolved" || nextStatus === "dismissed",
+    resolvedAt:
+      nextStatus === "resolved" || nextStatus === "dismissed"
+        ? new Date().toISOString()
+        : undefined,
+    status: nextStatus
+  };
+
+  const { data, error } = await supabase
+    .from("reviewer_comments")
+    .update({
+      resolved: nextComment.resolved,
+      suggested_action: encodeReviewerPayload(nextComment)
+    })
+    .eq("project_id", projectId)
+    .eq("id", commentId)
+    .select()
+    .single();
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await supabase.from("audit_events").insert({
+    project_id: projectId,
+    actor: "Researcher",
+    action: `Updated reviewer issue: ${nextStatus}`,
+    target: commentId
+  });
+
+  return { saved: true, comment: mapReviewerComment(data) };
 }
 
 function mapProject(row: Database["public"]["Tables"]["projects"]["Row"]) {
@@ -1464,22 +1684,109 @@ function mapMeaningUnit(
     tentativeInterpretation: row.tentative_interpretation ?? undefined,
     uncertainty: row.uncertainty ?? undefined,
     humanStatus: row.human_status,
-    reviewerStatus: row.reviewer_status
+    reviewerStatus: row.reviewer_status,
+    analysisExcluded: row.analysis_excluded ?? false,
+    exclusionReason: row.exclusion_reason ?? undefined
   } satisfies MeaningUnit;
 }
 
 function mapReviewerComment(
   row: Database["public"]["Tables"]["reviewer_comments"]["Row"]
 ) {
+  const payload = parseReviewerPayload(row.suggested_action);
+  const status =
+    payload.status ??
+    (row.resolved ? "resolved" : "unresolved");
+  const targetType = payload.targetType ?? targetTypeFromTarget(row.target);
+  const targetId = payload.targetId ?? targetIdFromTarget(row.target);
+
   return {
     id: row.id,
     agent: row.agent,
     target: row.target,
-    severity: row.severity,
+    targetType,
+    targetId,
+    issueType: payload.issueType ?? row.agent,
+    workspace:
+      payload.workspace ??
+      (row.agent.toLowerCase().includes("category")
+        ? "categories"
+        : "meaning-units"),
+    severity: payload.severity ?? fromStoredReviewerSeverity(row.severity),
+    status,
     comment: row.comment,
-    suggestedAction: row.suggested_action,
-    resolved: row.resolved
+    suggestedAction: payload.suggestedAction ?? row.suggested_action,
+    resolved: status === "resolved" || status === "dismissed",
+    createdAt: row.created_at,
+    resolvedAt: payload.resolvedAt,
+    researcherMemo: payload.researcherMemo
   } satisfies ReviewerComment;
+}
+
+function encodeReviewerPayload(comment: ReviewerComment) {
+  return JSON.stringify({
+    issueType: comment.issueType,
+    researcherMemo: comment.researcherMemo,
+    resolvedAt: comment.resolvedAt,
+    severity: comment.severity,
+    status: comment.status,
+    suggestedAction: comment.suggestedAction,
+    targetId: comment.targetId,
+    targetType: comment.targetType,
+    workspace: comment.workspace
+  });
+}
+
+function parseReviewerPayload(value: string) {
+  try {
+    const parsed = JSON.parse(value) as Partial<ReviewerComment>;
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch {
+    // Older rows store plain suggested action text.
+  }
+  return {};
+}
+
+function toStoredReviewerSeverity(severity: ReviewerComment["severity"]) {
+  if (severity === "major") {
+    return "Major issue";
+  }
+  if (severity === "warning") {
+    return "Warning";
+  }
+  return "Pass";
+}
+
+function fromStoredReviewerSeverity(severity: string): ReviewerComment["severity"] {
+  if (severity === "Major issue") {
+    return "major";
+  }
+  if (severity === "Warning") {
+    return "warning";
+  }
+  return "info";
+}
+
+function targetTypeFromTarget(target: string): ReviewerComment["targetType"] {
+  const [type] = target.split(":");
+  if (
+    type === "meaning_unit" ||
+    type === "summary" ||
+    type === "segment" ||
+    type === "category" ||
+    type === "subcategory" ||
+    type === "integrated_narrative" ||
+    type === "mode_output"
+  ) {
+    return type;
+  }
+  return "mode_output";
+}
+
+function targetIdFromTarget(target: string) {
+  return target.includes(":") ? target.split(":").slice(1).join(":") : target;
 }
 
 function mapAuditEvent(row: Database["public"]["Tables"]["audit_events"]["Row"]) {

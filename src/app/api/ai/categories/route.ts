@@ -11,10 +11,14 @@ import {
   finishRunLog,
   startRunLog
 } from "@/lib/run-logs";
-import type { CategoryMode } from "@/lib/types";
+import type { CategoryMode, CategoryNode } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
+    acceptFallbackDraft?: boolean;
+    allBatchesProcessed?: boolean;
+    categories?: CategoryNode[];
+    integratedNarrative?: string;
     mode?: CategoryMode;
     projectId?: string;
   };
@@ -26,8 +30,35 @@ export async function POST(request: NextRequest) {
   try {
     addRunEvent(runId, "Loading workspace from Supabase");
     const workspace = await getWorkspace(projectId);
+
+    if (body.acceptFallbackDraft) {
+      if (!body.categories || body.categories.length === 0) {
+        throw new Error("No temporary category draft was provided to save.");
+      }
+      addRunEvent(runId, "Saving researcher-confirmed temporary category draft");
+      const saveResult = await saveCategorySystemFromAi({
+        categories: markResearcherConfirmed(body.categories),
+        integratedNarrative: body.integratedNarrative ?? "",
+        mode,
+        projectId
+      });
+      finishRunLog(runId);
+      return NextResponse.json({
+        categories: saveResult.categories,
+        integratedNarrative: saveResult.integratedNarrative,
+        isFallbackDraft: false,
+        persisted: saveResult.saved,
+        provider: "researcher_confirmed",
+        warnings: [
+          "Temporary fallback draft was saved only after explicit researcher confirmation."
+        ]
+      });
+    }
+
     const confirmedUnits = workspace.meaningUnits.filter(
-      (unit) => unit.humanStatus === "Accepted" || unit.humanStatus === "Edited"
+      (unit) =>
+        !unit.analysisExcluded &&
+        (unit.humanStatus === "Accepted" || unit.humanStatus === "Edited")
     );
     if (confirmedUnits.length === 0) {
       throw new Error(
@@ -37,14 +68,31 @@ export async function POST(request: NextRequest) {
     addRunEvent(runId, `Calling Ollama for Mode ${mode} categories (${confirmedUnits.length} confirmed MUs)`);
     const startedAt = Date.now();
     const result = await generateCategories({
+      allBatchesProcessed: body.allBatchesProcessed,
+      existingCategories: workspace.categories,
       mode,
       project: workspace.project,
       units: confirmedUnits
     });
+    if (result.uncertainties.length > 0) {
+      addRunEvent(runId, result.uncertainties[0]);
+    }
     addRunEvent(
       runId,
-      `Ollama category generation finished in ${formatDuration(Date.now() - startedAt)}`
+      `Category generation finished in ${formatDuration(Date.now() - startedAt)}`
     );
+
+    if (result.isFallbackDraft) {
+      addRunEvent(
+        runId,
+        "AI returned empty output. A temporary fallback draft was created but not saved."
+      );
+      finishRunLog(runId);
+      return NextResponse.json({
+        ...result,
+        persisted: false
+      });
+    }
 
     addRunEvent(runId, `Saving ${result.categories.length} top-level categories`);
     const saveResult = await saveCategorySystemFromAi({
@@ -73,6 +121,18 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+function markResearcherConfirmed(
+  categories: CategoryNode[]
+): CategoryNode[] {
+  return categories.map((category) => ({
+    ...category,
+    source: "researcher_confirmed" as const,
+    subcategories: category.subcategories
+      ? markResearcherConfirmed(category.subcategories)
+      : undefined
+  }));
 }
 
 function formatDuration(ms: number) {

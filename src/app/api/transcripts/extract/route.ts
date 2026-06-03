@@ -15,6 +15,7 @@ const supportedExtensions = new Set([
   ".txt",
   ".vtt"
 ]);
+const maxTranscriptFileBytes = 5 * 1024 * 1024;
 
 export const runtime = "nodejs";
 
@@ -26,6 +27,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "Transcript file is required." },
       { status: 400 }
+    );
+  }
+
+  if (file.size > maxTranscriptFileBytes) {
+    return NextResponse.json(
+      {
+        error:
+          "Transcript file is too large for this local prototype. Use a short anonymised transcript or paste a smaller test text."
+      },
+      { status: 413 }
     );
   }
 

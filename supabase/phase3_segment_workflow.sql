@@ -32,12 +32,25 @@ alter table public.segments
 alter table public.meaning_units
   add column if not exists transcript_id text references public.transcripts(id) on delete cascade,
   add column if not exists light_interpretation boolean not null default false,
-  add column if not exists uncertainty_note text;
+  add column if not exists uncertainty_note text,
+  add column if not exists analysis_excluded boolean not null default false,
+  add column if not exists exclusion_reason text;
+
+alter table public.meaning_units
+  drop constraint if exists meaning_units_human_status_check;
+
+alter table public.meaning_units
+  add constraint meaning_units_human_status_check
+  check (human_status in ('Draft', 'Accepted', 'Edited', 'Needs review', 'Excluded'));
 
 alter table public.reviewer_comments
   add column if not exists target_type text not null default 'analysis',
   add column if not exists target_id text,
-  add column if not exists reviewer_agent_type text;
+  add column if not exists reviewer_agent_type text,
+  add column if not exists issue_type text,
+  add column if not exists issue_status text not null default 'unresolved',
+  add column if not exists resolved_at timestamptz,
+  add column if not exists researcher_memo text;
 
 create table if not exists public.edit_logs (
   id text primary key,
@@ -67,4 +80,3 @@ create index if not exists meaning_units_project_segment_idx
 
 create index if not exists edit_logs_project_target_idx
   on public.edit_logs(project_id, target_type, target_id);
-

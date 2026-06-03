@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { getAiProvider } from "@/lib/ai-provider";
 import { getWorkspace } from "@/lib/gdiqr-repository";
+import {
+  getOllamaConnectionErrorMessage,
+  getOllamaModel,
+  getOllamaModelsUrl
+} from "@/lib/ollama-config";
 
 export async function GET() {
   const provider = getAiProvider();
@@ -22,22 +27,20 @@ export async function GET() {
 }
 
 async function checkOllamaHealth() {
-  const baseUrl = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434/v1";
-
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+    const response = await fetch(getOllamaModelsUrl(), {
       signal: AbortSignal.timeout(5000)
     });
 
     return {
       ok: response.ok,
-      model: process.env.OLLAMA_MODEL ?? "qwen3:8b",
+      model: getOllamaModel(),
       status: response.status
     };
-  } catch (error) {
+  } catch {
     return {
       ok: false,
-      error: error instanceof Error ? error.message : "Ollama health failed."
+      error: getOllamaConnectionErrorMessage()
     };
   }
 }

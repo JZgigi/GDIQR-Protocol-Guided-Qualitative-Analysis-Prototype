@@ -230,6 +230,11 @@ button {
   background: var(--warning-soft);
 }
 
+.mini-card.warning-card {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+
 .privacy-review-list {
   display: grid;
   gap: 4px;
@@ -322,6 +327,21 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.scope-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.scope-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .upload-panel {
@@ -435,6 +455,75 @@ button {
   border-left-color: var(--accent);
 }
 
+.review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 16px;
+  align-items: start;
+}
+
+.review-panel {
+  position: sticky;
+  top: 92px;
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 16px;
+}
+
+.review-panel.collapsed {
+  grid-template-columns: 1fr;
+}
+
+.review-panel-body,
+.review-group {
+  display: grid;
+  gap: 12px;
+}
+
+.review-issue {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.review-issue-header {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  padding: 12px;
+  text-align: left;
+}
+
+.review-issue-body {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding: 12px;
+}
+
+.target-highlight {
+  animation: target-pulse 1.8s ease;
+}
+
+@keyframes target-pulse {
+  0%,
+  100% {
+    outline: 0 solid transparent;
+  }
+
+  30% {
+    outline: 3px solid var(--warning);
+    outline-offset: 3px;
+  }
+}
+
 .empty-state {
   border: 1px dashed var(--line);
   border-radius: 8px;
@@ -509,6 +598,19 @@ button {
   border-bottom: 0;
 }
 
+.table tr.excluded-row td {
+  background: #f8faf8;
+  color: var(--muted);
+}
+
+.table tr.excluded-row td:nth-child(3),
+.table tr.excluded-row td:nth-child(4),
+.table tr.excluded-row td:nth-child(5) {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: rgba(80, 94, 88, 0.45);
+}
+
 .mono {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
@@ -525,6 +627,11 @@ button {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 16px;
+}
+
+.category.temporary-draft {
+  border-color: var(--warning);
+  background: var(--warning-soft);
 }
 
 .category-header {
@@ -650,6 +757,7 @@ button {
   .grid.two,
   .grid.three,
   .mode-selector,
+  .review-layout,
   .segment-manager,
   .upload-controls,
   .upload-panel {
