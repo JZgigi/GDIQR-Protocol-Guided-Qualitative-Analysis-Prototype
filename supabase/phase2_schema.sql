@@ -1,5 +1,7 @@
 create extension if not exists pgcrypto;
 
+-- The protocol column keeps the legacy internal value for compatibility.
+-- Product copy should display this as a GDI-QR-informed workflow.
 create table if not exists public.projects (
   id text primary key default ('proj_' || replace(gen_random_uuid()::text, '-', '')),
   title text not null,
@@ -17,8 +19,20 @@ create table if not exists public.transcripts (
   project_id text not null references public.projects(id) on delete cascade,
   content text not null,
   version_label text not null default 'Initial transcript',
+  anonymisation_status text not null default 'not_reviewed' check (anonymisation_status in ('not_reviewed', 'reviewed', 'confirmed')),
+  raw_transcript_retained boolean not null default false,
+  sensitive_items jsonb not null default '[]'::jsonb,
+  sensitive_items_reviewed_at timestamptz,
+  reviewed_by text,
   created_at timestamptz not null default now()
 );
+
+alter table public.transcripts
+  add column if not exists anonymisation_status text not null default 'not_reviewed',
+  add column if not exists raw_transcript_retained boolean not null default false,
+  add column if not exists sensitive_items jsonb not null default '[]'::jsonb,
+  add column if not exists sensitive_items_reviewed_at timestamptz,
+  add column if not exists reviewed_by text;
 
 create table if not exists public.segments (
   id text primary key default ('seg_' || replace(gen_random_uuid()::text, '-', '')),
@@ -176,7 +190,7 @@ insert into public.projects (
   updated_at
 ) values (
   'proj_student_wellbeing',
-  'Untitled GDIQR project',
+  'Untitled GDI-QR project',
   '',
   '',
   'English',

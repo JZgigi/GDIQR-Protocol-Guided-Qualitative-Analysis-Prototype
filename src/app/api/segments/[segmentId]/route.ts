@@ -7,6 +7,7 @@ import {
   splitSegment,
   updateSegment
 } from "@/lib/gdiqr-repository";
+import { isLocalStorageMode } from "@/lib/storage-mode";
 import type { SegmentStatus } from "@/lib/types";
 
 export async function PATCH(
@@ -22,6 +23,15 @@ export async function PATCH(
   };
 
   try {
+    if (isLocalStorageMode()) {
+      return NextResponse.json({
+        saved: false,
+        persisted: false,
+        reason:
+          "Local-only mode stores segment edits in browser state, not Supabase."
+      });
+    }
+
     const result = await updateSegment({
       projectId: body.projectId ?? defaultProjectId,
       segmentId,
@@ -53,6 +63,15 @@ export async function POST(
   const projectId = body.projectId ?? defaultProjectId;
 
   try {
+    if (isLocalStorageMode()) {
+      return NextResponse.json({
+        saved: false,
+        persisted: false,
+        reason:
+          "Local-only mode stores segment changes in browser state, not Supabase."
+      });
+    }
+
     if (body.action === "split") {
       const result = await splitSegment({
         afterText: body.afterText ?? "",
@@ -99,6 +118,15 @@ export async function DELETE(
     request.nextUrl.searchParams.get("projectId") ?? defaultProjectId;
 
   try {
+    if (isLocalStorageMode()) {
+      return NextResponse.json({
+        deleted: false,
+        persisted: false,
+        reason:
+          "Local-only mode deletes segments from browser state, not Supabase."
+      });
+    }
+
     const result = await deleteSegment({ projectId, segmentId });
     return NextResponse.json(result);
   } catch (error) {

@@ -32,6 +32,7 @@ export interface Project {
   researchQuestion: string;
   studyDescription: string;
   language: "English" | "Chinese";
+  // Internal legacy value retained for the existing Supabase contract; UI displays "GDI-QR-informed".
   protocol: "GDIQR";
   lightInterpretation: boolean;
   status: string;
@@ -39,10 +40,15 @@ export interface Project {
 }
 
 export interface TranscriptSegment {
+  createdBy?: "auto" | "manual";
+  endTurnIndex?: number;
   id: string;
   caseId: string;
   segmentId: string;
   segmentNumber: number;
+  sourceTranscriptId?: string;
+  splittingMode?: "conservative" | "balanced" | "detailed";
+  startTurnIndex?: number;
   topicLabel: string;
   speakerInfo: string;
   startTimestamp: string;
@@ -95,11 +101,20 @@ export interface MeaningUnit {
 }
 
 export interface CategoryNode {
+  confidence?: "low" | "medium" | "high";
   id: string;
   name: string;
   definition: string;
   includedUnitIds: number[];
+  rationale?: string;
   source?: "ai" | "fallback" | "researcher_confirmed";
+  status?:
+    | "ai_draft"
+    | "fallback_draft"
+    | "needs_review"
+    | "edited"
+    | "confirmed"
+    | "rejected";
   subcategories?: CategoryNode[];
 }
 

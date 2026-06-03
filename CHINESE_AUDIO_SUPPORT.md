@@ -12,7 +12,7 @@ Chinese audio file
   -> local faster-whisper with language=zh
   -> Ollama speaker labelling and de-identification
   -> public.transcripts and public.segments
-  -> Ollama GDIQR analysis routes
+  -> Ollama GDI-QR-informed draft-support routes
 ```
 
 In the Upload step, choose **Chinese** before selecting the audio file. The app sends `zh` to the transcription script, then asks Ollama to label turns as `Interviewer:` and `Participant:`. High-confidence private details are replaced with bracket placeholders, and uncertain names or places are kept as review markers such as `[[PRIVACY_REVIEW:PERSON:Sam]]` for manual review.

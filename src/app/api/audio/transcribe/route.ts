@@ -14,6 +14,7 @@ import {
   finishRunLog,
   startRunLog
 } from "@/lib/run-logs";
+import { isLocalStorageMode } from "@/lib/storage-mode";
 import type { Project } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -23,6 +24,13 @@ const maxAudioBytes = 500 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
   const runId = startRunLog("Audio upload + transcription");
+  if (isLocalStorageMode()) {
+    const message =
+      "Audio upload is disabled in local-only mode because the current audio path stores raw audio before review. Please import an anonymised transcript for the shared prototype.";
+    failRunLog(runId, message);
+    return NextResponse.json({ error: message }, { status: 403 });
+  }
+
   const formData = await request.formData();
   const file = formData.get("file");
   const projectId = String(formData.get("projectId") ?? defaultProjectId);
@@ -58,7 +66,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  addRunEvent(runId, `Received ${file.name} (${formatBytes(file.size)})`);
+  addRunEvent(runId, `Received audio upload (${formatBytes(file.size)})`);
   const bytes = await file.arrayBuffer();
   addRunEvent(runId, "Uploading audio to Supabase Storage");
   const uploadResult = await uploadAudioForTranscription({
@@ -111,7 +119,7 @@ export async function POST(request: NextRequest) {
       language,
       projectId,
       transcript: preparedTranscript.sanitizedTranscript,
-      versionLabel: `Local transcription + privacy review: ${file.name}`
+      versionLabel: "Local transcription + privacy review"
     });
     const workspace = await getWorkspace(projectId);
     finishRunLog(runId);

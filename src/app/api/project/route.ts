@@ -3,6 +3,7 @@ import {
   defaultProjectId,
   updateProjectSettings
 } from "@/lib/gdiqr-repository";
+import { isLocalStorageMode } from "@/lib/storage-mode";
 import type { Project } from "@/lib/types";
 
 export async function PATCH(request: NextRequest) {
@@ -16,6 +17,15 @@ export async function PATCH(request: NextRequest) {
   };
 
   try {
+    if (isLocalStorageMode()) {
+      return NextResponse.json({
+        saved: false,
+        persisted: false,
+        reason:
+          "Local-only mode stores project setup in browser state, not Supabase."
+      });
+    }
+
     const result = await updateProjectSettings({
       language: body.language === "Chinese" ? "Chinese" : "English",
       lightInterpretation: Boolean(body.lightInterpretation),
