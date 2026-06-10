@@ -331,7 +331,7 @@ button {
 
 .pre-analysis-card {
   grid-template-rows: auto auto minmax(0, auto);
-  min-height: 620px;
+  min-height: 560px;
 }
 
 .pre-analysis-card > .mini-card.soft {
@@ -486,6 +486,39 @@ button {
   color: var(--muted);
 }
 
+.overlap-strip {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 0 34px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  padding: 8px;
+}
+
+.overlap-strip span,
+.overlap-strip strong {
+  border-radius: 999px;
+  padding: 9px 12px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.overlap-strip span {
+  background: var(--panel-soft);
+  color: var(--accent-strong);
+}
+
+.overlap-strip strong {
+  background: var(--accent);
+  color: #fff;
+  white-space: nowrap;
+}
+
 .substep-heading {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -557,6 +590,45 @@ button {
   display: grid;
   gap: 20px;
   align-items: start;
+}
+
+.analysis-flow-story {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 999px;
+  background: #fbfdfb;
+  padding: 10px;
+}
+
+.analysis-flow-story span,
+.analysis-flow-story em {
+  border-radius: 999px;
+  padding: 10px 12px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.analysis-flow-story span {
+  background: #fff;
+  color: var(--accent-strong);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.analysis-flow-story em {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-style: normal;
+}
+
+.analysis-flow-story em::before,
+.analysis-flow-story em::after {
+  color: var(--accent);
+  content: "→";
+  padding: 0 6px;
 }
 
 .understanding-workspace {
@@ -703,10 +775,12 @@ button {
   gap: 14px;
 }
 
-.placeholder-map-canvas {
+.relationship-example-map {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   justify-items: center;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
   border: 1px dashed var(--accent-soft);
   border-radius: 16px;
   background:
@@ -714,8 +788,9 @@ button {
   padding: 24px;
 }
 
-.placeholder-node {
-  width: min(360px, 100%);
+.example-map-node {
+  min-height: 74px;
+  width: 100%;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: #fff;
@@ -725,16 +800,33 @@ button {
   text-align: center;
 }
 
-.placeholder-node.strong {
+.example-map-node.primary {
   border-color: var(--accent-soft);
+  background: #f7fbf9;
   color: var(--accent-strong);
 }
 
-.placeholder-link {
+.example-map-link {
+  display: inline-flex;
+  min-width: 88px;
+  justify-content: center;
+  border-radius: 999px;
+  background: #fff;
+  padding: 7px 10px;
   color: var(--accent);
   font-size: 12px;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+.example-map-link::before,
+.example-map-link::after {
+  content: "—";
+  padding: 0 4px;
+}
+
+.example-map-link.split {
+  grid-column: 2;
 }
 
 .relationship-map {
@@ -823,6 +915,10 @@ button {
 .workbook-shell .mini-card {
   border-radius: 16px;
   padding: 22px;
+}
+
+.transcript-import-details .transcript-import-panel {
+  margin-top: 12px;
 }
 
 .method-guide {
@@ -1149,6 +1245,26 @@ button {
   padding: 16px;
 }
 
+.step-integrity .section-body {
+  gap: 14px;
+}
+
+.step-integrity .mini-card.soft {
+  box-shadow: none;
+}
+
+.reflection-details {
+  background: #fbfdfb;
+}
+
+.reflection-details > summary {
+  color: var(--muted);
+}
+
+.reflection-details .review-layout {
+  margin-top: 12px;
+}
+
 .review-panel.collapsed {
   grid-template-columns: 1fr;
 }
@@ -1215,10 +1331,21 @@ button {
   gap: 12px;
 }
 
-.empty-example-card h4 {
-  margin: 0;
+.category-structure-help {
+  background: #fbfdfb;
+}
+
+.category-structure-diagram {
+  display: grid;
+  gap: 6px;
+  border: 1px dashed var(--accent-soft);
+  border-radius: 12px;
+  background: #fff;
+  padding: 14px 16px;
   color: var(--accent-strong);
-  font-size: 16px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .badge {

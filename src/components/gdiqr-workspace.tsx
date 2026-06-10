@@ -2605,6 +2605,14 @@ export function GdiqrWorkspace({
                   : "Use the workspace below to review, revise, and record your analytic decisions for this step."}
               </p>
             </div>
+            {activeStep === "pre-analysis" && (
+              <div className="overlap-strip" aria-label="Pre-analysis activities overlap">
+                <span>Domains of Investigation</span>
+                <span>Data Preparation</span>
+                <span>Judgement of Relevance</span>
+                <strong>overlapping and iterative</strong>
+              </div>
+            )}
 
             {activeStep === "pre-analysis" && (
               <div className="section-body grid pre-analysis-card domain-card">
@@ -2856,79 +2864,82 @@ export function GdiqrWorkspace({
                   </div>
                   </div>
                 </details>
-                <div className="transcript-import-panel">
-                  <div>
-                    <FileText size={28} />
-                    <h3>Import existing transcript</h3>
-                    <p className="small">
-                      Supported transcript files: TXT, MD, VTT, SRT, DOCX, and
-                      PDF. You can also paste text below. The app will prepare
-                      the text, then ask you to review it before any draft
-                      outputs are created.
-                      For shared-link demos, use a short anonymised transcript
-                      or test text only. Files over 5 MB are not accepted.
-                    </p>
-                  </div>
-                  <div className="upload-controls">
+                <details className="workbook-details transcript-import-details">
+                  <summary>Import or paste transcript</summary>
+                  <div className="transcript-import-panel">
                     <div>
-                      <label className="label" htmlFor="transcript-language">
-                        Transcript language
-                      </label>
-                      <select
-                        className="select"
-                        id="transcript-language"
-                        onChange={(event) =>
-                          setUploadLanguage(
-                            event.target.value === "Chinese"
-                              ? "Chinese"
-                              : "English"
-                          )
-                        }
-                        value={uploadLanguage}
-                      >
-                        <option value="English">English</option>
-                        <option value="Chinese">Chinese</option>
-                      </select>
+                      <FileText size={28} />
+                      <h3>Import existing transcript</h3>
+                      <p className="small">
+                        Supported transcript files: TXT, MD, VTT, SRT, DOCX, and
+                        PDF. You can also paste text below. The app will prepare
+                        the text, then ask you to review it before any draft
+                        outputs are created.
+                        For shared-link demos, use a short anonymised transcript
+                        or test text only. Files over 5 MB are not accepted.
+                      </p>
                     </div>
-                    <div>
-                      <label className="label" htmlFor="transcript-file">
-                        Transcript file
-                      </label>
-                      <input
-                        accept=".txt,.md,.vtt,.srt,.docx,.pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
-                        className="field"
-                        id="transcript-file"
-                        onChange={(event) =>
-                          void loadTranscriptFile(event.target.files?.[0] ?? null)
-                        }
-                        type="file"
-                      />
+                    <div className="upload-controls">
+                      <div>
+                        <label className="label" htmlFor="transcript-language">
+                          Transcript language
+                        </label>
+                        <select
+                          className="select"
+                          id="transcript-language"
+                          onChange={(event) =>
+                            setUploadLanguage(
+                              event.target.value === "Chinese"
+                                ? "Chinese"
+                                : "English"
+                            )
+                          }
+                          value={uploadLanguage}
+                        >
+                          <option value="English">English</option>
+                          <option value="Chinese">Chinese</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="transcript-file">
+                          Transcript file
+                        </label>
+                        <input
+                          accept=".txt,.md,.vtt,.srt,.docx,.pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
+                          className="field"
+                          id="transcript-file"
+                          onChange={(event) =>
+                            void loadTranscriptFile(event.target.files?.[0] ?? null)
+                          }
+                          type="file"
+                        />
+                      </div>
                     </div>
+                    <label className="label" htmlFor="transcript-import-text">
+                      Paste transcript
+                    </label>
+                    <textarea
+                      className="textarea transcript-import"
+                      id="transcript-import-text"
+                      onChange={(event) =>
+                        setTranscriptImportText(event.target.value)
+                      }
+                      placeholder="Paste transcript text here. Speaker labels can already be included; otherwise the app will infer Interviewer and Participant turns for your review."
+                      value={transcriptImportText}
+                    />
+                    <button
+                      className="button primary"
+                      disabled={isImportingTranscript || !transcriptImportText.trim()}
+                      onClick={importTranscript}
+                      type="button"
+                    >
+                      <Upload size={18} />
+                      {isImportingTranscript
+                        ? "Preparing transcript..."
+                        : "Prepare transcript"}
+                    </button>
                   </div>
-                  <label className="label" htmlFor="transcript-import-text">
-                    Paste transcript
-                  </label>
-                  <textarea
-                    className="textarea transcript-import"
-                    id="transcript-import-text"
-                    onChange={(event) =>
-                      setTranscriptImportText(event.target.value)
-                    }
-                    placeholder="Paste transcript text here. Speaker labels can already be included; otherwise the app will infer Interviewer and Participant turns for your review."
-                    value={transcriptImportText}
-                  />
-                  <button
-                    className="button primary"
-                    disabled={isImportingTranscript || !transcriptImportText.trim()}
-                    onClick={importTranscript}
-                    type="button"
-                  >
-                    <Upload size={18} />
-                    {isImportingTranscript
-                      ? "Preparing transcript..."
-                      : "Prepare transcript"}
-                  </button>
-                </div>
+                </details>
               </div>
             )}
 
@@ -3260,6 +3271,13 @@ export function GdiqrWorkspace({
 
             {activeStep === "understanding" && (
               <div className="section-body grid">
+                <div className="analysis-flow-story" aria-label="Understanding and translating flow">
+                  <span>Participant Account</span>
+                  <em>optional assistant support</em>
+                  <span>Meaning Unit</span>
+                  <em>optional assistant support</em>
+                  <span>Analytic Summary</span>
+                </div>
                 <div className="analysis-workspace understanding-workspace">
                   <section className="analysis-panel">
                     <span className="flow-step">1 · Raw account</span>
@@ -3843,16 +3861,25 @@ export function GdiqrWorkspace({
                     )}
                     {displayCategories.length === 0 ? (
                       <div className="empty-with-example">
-                        <EmptyState text="No provisional categories yet. Review meaning-unit summaries, then create or request optional category suggestions. Each category will show its assigned meaning units for review." />
-                        <div className="mini-card soft empty-example-card">
-                          <span className="label">Example only</span>
-                          <h4>Regaining confidence through shared reflection</h4>
+                        <EmptyState text="No provisional categories yet. Review meaning-unit summaries, then create your first category or request assistant suggestions." />
+                        <details className="workbook-details category-structure-help">
+                          <summary>What is a category?</summary>
                           <p className="small">
-                            Assigned meaning units might include: MU #2 noticing
-                            change, MU #5 comparing experiences, MU #8 describing
-                            a renewed sense of agency.
+                            A category groups related meaning units that appear
+                            to share a common meaning.
                           </p>
-                        </div>
+                          <div className="category-structure-diagram" aria-label="Category structure">
+                            <strong>Category</strong>
+                            <span>├─ Meaning Unit 1</span>
+                            <span>├─ Meaning Unit 2</span>
+                            <span>└─ Meaning Unit 3</span>
+                          </div>
+                          <p className="small">
+                            Categories are provisional and may be renamed,
+                            merged, divided, or reorganised as analysis
+                            develops.
+                          </p>
+                        </details>
                       </div>
                     ) : (
                       <div className="grid">
@@ -3974,12 +4001,18 @@ export function GdiqrWorkspace({
                   {displayCategories.length === 0 ? (
                     <div className="relationship-map-placeholder">
                       <EmptyState text="No categories yet. Review provisional categories before integrating." />
-                      <div className="placeholder-map-canvas" aria-hidden="true">
-                        <div className="placeholder-node strong">Category A</div>
-                        <span className="placeholder-link">relates to</span>
-                        <div className="placeholder-node">Category B</div>
-                        <span className="placeholder-link">supports / contrasts with</span>
-                        <div className="placeholder-node">Category C</div>
+                      <div className="relationship-example-map" aria-hidden="true">
+                        <div className="example-map-node primary">
+                          Reviewed category 1
+                        </div>
+                        <span className="example-map-link">supports</span>
+                        <div className="example-map-node">
+                          Reviewed category 2
+                        </div>
+                        <span className="example-map-link split">while</span>
+                        <div className="example-map-node">
+                          Reviewed category 3
+                        </div>
                       </div>
                       <p className="small">
                         Once categories are reviewed, this area will help you
@@ -4092,72 +4125,75 @@ export function GdiqrWorkspace({
                   narrativeReviewed={integrationReviewed}
                   transcriptConfirmed={transcriptConfirmed}
                 />
-                <div className="review-layout">
-                  <ReviewerPanel
-                    expandedIssueIds={expandedReviewIssueIds}
-                    isOpen={muReviewOpen}
-                    issues={meaningUnitReviewIssues}
-                    isRunning={isRunningReviewer}
-                    onAddMemo={(issue) => {
-                      const memo = window.prompt(
-                        "Researcher note for this integrity issue:",
-                        issue.researcherMemo ?? ""
-                      );
-                      if (memo !== null) {
-                        void updateReviewerIssue(issue.id, { memo });
+                <details className="workbook-details reflection-details">
+                  <summary>Open detailed reflection panels</summary>
+                  <div className="review-layout">
+                    <ReviewerPanel
+                      expandedIssueIds={expandedReviewIssueIds}
+                      isOpen={muReviewOpen}
+                      issues={meaningUnitReviewIssues}
+                      isRunning={isRunningReviewer}
+                      onAddMemo={(issue) => {
+                        const memo = window.prompt(
+                          "Researcher note for this integrity issue:",
+                          issue.researcherMemo ?? ""
+                        );
+                        if (memo !== null) {
+                          void updateReviewerIssue(issue.id, { memo });
+                        }
+                      }}
+                      onDismiss={(issue) =>
+                        void updateReviewerIssue(issue.id, { status: "dismissed" })
                       }
-                    }}
-                    onDismiss={(issue) =>
-                      void updateReviewerIssue(issue.id, { status: "dismissed" })
-                    }
-                    onResolve={(issue) =>
-                      void updateReviewerIssue(issue.id, { status: "resolved" })
-                    }
-                    onRun={() => void runReviewer("meaning-units")}
-                    onToggle={() => setMuReviewOpen((value) => !value)}
-                    onToggleIssue={(issueId) =>
-                      setExpandedReviewIssueIds((current) =>
-                        current.includes(issueId)
-                          ? current.filter((id) => id !== issueId)
-                          : [...current, issueId]
-                      )
-                    }
-                    onView={viewReviewerTarget}
-                    title="Meaning Unit Integrity Check"
-                  />
-                  <ReviewerPanel
-                    expandedIssueIds={expandedReviewIssueIds}
-                    isOpen={categoryReviewOpen}
-                    issues={categoryReviewIssues}
-                    isRunning={isRunningReviewer}
-                    onAddMemo={(issue) => {
-                      const memo = window.prompt(
-                        "Researcher note for this integrity issue:",
-                        issue.researcherMemo ?? ""
-                      );
-                      if (memo !== null) {
-                        void updateReviewerIssue(issue.id, { memo });
+                      onResolve={(issue) =>
+                        void updateReviewerIssue(issue.id, { status: "resolved" })
                       }
-                    }}
-                    onDismiss={(issue) =>
-                      void updateReviewerIssue(issue.id, { status: "dismissed" })
-                    }
-                    onResolve={(issue) =>
-                      void updateReviewerIssue(issue.id, { status: "resolved" })
-                    }
-                    onRun={() => void runReviewer("categories")}
-                    onToggle={() => setCategoryReviewOpen((value) => !value)}
-                    onToggleIssue={(issueId) =>
-                      setExpandedReviewIssueIds((current) =>
-                        current.includes(issueId)
-                          ? current.filter((id) => id !== issueId)
-                          : [...current, issueId]
-                      )
-                    }
-                    onView={viewReviewerTarget}
-                    title="Category and Narrative Integrity Check"
-                  />
-                </div>
+                      onRun={() => void runReviewer("meaning-units")}
+                      onToggle={() => setMuReviewOpen((value) => !value)}
+                      onToggleIssue={(issueId) =>
+                        setExpandedReviewIssueIds((current) =>
+                          current.includes(issueId)
+                            ? current.filter((id) => id !== issueId)
+                            : [...current, issueId]
+                        )
+                      }
+                      onView={viewReviewerTarget}
+                      title="Meaning Unit Integrity Check"
+                    />
+                    <ReviewerPanel
+                      expandedIssueIds={expandedReviewIssueIds}
+                      isOpen={categoryReviewOpen}
+                      issues={categoryReviewIssues}
+                      isRunning={isRunningReviewer}
+                      onAddMemo={(issue) => {
+                        const memo = window.prompt(
+                          "Researcher note for this integrity issue:",
+                          issue.researcherMemo ?? ""
+                        );
+                        if (memo !== null) {
+                          void updateReviewerIssue(issue.id, { memo });
+                        }
+                      }}
+                      onDismiss={(issue) =>
+                        void updateReviewerIssue(issue.id, { status: "dismissed" })
+                      }
+                      onResolve={(issue) =>
+                        void updateReviewerIssue(issue.id, { status: "resolved" })
+                      }
+                      onRun={() => void runReviewer("categories")}
+                      onToggle={() => setCategoryReviewOpen((value) => !value)}
+                      onToggleIssue={(issueId) =>
+                        setExpandedReviewIssueIds((current) =>
+                          current.includes(issueId)
+                            ? current.filter((id) => id !== issueId)
+                            : [...current, issueId]
+                        )
+                      }
+                      onView={viewReviewerTarget}
+                      title="Category and Narrative Integrity Check"
+                    />
+                  </div>
+                </details>
               </div>
             )}
 
