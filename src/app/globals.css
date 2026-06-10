@@ -140,9 +140,9 @@ button {
 
 .layout {
   display: block;
-  max-width: 1480px;
+  max-width: 1600px;
   margin: 0 auto;
-  padding: 22px clamp(14px, 3vw, 28px) 42px;
+  padding: 26px clamp(18px, 3vw, 34px) 48px;
 }
 
 .sidebar {
@@ -300,8 +300,8 @@ button {
 .section.step-pre-analysis {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 22px;
-  padding: 0 22px 22px;
+  gap: 24px;
+  padding: 0 28px 28px;
 }
 
 .section.step-pre-analysis > .section-header,
@@ -325,8 +325,33 @@ button {
   border: 1px solid var(--line);
   border-radius: 18px;
   background: #fff;
-  padding: 22px;
+  padding: 24px;
   box-shadow: 0 10px 28px rgba(21, 31, 27, 0.06);
+}
+
+.pre-analysis-card {
+  grid-template-rows: auto auto minmax(0, auto);
+  min-height: 620px;
+}
+
+.pre-analysis-card > .mini-card.soft {
+  border-color: var(--accent-soft);
+  background: #f7fbf8;
+}
+
+.pre-analysis-card.domain-card {
+  background:
+    linear-gradient(180deg, #ffffff 0%, #fbfdfb 100%);
+}
+
+.pre-analysis-card.preparation-card {
+  background:
+    linear-gradient(180deg, #ffffff 0%, #fafcfb 100%);
+}
+
+.pre-analysis-card.relevance-card {
+  background:
+    linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
 }
 
 .section-header {
@@ -364,6 +389,7 @@ button {
 
 .step-guidance {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   border-bottom: 1px solid var(--line);
   padding: 4px 34px 24px;
@@ -452,6 +478,7 @@ button {
 .workbook-task-heading {
   margin: 0 34px;
   background: #f7faf8;
+  border: 1px solid var(--accent-soft);
 }
 
 .workbook-task-heading p {
@@ -528,7 +555,7 @@ button {
 
 .analysis-workspace {
   display: grid;
-  gap: 18px;
+  gap: 20px;
   align-items: start;
 }
 
@@ -564,9 +591,10 @@ button {
   position: relative;
   display: grid;
   max-height: min(980px, calc(100vh - 180px));
+  min-height: 720px;
   min-width: 0;
   align-content: start;
-  gap: 14px;
+  gap: 16px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -608,6 +636,12 @@ button {
   font-size: 22px;
   font-weight: 900;
   box-shadow: 0 8px 22px rgba(21, 31, 27, 0.08);
+}
+
+.panel-note {
+  border-left: 3px solid var(--accent-soft);
+  background: #f8fbf9;
+  padding: 10px 12px;
 }
 
 .comparison-textarea {
@@ -662,6 +696,45 @@ button {
 .relationship-map-card {
   display: grid;
   gap: 18px;
+}
+
+.relationship-map-placeholder {
+  display: grid;
+  gap: 14px;
+}
+
+.placeholder-map-canvas {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  border: 1px dashed var(--accent-soft);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, #fbfdfb 0%, #f5faf7 100%);
+  padding: 24px;
+}
+
+.placeholder-node {
+  width: min(360px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  padding: 14px 18px;
+  color: var(--muted);
+  font-weight: 900;
+  text-align: center;
+}
+
+.placeholder-node.strong {
+  border-color: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.placeholder-link {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
 }
 
 .relationship-map {
@@ -1135,6 +1208,17 @@ button {
   color: var(--muted);
   font-size: 14px;
   line-height: 1.5;
+}
+
+.empty-with-example {
+  display: grid;
+  gap: 12px;
+}
+
+.empty-example-card h4 {
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 16px;
 }
 
 .badge {

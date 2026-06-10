@@ -2607,7 +2607,7 @@ export function GdiqrWorkspace({
             </div>
 
             {activeStep === "pre-analysis" && (
-              <div className="section-body grid">
+              <div className="section-body grid pre-analysis-card domain-card">
                 <div className="substep-heading">
                   <span>1</span>
                   <div>
@@ -2624,6 +2624,10 @@ export function GdiqrWorkspace({
                     Domains are broad areas of inquiry that help structure the
                     analysis. They remain provisional and may change as you work
                     with the data.
+                  </p>
+                  <p className="small">
+                    Keep domains broad at this stage. They help you organise
+                    attention; they are not the final analytic categories.
                   </p>
                   <span className="label">Examples</span>
                   <ul className="compact-list">
@@ -2705,7 +2709,7 @@ export function GdiqrWorkspace({
             )}
 
             {activeStep === "pre-analysis" && (
-              <div className="section-body grid">
+              <div className="section-body grid pre-analysis-card preparation-card">
                 <div className="substep-heading">
                   <span>2</span>
                   <div>
@@ -2721,6 +2725,11 @@ export function GdiqrWorkspace({
                     I can help with preparation, and you remain in charge of
                     ensuring the material is readable,
                     anonymised, and appropriate for analysis.
+                  </p>
+                  <p className="small">
+                    This is the practical checkpoint: get the transcript into a
+                    readable form, then review anonymisation before saving it
+                    for analysis.
                   </p>
                   <span className="label">Preparation Checklist</span>
                   <div className="preparation-checklist">
@@ -2924,7 +2933,7 @@ export function GdiqrWorkspace({
             )}
 
             {activeStep === "pre-analysis" && (
-              <div className="section-body grid">
+              <div className="section-body grid pre-analysis-card relevance-card">
                 <div className="substep-heading">
                   <span>3</span>
                   <div>
@@ -2941,6 +2950,10 @@ export function GdiqrWorkspace({
                     GDI-QR emphasises researcher judgement rather than automated
                     exclusion. I can help flag sections that may be relevant,
                     but you decide what becomes part of your study data.
+                  </p>
+                  <p className="small">
+                    Use this as a visible decision rule for the demo: the system
+                    may suggest, but it does not remove material automatically.
                   </p>
                   <label className="label" htmlFor="relevance-guideline">
                     Relevance Decision Guideline
@@ -3257,6 +3270,11 @@ export function GdiqrWorkspace({
                       the source account visible while delineating meaning units
                       and reviewing summaries.
                     </p>
+                    <p className="small panel-note">
+                      The transcript remains the reference point. If a later
+                      meaning unit looks wrong, return here and correct the
+                      source text first.
+                    </p>
                     <textarea
                       className="textarea transcript comparison-textarea"
                       onChange={(event) => {
@@ -3294,6 +3312,10 @@ export function GdiqrWorkspace({
                       A meaning unit should be large enough to communicate a
                       clear message but small enough to remain analytically
                       manageable.
+                    </p>
+                    <p className="small panel-note">
+                      Treat these boundaries as reviewable working decisions,
+                      not automatic truth.
                     </p>
                     <div className="upload-controls">
                       <label className="label" htmlFor="segment-split-mode">
@@ -3462,6 +3484,10 @@ export function GdiqrWorkspace({
                       Summaries should remain close to the participant's
                       account. Any assistant suggestion is provisional and for
                       researcher review.
+                    </p>
+                    <p className="small panel-note">
+                      Accept or edit only the summaries that accurately capture
+                      the participant meaning.
                     </p>
                     <div className="scope-options">
                       <label className="scope-option">
@@ -3816,7 +3842,18 @@ export function GdiqrWorkspace({
                       </div>
                     )}
                     {displayCategories.length === 0 ? (
-                      <EmptyState text="No provisional categories yet. Review meaning-unit summaries, then create or request optional category suggestions. Each category will show its assigned meaning units for review." />
+                      <div className="empty-with-example">
+                        <EmptyState text="No provisional categories yet. Review meaning-unit summaries, then create or request optional category suggestions. Each category will show its assigned meaning units for review." />
+                        <div className="mini-card soft empty-example-card">
+                          <span className="label">Example only</span>
+                          <h4>Regaining confidence through shared reflection</h4>
+                          <p className="small">
+                            Assigned meaning units might include: MU #2 noticing
+                            change, MU #5 comparing experiences, MU #8 describing
+                            a renewed sense of agency.
+                          </p>
+                        </div>
+                      </div>
                     ) : (
                       <div className="grid">
                         {displayCategories.map((category) => (
@@ -3935,7 +3972,21 @@ export function GdiqrWorkspace({
                   <span className="label">Category Relationship Map</span>
                   <h3>How do the provisional categories connect?</h3>
                   {displayCategories.length === 0 ? (
-                    <EmptyState text="No categories yet. Review provisional categories before integrating." />
+                    <div className="relationship-map-placeholder">
+                      <EmptyState text="No categories yet. Review provisional categories before integrating." />
+                      <div className="placeholder-map-canvas" aria-hidden="true">
+                        <div className="placeholder-node strong">Category A</div>
+                        <span className="placeholder-link">relates to</span>
+                        <div className="placeholder-node">Category B</div>
+                        <span className="placeholder-link">supports / contrasts with</span>
+                        <div className="placeholder-node">Category C</div>
+                      </div>
+                      <p className="small">
+                        Once categories are reviewed, this area will help you
+                        sketch relationships such as sequence, contrast,
+                        support, tension, or shared context.
+                      </p>
+                    </div>
                   ) : (
                     <div className="relationship-map">
                       {displayCategories
@@ -4389,6 +4440,11 @@ function MethodologicalIntegrityChecklist({
   return (
     <div className="mini-card">
       <span className="label">Checklist</span>
+      <p className="small checklist-explanation">
+        Use this checklist as a review guide, not as an automatic pass/fail
+        score. Items marked "Needs review" are prompts for researcher judgement,
+        memo-writing, and revision before export.
+      </p>
       <div className="integrity-checklist">
         {items.map((item) => (
           <StatusLine key={item.label} label={item.label} status={item.status} />
