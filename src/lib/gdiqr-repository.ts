@@ -912,18 +912,27 @@ export async function updateMeaningUnit({
     actor: "Researcher",
     action:
       analysisExcluded === undefined
-        ? excerpt !== undefined
-          ? `Updated MU ${data.unit_number} excerpt`
-          : humanSummary !== undefined
-            ? `Updated MU ${data.unit_number} summary`
-            : `Updated MU ${data.unit_number}`
+        ? humanStatus === "Accepted"
+          ? `Accepted MU ${data.unit_number}`
+          : excerpt !== undefined && humanSummary !== undefined
+            ? `Updated MU ${data.unit_number} excerpt and summary`
+            : excerpt !== undefined
+              ? `Updated MU ${data.unit_number} excerpt`
+              : humanSummary !== undefined
+                ? `Updated MU ${data.unit_number} summary`
+                : `Updated MU ${data.unit_number}`
         : analysisExcluded
           ? `Excluded MU ${data.unit_number} from analysis`
           : `Restored MU ${data.unit_number} to analysis`,
     target: data.id
   });
 
-  if (analysisExcluded !== undefined) {
+  const shouldClearDerivedWork =
+    analysisExcluded !== undefined ||
+    (humanStatus !== "Accepted" &&
+      (excerpt !== undefined || humanSummary !== undefined));
+
+  if (shouldClearDerivedWork) {
     await clearDerivedCategoryWork(data.project_id);
   }
 

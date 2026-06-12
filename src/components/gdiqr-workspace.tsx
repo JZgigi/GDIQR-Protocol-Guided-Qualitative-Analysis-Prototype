@@ -60,6 +60,11 @@ interface SensitiveReviewItem {
   explanation: string;
 }
 
+interface MeaningUnitValidationFlag {
+  label: string;
+  tone?: "blue" | "danger" | "warning";
+}
+
 const steps: Array<{
   id: WorkflowStep;
   label: string;
@@ -1011,6 +1016,13 @@ export function GdiqrWorkspace({
       setDisplayCategories([]);
       setReviewerOutputs([]);
       setNarrative("");
+      recordLocalAuditEvent({
+        action:
+          status === "Ready for MU Analysis"
+            ? `Marked ${updatedSegment.segmentId} ready for MU analysis`
+            : `Edited ${updatedSegment.segmentId} boundary/excerpt text`,
+        target: updatedSegment.segmentId
+      });
       setApiStatus(
         status === "Ready for MU Analysis"
           ? "Meaning unit marked ready locally. You can now generate its summary."
@@ -1152,6 +1164,15 @@ export function GdiqrWorkspace({
         setDisplayCategories([]);
         setReviewerOutputs([]);
         setNarrative("");
+        recordLocalAuditEvent({
+          action:
+            action === "split"
+              ? `Split ${selectedSegment.segmentId}`
+              : action === "merge"
+                ? `Merged ${selectedSegment.segmentId} ${direction ?? ""}`.trim()
+                : `Reordered ${selectedSegment.segmentId}`,
+          target: selectedSegment.segmentId
+        });
         setApiStatus("Meaning unit list updated locally. Review boundaries before generating summaries.");
         return;
       }
@@ -1249,6 +1270,10 @@ export function GdiqrWorkspace({
     setDisplayCategories([]);
     setReviewerOutputs([]);
     setNarrative("");
+    recordLocalAuditEvent({
+      action: `Created ${selectedSegmentDraft.segmentId} from selected transcript text`,
+      target: selectedSegmentDraft.segmentId
+    });
     setApiStatus(
       "Created a new meaning unit from the selected text. Review both boundaries before generating summaries."
     );
@@ -1431,6 +1456,11 @@ export function GdiqrWorkspace({
           item.id === segment.id ? { ...item, status: "Analysed" } : item
         )
       );
+      recordLocalAuditEvent({
+        actor: "AI",
+        action: `Drafted ${draftUnits.length} meaning-unit summary${draftUnits.length === 1 ? "" : "ies"} for ${segment.segmentId}`,
+        target: segment.segmentId
+      });
     }
 
     return result;
@@ -2029,6 +2059,31 @@ export function GdiqrWorkspace({
     setCategoryDraftIsFallback(false);
   }
 
+  function recordLocalAuditEvent({
+    action,
+    actor = "Researcher",
+    target = "Step 2 meaning-unit pipeline"
+  }: {
+    action: string;
+    actor?: AuditEvent["actor"];
+    target?: string;
+  }) {
+    if (!isLocalOnlyMode) {
+      return;
+    }
+    const now = new Date().toISOString();
+    setDisplayAuditEvents((current) => [
+      {
+        actor,
+        action,
+        id: `audit_local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        target,
+        timestamp: now
+      },
+      ...current
+    ]);
+  }
+
   function updateMeaningUnitExcerpt(unitId: string, value: string) {
     setUnits((current) =>
       current.map((unit) =>
@@ -2060,6 +2115,10 @@ export function GdiqrWorkspace({
     }
 
     if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Edited MU #${unit.number} excerpt`,
+        target: unit.id
+      });
       setApiStatus("Meaning-unit excerpt edit saved locally.");
       return;
     }
@@ -2110,6 +2169,10 @@ export function GdiqrWorkspace({
     }
 
     if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Edited MU #${unit.number} summary`,
+        target: unit.id
+      });
       setApiStatus("Meaning-unit summary edit saved locally.");
       return;
     }
@@ -2165,9 +2228,13 @@ export function GdiqrWorkspace({
                   excerpt: unit.excerpt.trim(),
                   humanStatus: "Accepted",
                   humanSummary: (unit.humanSummary || unit.aiSummary).trim()
-                }
+              }
           )
         );
+        recordLocalAuditEvent({
+          action: `Accepted ${includableUnits.length} reviewed meaning unit${includableUnits.length === 1 ? "" : "s"} in bulk`,
+          target: "Step 2 meaning-unit review"
+        });
         setApiStatus(
           "Meaning-unit summaries accepted locally. You can now create and refine provisional categories."
         );
@@ -2277,6 +2344,10 @@ export function GdiqrWorkspace({
     setApiStatus("Excluding meaning unit...");
 
     if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Excluded MU #${unit.number}: ${reason}`,
+        target: unit.id
+      });
       setApiStatus(
         "Meaning unit excluded locally. Existing categories were cleared; rerun categories when ready."
       );
@@ -2328,6 +2399,10 @@ export function GdiqrWorkspace({
     setApiStatus("Restoring meaning unit...");
 
     if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Restored MU #${unit.number} for review`,
+        target: unit.id
+      });
       setApiStatus(
         "Meaning unit restored locally. Review and accept it before categories."
       );
@@ -2675,6 +2750,10 @@ export function GdiqrWorkspace({
     setApiStatus("Saving meaning-unit decision...");
 
     if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Accepted MU #${unit.number}`,
+        target: unit.id
+      });
       setApiStatus("Meaning-unit decision saved locally.");
       return;
     }
@@ -3750,18 +3829,38 @@ export function GdiqrWorkspace({
                       {units.length === 0 ? (
                         <EmptyState text="No summaries yet. Delineate meaning units, then ask for optional assistant support or write summaries manually." />
                       ) : (
-                        units.map((unit) => (
-                          <article
-                            className={`summary-card ${
-                              unit.analysisExcluded ? "excluded-row" : ""
-                            }`}
-                            id={`mu-${unit.number}`}
-                            key={unit.id}
-                          >
+                        units.map((unit) => {
+                          const validationFlags =
+                            getMeaningUnitValidationFlags(unit);
+                          return (
+                            <article
+                              className={`summary-card ${
+                                unit.analysisExcluded ? "excluded-row" : ""
+                              }`}
+                              id={`mu-${unit.number}`}
+                              key={unit.id}
+                            >
                             <div className="category-header">
                               <strong>MU #{unit.number}</strong>
                               <StatusBadge label={unit.humanStatus} />
                             </div>
+                            <p className="small">
+                              Source: {unit.caseId || "No case"} ·{" "}
+                              {unit.segmentId || "No segment"} · Speaker:{" "}
+                              {unit.speaker || "Unspecified"}
+                            </p>
+                            {validationFlags.length > 0 && (
+                              <div className="button-row">
+                                {validationFlags.map((flag) => (
+                                  <span
+                                    className={`badge ${flag.tone ?? ""}`.trim()}
+                                    key={flag.label}
+                                  >
+                                    {flag.label}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                             <span className="label">AI draft excerpt</span>
                             <p className="small">
                               {unit.aiExcerpt ?? unit.excerpt}
@@ -3855,8 +3954,9 @@ export function GdiqrWorkspace({
                                 <Pencil size={18} />
                               </button>
                             </div>
-                          </article>
-                        ))
+                            </article>
+                          );
+                        })
                       )}
                     </div>
                   </section>
@@ -4826,6 +4926,41 @@ function isConfirmedMeaningUnit(unit: MeaningUnit) {
     !unit.analysisExcluded &&
     (unit.humanStatus === "Accepted" || unit.humanStatus === "Edited")
   );
+}
+
+function getMeaningUnitValidationFlags(
+  unit: MeaningUnit
+): MeaningUnitValidationFlag[] {
+  const flags: MeaningUnitValidationFlag[] = [];
+  const reviewedSummary = (unit.humanSummary || "").trim();
+  const excerpt = unit.excerpt.trim();
+  const wordCount = approximateWordCount(excerpt);
+  const speaker = unit.speaker.toLowerCase();
+
+  if (!reviewedSummary) {
+    flags.push({ label: "Researcher summary missing", tone: "warning" });
+  }
+  if (excerpt && wordCount < 3) {
+    flags.push({ label: "Excerpt may be too short", tone: "warning" });
+  }
+  if (wordCount > 80) {
+    flags.push({ label: "Excerpt may be too long", tone: "warning" });
+  }
+  if (
+    speaker.includes("interviewer") ||
+    /^interviewer\s*:/i.test(excerpt) ||
+    /\?\s*$/.test(excerpt)
+  ) {
+    flags.push({ label: "Interviewer/context candidate", tone: "blue" });
+  }
+  if (unit.analysisExcluded && !unit.exclusionReason?.trim()) {
+    flags.push({ label: "Excluded without reason", tone: "danger" });
+  }
+  if (!unit.caseId || !unit.segmentId) {
+    flags.push({ label: "Source reference missing", tone: "danger" });
+  }
+
+  return flags;
 }
 
 function approximateWordCount(text: string) {
