@@ -1588,7 +1588,7 @@ export function GdiqrWorkspace({
     const requestedMode = options.modeOverride ?? mode;
     if (confirmedMeaningUnits.length === 0) {
       setApiStatus(
-        "Accept or edit meaning-unit summaries before creating categories. Categories only use confirmed summaries."
+        "Accept meaning units before creating categories. Categories only use researcher-accepted, non-excluded meaning units."
       );
       return;
     }
@@ -3740,8 +3740,8 @@ export function GdiqrWorkspace({
                       researcher review.
                     </p>
                     <p className="small panel-note">
-                      Accept or edit only the summaries that accurately capture
-                      the participant meaning.
+                      Accept only the reviewed summaries that accurately
+                      capture the participant meaning.
                     </p>
                     <div className="scope-options">
                       <label className="scope-option">
@@ -4016,7 +4016,7 @@ export function GdiqrWorkspace({
                         confirmedMeaningUnits.length > 0 ? "" : "warning"
                       }`}
                     >
-                      Reviewed meaning units: {confirmedMeaningUnits.length} /{" "}
+                      Accepted meaning units: {confirmedMeaningUnits.length} /{" "}
                       {units.length - excludedMeaningUnits.length}
                     </span>
                     {displayCategories.length > 0 && (
@@ -4037,12 +4037,12 @@ export function GdiqrWorkspace({
                     <span className="label">Meaning Units</span>
                     <h3>Compare participant meanings</h3>
                     <p className="small">
-                      Use the reviewed summaries as the evidence base for
-                      categorizing. Similar meanings can be grouped, moved, and
-                      compared as categories develop.
+                      Use accepted researcher-reviewed summaries as the evidence
+                      base for categorizing. Similar meanings can be grouped,
+                      moved, and compared as categories develop.
                     </p>
                     {confirmedMeaningUnits.length === 0 ? (
-                      <EmptyState text="No reviewed meaning units yet. Return to Understanding & Translating to accept summaries first." />
+                      <EmptyState text="No accepted meaning units yet. Return to Understanding & Translating to accept summaries first." />
                     ) : (
                       <div className="summary-list">
                         {confirmedMeaningUnits.map((unit) => (
@@ -4922,10 +4922,7 @@ function canRunMeaningUnitsForSegment(segment: TranscriptSegment) {
 }
 
 function isConfirmedMeaningUnit(unit: MeaningUnit) {
-  return (
-    !unit.analysisExcluded &&
-    (unit.humanStatus === "Accepted" || unit.humanStatus === "Edited")
-  );
+  return !unit.analysisExcluded && unit.humanStatus === "Accepted";
 }
 
 function getMeaningUnitValidationFlags(
@@ -5320,7 +5317,7 @@ function getCategoryRunDisabledReason({
   mode: CategoryMode;
 }) {
   if (confirmedMeaningUnits === 0) {
-    return "Accept or edit meaning-unit summaries before running categories";
+    return "Accept meaning units before running categories";
   }
   if (hasTemporaryFallbackCategories && (mode === "B" || mode === "C")) {
     return "Regenerate or explicitly accept the temporary fallback draft before continuing";
