@@ -35,7 +35,7 @@ import type {
 } from "@/lib/types";
 import type { WorkspaceData } from "@/lib/gdiqr-repository";
 import type { RunLog } from "@/lib/run-logs";
-import type { AutoSegmentMode } from "@/lib/auto-segmenter";
+import { autoSplitTranscript, type AutoSegmentMode } from "@/lib/auto-segmenter";
 import type { StorageMode } from "@/lib/storage-mode";
 
 const PRODUCT_TITLE =
@@ -859,14 +859,44 @@ export function GdiqrWorkspace({
         status: "Transcript confirmed for local analysis",
         updatedAt: now
       }));
-      const localSegment = buildLocalTranscriptSegment({
-        caseId: "CASE-001",
-        segmentNumber: 1,
-        text: transcriptForStorage
+      const splitResult = autoSplitTranscript(transcriptForStorage, {
+        mode: segmentSplitMode,
+        researchQuestion,
+        sourceTranscriptId: "active-transcript"
       });
-      setDisplaySegments([localSegment]);
-      setSelectedSegmentId(localSegment.id);
-      setMeaningUnitSegmentId(localSegment.id);
+      const splitStartedAt = Date.now();
+      const localSegments =
+        splitResult.segments.length > 0
+          ? splitResult.segments.map(
+              (segment, index): TranscriptSegment => ({
+                caseId: "CASE-001",
+                createdBy: "auto",
+                endTimestamp: "00:00",
+                endTurnIndex: segment.endTurnIndex,
+                id: `local-seg-${splitStartedAt}-${index + 1}`,
+                segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
+                segmentNumber: index + 1,
+                sourceTranscriptId: segment.sourceTranscriptId,
+                speakerInfo: segment.title,
+                splittingMode: segment.splittingMode,
+                startingMuNumber: index * 100 + 1,
+                startTimestamp: "00:00",
+                startTurnIndex: segment.startTurnIndex,
+                status: "Needs Review",
+                text: segment.text,
+                topicLabel: segment.title || `Segment ${index + 1}`
+              })
+            )
+          : [
+              buildLocalTranscriptSegment({
+                caseId: "CASE-001",
+                segmentNumber: 1,
+                text: transcriptForStorage
+              })
+            ];
+      setDisplaySegments(localSegments);
+      setSelectedSegmentId(localSegments[0]?.id ?? "");
+      setMeaningUnitSegmentId(localSegments[0]?.id ?? "");
       setUnits([]);
       setDisplayCategories([]);
       setReviewerOutputs([]);
@@ -881,7 +911,9 @@ export function GdiqrWorkspace({
         },
         ...current
       ]);
-      setApiStatus("Reviewed transcript confirmed locally. You can now review or split segments.");
+      setApiStatus(
+        `Reviewed transcript confirmed locally. ${localSegments.length} draft meaning-unit candidate${localSegments.length === 1 ? "" : "s"} created for researcher boundary review.`
+      );
       return;
     }
     setIsConfirmingTranscript(true);

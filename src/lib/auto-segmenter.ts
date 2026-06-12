@@ -22,9 +22,9 @@ const modeSettings: Record<
   AutoSegmentMode,
   { maxWords: number; minWords: number; targetWords: number }
 > = {
-  balanced: { maxWords: 360, minWords: 50, targetWords: 220 },
-  conservative: { maxWords: 520, minWords: 80, targetWords: 340 },
-  detailed: { maxWords: 260, minWords: 40, targetWords: 150 }
+  balanced: { maxWords: 180, minWords: 20, targetWords: 90 },
+  conservative: { maxWords: 280, minWords: 35, targetWords: 150 },
+  detailed: { maxWords: 120, minWords: 12, targetWords: 60 }
 };
 
 const interviewerLabels = new Set([
@@ -349,13 +349,14 @@ function mergeTinySegments(
     }
 
     const last = merged[merged.length - 1];
-    if (
-      last &&
-      index > 0 &&
-      index < segments.length - 1 &&
-      countWords(text) < minWords &&
-      !segmentHasBoundaryCue(text)
-    ) {
+  if (
+    last &&
+    index > 0 &&
+    index < segments.length - 1 &&
+    countWords(text) < minWords &&
+    !startsWithInterviewerQuestion(text) &&
+    !segmentHasBoundaryCue(text)
+  ) {
       merged[merged.length - 1] = {
         endTurnIndex: segment.endTurnIndex ?? last.endTurnIndex,
         startTurnIndex: last.startTurnIndex,
@@ -368,6 +369,14 @@ function mergeTinySegments(
   });
 
   return merged;
+}
+
+function startsWithInterviewerQuestion(text: string) {
+  const firstLine = text
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  return Boolean(firstLine && isSubstantialInterviewerQuestion(firstLine));
 }
 
 function segmentHasBoundaryCue(text: string) {

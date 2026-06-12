@@ -110,7 +110,7 @@ export async function generateMeaningUnits(
   assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
 
   const model = getOllamaModel();
-  const chunks = chunkTranscript(
+  const chunks = chunkMeaningUnitCandidates(
     input.transcript,
     Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 1200)
   );
@@ -122,7 +122,7 @@ export async function generateMeaningUnits(
 
   addRunEvent(
     input.runId,
-    `Meaning-unit generation split transcript into ${chunks.length} chunk${chunks.length === 1 ? "" : "s"}`
+    `Meaning-unit generation split transcript into ${chunks.length} candidate chunk${chunks.length === 1 ? "" : "s"}`
   );
 
   for (const [index, chunk] of chunks.entries()) {
@@ -131,7 +131,7 @@ export async function generateMeaningUnits(
     const startingNumber = initialNumber + allUnits.length;
     addRunEvent(
       input.runId,
-      `Calling Ollama for MU chunk ${index + 1}/${chunks.length} (${chunk.length} chars)`
+      `Calling Ollama for MU candidate ${index + 1}/${chunks.length} (${chunk.length} chars)`
     );
     const result = await generateMeaningUnitsForChunkWithFallback({
       chunk,
@@ -189,7 +189,10 @@ Rules:
 - Do not compare this segment with other transcripts or segments.
 - Keep summaries concise and descriptive.
 - Write aiSummary and humanSummary in the same language as the interview transcript.
-- Produce at most 5 meaning units for this chunk; combine adjacent short turns when they express the same point.
+- Treat this transcript chunk as a candidate meaning-unit boundary.
+- Usually create 1 meaning unit for the candidate chunk; create 2-3 only if there are clear meaning shifts inside it.
+- Do not merge interviewer/researcher questions into participant meaning units.
+- If the chunk is mainly an interviewer/researcher prompt, return it with speaker "Interviewer", reviewerStatus "Warning", and uncertainty "Context candidate; review for exclusion".
 - Set humanSummary to the exact same summary text as aiSummary.
 - Use reviewerStatus "Not run" unless there is a clear concern, then use "Warning".
 - Start numbering at ${startingNumber}.
@@ -1026,6 +1029,188 @@ function chunkTranscript(transcript: string, maxChars: number) {
   return chunks.length > 0 ? chunks : [transcript.trim()];
 }
 
+function chunkMeaningUnitCandidates(transcript: string, maxChars: number) {
+  const normalized = transcript.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const turnChunks = chunkBySpeakerTurns(normalized, maxChars);
+  const baseChunks =
+    turnChunks.length > 1
+      ? turnChunks
+      : chunkTranscriptByMeaningBoundaries(normalized, maxChars);
+
+  const chunks = baseChunks
+    .flatMap((chunk) =>
+      chunk.length > maxChars ? chunkTranscriptByMeaningBoundaries(chunk, maxChars) : [chunk]
+    )
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+
+  return chunks.length > 0 ? chunks : chunkTranscript(normalized, maxChars);
+}
+
+function chunkBySpeakerTurns(transcript: string, maxChars: number) {
+  const turns = transcript
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const hasSpeakerLabels = turns.some((line) => parseSpeakerLine(line));
+  if (!hasSpeakerLabels) {
+    return [];
+  }
+
+  const chunks: string[] = [];
+  for (const turn of turns) {
+    const parsed = parseSpeakerLine(turn);
+    if (!parsed) {
+      chunks.push(...chunkTranscriptByMeaningBoundaries(turn, maxChars));
+      continue;
+    }
+
+    const speaker = normalizeSpeakerLabel(parsed.label);
+    if (speaker === "interviewer") {
+      chunks.push(turn);
+      continue;
+    }
+
+    chunks.push(
+      ...chunkTranscriptByMeaningBoundaries(turn, Math.min(maxChars, 900))
+    );
+  }
+
+  return combineTinyCandidateChunks(chunks);
+}
+
+function chunkTranscriptByMeaningBoundaries(transcript: string, maxChars: number) {
+  const paragraphs = transcript
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  const source = paragraphs.length > 1 ? paragraphs : splitIntoSentences(transcript);
+  const targetWords = 90;
+  const maxWords = 160;
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let currentWords = 0;
+
+  for (const item of source) {
+    const parts =
+      countApproxWords(item) > maxWords ? splitIntoSentences(item) : [item];
+    for (const part of parts) {
+      const partWords = countApproxWords(part);
+      const candidateWords = currentWords + partWords;
+      const candidateText = [...current, part].join(" ");
+      if (
+        current.length > 0 &&
+        (candidateWords > targetWords || candidateText.length > maxChars)
+      ) {
+        chunks.push(current.join(" ").trim());
+        current = [];
+        currentWords = 0;
+      }
+      current.push(part);
+      currentWords += partWords;
+    }
+  }
+
+  if (current.length > 0) {
+    chunks.push(current.join(" ").trim());
+  }
+
+  return chunks.flatMap((chunk) =>
+    chunk.length > maxChars ? splitLongText(chunk, maxChars) : [chunk]
+  );
+}
+
+function combineTinyCandidateChunks(chunks: string[]) {
+  const combined: string[] = [];
+  for (const chunk of chunks) {
+    const trimmed = chunk.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const last = combined[combined.length - 1];
+    if (
+      last &&
+      countApproxWords(trimmed) < 12 &&
+      !isInterviewerCandidate(trimmed) &&
+      !isInterviewerCandidate(last)
+    ) {
+      combined[combined.length - 1] = `${last}\n${trimmed}`.trim();
+    } else {
+      combined.push(trimmed);
+    }
+  }
+  return combined;
+}
+
+function splitIntoSentences(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return [];
+  }
+  const sentences = normalized
+    .split(/(?<=[.!?。！？])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  return sentences.length > 1 ? sentences : [normalized];
+}
+
+function countApproxWords(text: string) {
+  const latinWords = text.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?/g);
+  if (latinWords && latinWords.length > 0) {
+    return latinWords.length;
+  }
+  const cjkCharacters = text.match(/[\u3400-\u9fff]/g);
+  if (cjkCharacters && cjkCharacters.length > 0) {
+    return Math.ceil(cjkCharacters.length / 2);
+  }
+  return text.trim() ? 1 : 0;
+}
+
+function parseSpeakerLine(line: string) {
+  const match = line.match(/^([\p{L}][\p{L}\s.'-]{0,32}|[IQPA])\s*[:：]\s*(.*)$/u);
+  if (!match) {
+    return null;
+  }
+  return {
+    content: match[2] ?? "",
+    label: (match[1] ?? "").trim()
+  };
+}
+
+function normalizeSpeakerLabel(label: string) {
+  const normalized = label.trim().toLowerCase();
+  if (
+    [
+      "interviewer",
+      "researcher",
+      "moderator",
+      "facilitator",
+      "i",
+      "q",
+      "jiawan"
+    ].includes(normalized)
+  ) {
+    return "interviewer";
+  }
+  if (["participant", "interviewee", "student", "p", "a"].includes(normalized)) {
+    return "participant";
+  }
+  return "other";
+}
+
+function isInterviewerCandidate(text: string) {
+  const parsed = parseSpeakerLine(text.split("\n")[0] ?? text);
+  if (parsed && normalizeSpeakerLabel(parsed.label) === "interviewer") {
+    return true;
+  }
+  return /[?？]\s*$/.test(text.trim());
+}
+
 function splitLongText(text: string, maxChars: number) {
   const chunks: string[] = [];
   for (let index = 0; index < text.length; index += maxChars) {
@@ -1069,22 +1254,17 @@ function fallbackMeaningUnitsFromChunk(
   startingNumber: number,
   defaults: { caseId: string; segmentId: string }
 ) {
-  const lines = chunk
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const participantLines = lines.filter((line) =>
-    /^participant\s*:/i.test(line)
-  );
-  const sourceLines = participantLines.length ? participantLines : lines;
-  const grouped = groupLines(sourceLines, 5);
+  const grouped = chunkTranscriptByMeaningBoundaries(chunk, 900).map((item) => [
+    item
+  ]);
 
   return grouped
     .map((group, index) => {
       const number = startingNumber + index;
-      const text = group
-        .join(" ")
-        .replace(/^(interviewer|participant)\s*:\s*/i, "")
+      const rawText = group.join(" ").trim();
+      const contextCandidate = isInterviewerCandidate(rawText);
+      const text = rawText
+        .replace(/^(interviewer|researcher|moderator|facilitator|participant|interviewee|student|[IQPA])\s*[:：]\s*/i, "")
         .trim();
       const excerpt = text.slice(0, 260);
       const aiSummary =
@@ -1094,35 +1274,25 @@ function fallbackMeaningUnitsFromChunk(
         id: `mu_ai_${String(number).padStart(3, "0")}`,
         segmentId: defaults.segmentId,
         caseId: defaults.caseId,
-        speaker: group.some((line) => /^interviewer\s*:/i.test(line))
-          ? "Interviewer"
-          : "Participant",
+        speaker: contextCandidate ? "Interviewer" : "Participant",
         number,
         aiExcerpt: excerpt,
         excerpt,
         aiSummary: aiSummary || "Local fallback meaning unit",
         humanSummary: aiSummary || "Local fallback meaning unit",
         uncertainty:
-          "Generated by local fallback because the Ollama meaning-unit chunk failed.",
-        humanStatus: "Draft",
+          contextCandidate
+            ? "Context candidate; review for exclusion. Generated by local fallback because the Ollama meaning-unit chunk failed."
+            : "Generated by local fallback because the Ollama meaning-unit chunk failed.",
+        humanStatus: contextCandidate ? "Excluded" : "Draft",
         reviewerStatus: "Warning",
-        analysisExcluded: false
+        analysisExcluded: contextCandidate,
+        exclusionReason: contextCandidate
+          ? "Interviewer prompt/context candidate"
+          : undefined
       } satisfies MeaningUnit;
     })
     .filter((unit) => unit.excerpt);
-}
-
-function groupLines(lines: string[], maxGroups: number) {
-  if (lines.length <= maxGroups) {
-    return lines.map((line) => [line]);
-  }
-
-  const groupSize = Math.ceil(lines.length / maxGroups);
-  const groups: string[][] = [];
-  for (let index = 0; index < lines.length; index += groupSize) {
-    groups.push(lines.slice(index, index + groupSize));
-  }
-  return groups;
 }
 
 function formatDuration(ms: number) {
@@ -1151,12 +1321,18 @@ function normalizeMeaningUnits(
       const number = startingNumber + index;
       const aiSummary = cleanText(item.aiSummary);
       const humanSummary = cleanText(item.humanSummary);
+      const speaker = cleanText(item.speaker) || "Participant";
+      const normalizedSpeaker = speaker.toLowerCase();
+      const contextCandidate =
+        normalizedSpeaker.includes("interviewer") ||
+        (!normalizedSpeaker.includes("participant") &&
+          isInterviewerCandidate(cleanText(item.excerpt)));
 
       return {
         id: `mu_ai_${String(number).padStart(3, "0")}`,
         segmentId: cleanText(item.segmentId) || defaults.segmentId,
         caseId: cleanText(item.caseId) || defaults.caseId,
-        speaker: cleanText(item.speaker) || "Participant",
+        speaker: contextCandidate ? "Interviewer" : speaker,
         number,
         aiExcerpt: cleanText(item.excerpt),
         excerpt: cleanText(item.excerpt),
@@ -1168,13 +1344,19 @@ function normalizeMeaningUnits(
         tentativeInterpretation:
           cleanText(item.tentativeInterpretation) || undefined,
         uncertainty: cleanText(item.uncertainty) || undefined,
-        humanStatus: "Draft",
+        humanStatus: contextCandidate ? "Excluded" : "Draft",
         reviewerStatus:
+          contextCandidate ||
           item.reviewerStatus === "Warning" ||
           item.reviewerStatus === "Major issue"
             ? item.reviewerStatus
+              ? item.reviewerStatus
+              : "Warning"
             : "Not run",
-        analysisExcluded: false
+        analysisExcluded: contextCandidate,
+        exclusionReason: contextCandidate
+          ? "Interviewer prompt/context candidate"
+          : undefined
       } satisfies MeaningUnit;
     })
     .filter((item) => item.excerpt && item.aiSummary);
