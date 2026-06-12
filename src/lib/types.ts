@@ -83,6 +83,7 @@ export interface TranscriptionJobRecord {
 }
 
 export interface MeaningUnit {
+  aiExcerpt?: string;
   id: string;
   segmentId: string;
   caseId: string;

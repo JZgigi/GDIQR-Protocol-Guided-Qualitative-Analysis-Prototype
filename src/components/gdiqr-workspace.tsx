@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
-  Ban,
   Check,
   ChevronRight,
   Download,
@@ -1413,10 +1412,18 @@ export function GdiqrWorkspace({
 
     const newUnits = result.meaningUnits;
     if (newUnits) {
+      const draftUnits: MeaningUnit[] = newUnits.map((unit): MeaningUnit => ({
+        ...unit,
+        aiExcerpt: unit.aiExcerpt ?? unit.excerpt,
+        humanStatus:
+          unit.analysisExcluded || unit.humanStatus === "Excluded"
+            ? "Excluded"
+            : "Draft"
+      }));
       setUnits((current) =>
         [
           ...current.filter((unit) => unit.segmentId !== segment.segmentId),
-          ...newUnits
+          ...draftUnits
         ].sort((left, right) => left.number - right.number)
       );
       setDisplaySegments((current) =>
@@ -2015,6 +2022,76 @@ export function GdiqrWorkspace({
     }, 80);
   }
 
+  function clearDerivedAnalysisAfterMeaningUnitChange() {
+    setDisplayCategories([]);
+    setNarrative("");
+    setCategoryDraftNotice("");
+    setCategoryDraftIsFallback(false);
+  }
+
+  function updateMeaningUnitExcerpt(unitId: string, value: string) {
+    setUnits((current) =>
+      current.map((unit) =>
+        unit.id === unitId
+          ? {
+              ...unit,
+              aiExcerpt: unit.aiExcerpt ?? unit.excerpt,
+              excerpt: value,
+              humanStatus:
+                unit.humanStatus === "Accepted" || unit.humanStatus === "Excluded"
+                  ? "Needs review"
+                  : "Edited"
+            }
+          : unit
+      )
+    );
+    clearDerivedAnalysisAfterMeaningUnitChange();
+  }
+
+  async function saveMeaningUnitExcerpt(unitId: string) {
+    const unit = units.find((item) => item.id === unitId);
+    if (!unit) {
+      return;
+    }
+
+    if (!unit.excerpt.trim()) {
+      setApiStatus("Meaning-unit excerpt cannot be empty.");
+      return;
+    }
+
+    if (isLocalOnlyMode) {
+      setApiStatus("Meaning-unit excerpt edit saved locally.");
+      return;
+    }
+
+    const response = await fetch(`/api/meaning-units/${unitId}`, {
+      body: JSON.stringify({
+        excerpt: unit.excerpt,
+        humanStatus: unit.humanStatus === "Accepted" ? "Needs review" : unit.humanStatus
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH"
+    });
+    if (!response.ok) {
+      setApiStatus("Meaning-unit excerpt edit could not be saved. Try again.");
+      return;
+    }
+    setApiStatus("Meaning-unit excerpt edit saved.");
+  }
+
+  function updateExclusionReason(unitId: string, value: string) {
+    setUnits((current) =>
+      current.map((unit) =>
+        unit.id === unitId
+          ? {
+              ...unit,
+              exclusionReason: value
+            }
+          : unit
+      )
+    );
+  }
+
   function updateHumanSummary(unitId: string, value: string) {
     setUnits((current) =>
       current.map((unit) =>
@@ -2023,6 +2100,7 @@ export function GdiqrWorkspace({
           : unit
       )
     );
+    clearDerivedAnalysisAfterMeaningUnitChange();
   }
 
   async function saveMeaningUnitHumanSummary(unitId: string) {
@@ -2057,6 +2135,21 @@ export function GdiqrWorkspace({
       setApiStatus("Generate meaning units before accepting summaries.");
       return;
     }
+    const incompleteUnit = includableUnits.find(
+      (unit) => !unit.excerpt.trim() || !(unit.humanSummary || unit.aiSummary).trim()
+    );
+    if (incompleteUnit) {
+      setApiStatus(
+        `Review MU #${incompleteUnit.number} before accepting all summaries. Each MU needs an excerpt and researcher summary.`
+      );
+      return;
+    }
+    const confirmed = window.confirm(
+      "Accept all visible, non-excluded meaning units? This records the current researcher-reviewed excerpts and summaries as accepted analytic material."
+    );
+    if (!confirmed) {
+      return;
+    }
 
     setIsAcceptingMeaningUnits(true);
     setApiStatus("Saving accepted meaning-unit summaries...");
@@ -2069,8 +2162,9 @@ export function GdiqrWorkspace({
               ? unit
               : {
                   ...unit,
+                  excerpt: unit.excerpt.trim(),
                   humanStatus: "Accepted",
-                  humanSummary: unit.humanSummary || unit.aiSummary
+                  humanSummary: (unit.humanSummary || unit.aiSummary).trim()
                 }
           )
         );
@@ -2084,8 +2178,9 @@ export function GdiqrWorkspace({
         includableUnits.map(async (unit) => {
           const response = await fetch(`/api/meaning-units/${unit.id}`, {
             body: JSON.stringify({
+              excerpt: unit.excerpt.trim(),
               humanStatus: "Accepted",
-              humanSummary: unit.humanSummary || unit.aiSummary
+              humanSummary: (unit.humanSummary || unit.aiSummary).trim()
             }),
             headers: { "Content-Type": "application/json" },
             method: "PATCH"
@@ -2154,16 +2249,12 @@ export function GdiqrWorkspace({
     setApiStatus("Speaker correction saved for this meaning unit.");
   }
 
-  async function setMeaningUnitExcluded(unit: MeaningUnit, excluded: boolean) {
-    const reason = excluded
-      ? window.prompt(
-          "Why should this MU be excluded from analysis?",
-          unit.speaker === "Interviewer"
-            ? "Interviewer opening/question, not participant experience"
-            : "Not relevant for this GDI-QR-informed workflow"
-        )
-      : null;
-    if (excluded && reason === null) {
+  async function excludeMeaningUnit(unit: MeaningUnit) {
+    const reason = (unit.exclusionReason ?? "").trim();
+    if (!reason) {
+      setApiStatus(
+        `Add a short reason before excluding MU #${unit.number}. This keeps the researcher decision audit-visible.`
+      );
       return;
     }
 
@@ -2172,9 +2263,9 @@ export function GdiqrWorkspace({
         item.id === unit.id
           ? {
               ...item,
-              analysisExcluded: excluded,
-              exclusionReason: excluded ? reason || "Excluded from analysis" : undefined,
-              humanStatus: excluded ? "Excluded" : "Needs review"
+              analysisExcluded: true,
+              exclusionReason: reason,
+              humanStatus: "Excluded"
             }
           : item
       )
@@ -2183,21 +2274,19 @@ export function GdiqrWorkspace({
     setNarrative("");
     setCategoryDraftNotice("");
     setCategoryDraftIsFallback(false);
-    setApiStatus(excluded ? "Excluding meaning unit..." : "Restoring meaning unit...");
+    setApiStatus("Excluding meaning unit...");
 
     if (isLocalOnlyMode) {
       setApiStatus(
-        excluded
-          ? "Meaning unit excluded locally. Existing categories were cleared; rerun categories when ready."
-          : "Meaning unit restored locally. Review and accept it before categories."
+        "Meaning unit excluded locally. Existing categories were cleared; rerun categories when ready."
       );
       return;
     }
 
     const response = await fetch(`/api/meaning-units/${unit.id}`, {
       body: JSON.stringify({
-        analysisExcluded: excluded,
-        exclusionReason: excluded ? reason || "Excluded from analysis" : null
+        analysisExcluded: true,
+        exclusionReason: reason
       }),
       headers: { "Content-Type": "application/json" },
       method: "PATCH"
@@ -2219,9 +2308,58 @@ export function GdiqrWorkspace({
       );
     }
     setApiStatus(
-      excluded
-        ? "Meaning unit excluded from category analysis. Existing categories were cleared; rerun categories when ready."
-        : "Meaning unit restored for analysis. Review and accept it before categories."
+      "Meaning unit excluded from category analysis. Existing categories were cleared; rerun categories when ready."
+    );
+  }
+
+  async function restoreMeaningUnit(unit: MeaningUnit) {
+    setUnits((current) =>
+      current.map((item) =>
+        item.id === unit.id
+          ? {
+              ...item,
+              analysisExcluded: false,
+              humanStatus: "Needs review"
+            }
+          : item
+      )
+    );
+    clearDerivedAnalysisAfterMeaningUnitChange();
+    setApiStatus("Restoring meaning unit...");
+
+    if (isLocalOnlyMode) {
+      setApiStatus(
+        "Meaning unit restored locally. Review and accept it before categories."
+      );
+      return;
+    }
+
+    const response = await fetch(`/api/meaning-units/${unit.id}`, {
+      body: JSON.stringify({
+        analysisExcluded: false,
+        exclusionReason: null
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH"
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      meaningUnit?: MeaningUnit;
+      saved?: boolean;
+    };
+    if (!response.ok || !result.saved) {
+      setApiStatus(result.error ?? "Meaning-unit restore could not be saved.");
+      return;
+    }
+    if (result.meaningUnit) {
+      setUnits((current) =>
+        current.map((item) =>
+          item.id === result.meaningUnit?.id ? result.meaningUnit : item
+        )
+      );
+    }
+    setApiStatus(
+      "Meaning unit restored for analysis. Review and accept it before categories."
     );
   }
 
@@ -2511,9 +2649,27 @@ export function GdiqrWorkspace({
 
   async function markAccepted(unitId: string) {
     const unit = units.find((item) => item.id === unitId);
+    if (!unit) {
+      return;
+    }
+    const reviewedExcerpt = unit.excerpt.trim();
+    const reviewedSummary = (unit.humanSummary || unit.aiSummary).trim();
+    if (!reviewedExcerpt || !reviewedSummary) {
+      setApiStatus(
+        `Review the excerpt and summary before accepting MU #${unit.number}.`
+      );
+      return;
+    }
     setUnits((current) =>
       current.map((unit) =>
-        unit.id === unitId ? { ...unit, humanStatus: "Accepted" } : unit
+        unit.id === unitId
+          ? {
+              ...unit,
+              excerpt: reviewedExcerpt,
+              humanSummary: reviewedSummary,
+              humanStatus: "Accepted"
+            }
+          : unit
       )
     );
     setApiStatus("Saving meaning-unit decision...");
@@ -2525,8 +2681,9 @@ export function GdiqrWorkspace({
 
     const response = await fetch(`/api/meaning-units/${unitId}`, {
       body: JSON.stringify({
+        excerpt: reviewedExcerpt,
         humanStatus: "Accepted",
-        humanSummary: unit?.humanSummary
+        humanSummary: reviewedSummary
       }),
       headers: { "Content-Type": "application/json" },
       method: "PATCH"
@@ -3605,7 +3762,27 @@ export function GdiqrWorkspace({
                               <strong>MU #{unit.number}</strong>
                               <StatusBadge label={unit.humanStatus} />
                             </div>
-                            <p className="small">{unit.excerpt}</p>
+                            <span className="label">AI draft excerpt</span>
+                            <p className="small">
+                              {unit.aiExcerpt ?? unit.excerpt}
+                            </p>
+                            <label className="label">
+                              Researcher-reviewed excerpt
+                              <textarea
+                                className="field"
+                                disabled={unit.analysisExcluded}
+                                onBlur={() =>
+                                  void saveMeaningUnitExcerpt(unit.id)
+                                }
+                                onChange={(event) =>
+                                  updateMeaningUnitExcerpt(
+                                    unit.id,
+                                    event.target.value
+                                  )
+                                }
+                                value={unit.excerpt}
+                              />
+                            </label>
                             <span className="label">Suggested summary</span>
                             <p className="small">{unit.aiSummary || "No draft yet."}</p>
                             <label className="label">
@@ -3622,6 +3799,24 @@ export function GdiqrWorkspace({
                                 value={unit.humanSummary}
                               />
                             </label>
+                            <label className="label">
+                              Exclusion reason
+                              <textarea
+                                className="field"
+                                onChange={(event) =>
+                                  updateExclusionReason(
+                                    unit.id,
+                                    event.target.value
+                                  )
+                                }
+                                placeholder={
+                                  unit.speaker === "Interviewer"
+                                    ? "Example: interviewer prompt or contextual question"
+                                    : "Required before excluding this meaning unit"
+                                }
+                                value={unit.exclusionReason ?? ""}
+                              />
+                            </label>
                             <div className="button-row">
                               {!unit.analysisExcluded && (
                                 <button
@@ -3633,6 +3828,23 @@ export function GdiqrWorkspace({
                                   <Check size={18} />
                                 </button>
                               )}
+                              {unit.analysisExcluded ? (
+                                <button
+                                  className="button"
+                                  onClick={() => void restoreMeaningUnit(unit)}
+                                  type="button"
+                                >
+                                  Restore
+                                </button>
+                              ) : (
+                                <button
+                                  className="button"
+                                  onClick={() => void excludeMeaningUnit(unit)}
+                                  type="button"
+                                >
+                                  Exclude
+                                </button>
+                              )}
                               <button
                                 className="button icon"
                                 disabled={unit.analysisExcluded}
@@ -3641,23 +3853,6 @@ export function GdiqrWorkspace({
                                 type="button"
                               >
                                 <Pencil size={18} />
-                              </button>
-                              <button
-                                className="button icon"
-                                onClick={() =>
-                                  void setMeaningUnitExcluded(
-                                    unit,
-                                    !unit.analysisExcluded
-                                  )
-                                }
-                                title={
-                                  unit.analysisExcluded
-                                    ? "Restore MU to analysis"
-                                    : "Exclude MU from category analysis"
-                                }
-                                type="button"
-                              >
-                                <Ban size={18} />
                               </button>
                             </div>
                           </article>

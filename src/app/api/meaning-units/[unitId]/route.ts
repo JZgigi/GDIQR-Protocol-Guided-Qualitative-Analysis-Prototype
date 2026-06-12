@@ -13,6 +13,7 @@ export async function PATCH(
   const { unitId } = await context.params;
   const body = (await request.json().catch(() => ({}))) as {
     analysisExcluded?: boolean;
+    excerpt?: string;
     exclusionReason?: string | null;
     humanStatus?: HumanStatus;
     humanSummary?: string;
@@ -31,6 +32,7 @@ export async function PATCH(
 
     const result = await updateMeaningUnit({
       analysisExcluded: body.analysisExcluded,
+      excerpt: body.excerpt,
       exclusionReason: body.exclusionReason,
       humanStatus: body.humanStatus,
       humanSummary: body.humanSummary,

@@ -851,6 +851,7 @@ export async function createAudioPreviewUrl({
 
 export async function updateMeaningUnit({
   analysisExcluded,
+  excerpt,
   exclusionReason,
   humanStatus,
   humanSummary,
@@ -858,6 +859,7 @@ export async function updateMeaningUnit({
   unitId
 }: {
   analysisExcluded?: boolean;
+  excerpt?: string;
   exclusionReason?: string | null;
   humanStatus?: MeaningUnit["humanStatus"];
   humanSummary?: string;
@@ -874,6 +876,9 @@ export async function updateMeaningUnit({
   };
   if (humanStatus) {
     updates.human_status = humanStatus;
+  }
+  if (excerpt !== undefined) {
+    updates.excerpt = excerpt;
   }
   if (humanSummary !== undefined) {
     updates.human_summary = humanSummary;
@@ -907,7 +912,11 @@ export async function updateMeaningUnit({
     actor: "Researcher",
     action:
       analysisExcluded === undefined
-        ? `Updated MU ${data.unit_number}`
+        ? excerpt !== undefined
+          ? `Updated MU ${data.unit_number} excerpt`
+          : humanSummary !== undefined
+            ? `Updated MU ${data.unit_number} summary`
+            : `Updated MU ${data.unit_number}`
         : analysisExcluded
           ? `Excluded MU ${data.unit_number} from analysis`
           : `Restored MU ${data.unit_number} to analysis`,
@@ -1824,6 +1833,7 @@ function mapMeaningUnit(
     caseId: row.case_id,
     speaker: row.speaker,
     number: row.unit_number,
+    aiExcerpt: row.excerpt,
     excerpt: row.excerpt,
     aiSummary: row.ai_summary,
     humanSummary: row.human_summary,

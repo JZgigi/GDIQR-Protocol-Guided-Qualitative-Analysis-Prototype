@@ -1098,6 +1098,7 @@ function fallbackMeaningUnitsFromChunk(
           ? "Interviewer"
           : "Participant",
         number,
+        aiExcerpt: excerpt,
         excerpt,
         aiSummary: aiSummary || "Local fallback meaning unit",
         humanSummary: aiSummary || "Local fallback meaning unit",
@@ -1157,6 +1158,7 @@ function normalizeMeaningUnits(
         caseId: cleanText(item.caseId) || defaults.caseId,
         speaker: cleanText(item.speaker) || "Participant",
         number,
+        aiExcerpt: cleanText(item.excerpt),
         excerpt: cleanText(item.excerpt),
         aiSummary,
         humanSummary:
