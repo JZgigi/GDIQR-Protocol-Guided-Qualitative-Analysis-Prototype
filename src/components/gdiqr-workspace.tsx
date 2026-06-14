@@ -3736,10 +3736,7 @@ export function GdiqrWorkspace({
                                 };
                                 return (
                                   <p className="small">
-                                    {counts.total} meaning unit
-                                    {counts.total === 1 ? "" : "s"} ·{" "}
-                                    {counts.accepted} accepted ·{" "}
-                                    {counts.excluded} excluded/context
+                                    {formatSegmentMeaningUnitCounts(counts)}
                                   </p>
                                 );
                               })()}
@@ -4670,10 +4667,42 @@ function getSegmentDisplayStatus(
   segment: TranscriptSegment,
   counts?: { accepted: number; excluded: number; total: number }
 ) {
-  if ((counts?.total ?? 0) === 0 && segment.status === "Needs Review") {
+  const total = counts?.total ?? 0;
+  const accepted = counts?.accepted ?? 0;
+  const excluded = counts?.excluded ?? 0;
+
+  if (total === 0) {
     return "Ready for delineation";
   }
+
+  if (excluded === total) {
+    return "Context only";
+  }
+
+  if (accepted + excluded === total) {
+    return "Reviewed";
+  }
+
+  if (accepted > 0 || excluded > 0) {
+    return "Partially reviewed";
+  }
+
   return segment.status;
+}
+
+function formatSegmentMeaningUnitCounts({
+  accepted,
+  excluded,
+  total
+}: {
+  accepted: number;
+  excluded: number;
+  total: number;
+}) {
+  if (total === 0) {
+    return "0 meaning units · Ready for delineation";
+  }
+  return `${total} meaning unit${total === 1 ? "" : "s"} · ${accepted} accepted · ${excluded} excluded/context`;
 }
 
 function StepGuidance({ step }: { step: WorkflowStep }) {
