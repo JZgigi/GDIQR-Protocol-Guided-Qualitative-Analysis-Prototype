@@ -352,7 +352,7 @@ export function GdiqrWorkspace({
   const completedSteps = useMemo(
     () => {
       const completed = new Set<WorkflowStep>(["pre-analysis"]);
-      if (displaySegments.length > 0 || units.length > 0) {
+      if (units.length > 0) {
         completed.add("understanding");
       }
       if (displayCategories.length > 0) {
@@ -368,7 +368,6 @@ export function GdiqrWorkspace({
     },
     [
       displayCategories.length,
-      displaySegments.length,
       editableTranscript,
       integrationReviewed,
       narrative,
@@ -428,11 +427,7 @@ export function GdiqrWorkspace({
     [displaySegments, meaningUnitSegmentId]
   );
   const canGenerateMeaningUnits = Boolean(
-    transcriptConfirmed &&
-      (meaningUnitGenerationScope === "all"
-        ? readySegments.length > 0
-        : selectedMeaningUnitSegment &&
-          canRunMeaningUnitsForSegment(selectedMeaningUnitSegment))
+    transcriptConfirmed && editableTranscript.trim()
   );
   const currentMeaningUnits = useMemo(
     () => normalizeMeaningUnitNumbersForSegments(units, displaySegments),
@@ -541,9 +536,7 @@ export function GdiqrWorkspace({
       reviewerOutputs.length
   );
   const generationTargetLabel =
-    meaningUnitGenerationScope === "all"
-      ? "all ready meaning units"
-      : selectedMeaningUnitSegment?.segmentId ?? "Selected Meaning Unit";
+    "the confirmed transcript";
   const selectedSegmentAlreadyHasUnits = Boolean(
     selectedMeaningUnitSegment &&
       currentMeaningUnits.some(
@@ -551,9 +544,9 @@ export function GdiqrWorkspace({
       )
   );
   const generationButtonLabel =
-    meaningUnitGenerationScope === "all"
-      ? "Assistant support: draft summaries for all ready meaning units"
-      : `${selectedSegmentAlreadyHasUnits ? "Assistant support: redraft" : "Assistant support: draft"} summary for ${selectedMeaningUnitSegment?.segmentId ?? "selected meaning unit"}`;
+    currentMeaningUnits.length > 0
+      ? "Assistant support: redelineate draft meaning units"
+      : "Assistant support: draft meaning units";
   const acceptedMeaningUnitNumberKey = confirmedMeaningUnits
     .map((unit) => unit.number)
     .join(",");
@@ -1015,7 +1008,7 @@ export function GdiqrWorkspace({
         ...current
       ]);
       setApiStatus(
-        `Reviewed transcript confirmed locally. ${localSegments.length} draft meaning-unit candidate${localSegments.length === 1 ? "" : "s"} created for researcher boundary review.`
+        "Reviewed transcript confirmed locally. Internal source chunks are ready; generate draft meaning units when you are ready to review them."
       );
       return;
     }
@@ -1537,19 +1530,17 @@ export function GdiqrWorkspace({
     }
   }
 
-  async function generateMeaningUnitsForSegment(
-    segment: TranscriptSegment,
+  async function generateMeaningUnitsFromTranscript(
     signal: AbortSignal
   ) {
     const response = await fetchWithTimeout("/api/ai/meaning-units", {
       body: JSON.stringify({
         background: false,
-        caseId: segment.caseId,
+        caseId: displaySegments[0]?.caseId ?? "CASE-001",
         lightInterpretation,
         projectId: currentProject.id,
-        segmentId: segment.segmentId,
-        startingNumber: segment.startingMuNumber,
-        transcript: segment.text
+        startingNumber: 1,
+        transcript: editableTranscript
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
@@ -1580,21 +1571,14 @@ export function GdiqrWorkspace({
             ? "Excluded"
             : "Draft"
       }));
-      setUnits((current) =>
-        [
-          ...current.filter((unit) => unit.segmentId !== segment.segmentId),
-          ...draftUnits
-        ].sort((left, right) => left.number - right.number)
-      );
+      setUnits(draftUnits.sort((left, right) => left.number - right.number));
       setDisplaySegments((current) =>
-        current.map((item) =>
-          item.id === segment.id ? { ...item, status: "Analysed" } : item
-        )
+        current.map((item) => ({ ...item, status: "Analysed" }))
       );
       recordLocalAuditEvent({
         actor: "AI",
-        action: `Drafted ${draftUnits.length} meaning-unit summary${draftUnits.length === 1 ? "" : "ies"} for ${segment.segmentId}`,
-        target: segment.segmentId
+        action: `Generated ${draftUnits.length} draft meaning unit${draftUnits.length === 1 ? "" : "s"} from the confirmed transcript`,
+        target: "Step 2 Meaning Units"
       });
     }
 
@@ -1602,29 +1586,13 @@ export function GdiqrWorkspace({
   }
 
   async function generateMeaningUnits(segmentOverride?: TranscriptSegment | null) {
-    if (displaySegments.length === 0) {
-      setApiStatus("Create and review meaning units before generating summaries.");
+    if (!editableTranscript.trim()) {
+      setApiStatus("Prepare and confirm a transcript before generating meaning units.");
       return;
     }
     if (!transcriptConfirmed) {
       setApiStatus(
         "Review and confirm the transcript before generating meaning units."
-      );
-      return;
-    }
-    const requestedSegments = segmentOverride
-      ? [segmentOverride]
-      : meaningUnitGenerationScope === "all"
-        ? readySegments
-        : selectedMeaningUnitSegment
-          ? [selectedMeaningUnitSegment]
-          : [];
-
-    if (requestedSegments.length === 0) {
-      setApiStatus(
-        meaningUnitGenerationScope === "all"
-          ? "No meaning units are ready. Mark at least one meaning unit as ready first."
-          : "Choose a meaning unit and mark it as ready before generating a summary."
       );
       return;
     }
@@ -1634,61 +1602,31 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    const segmentsWithExistingUnits = requestedSegments.filter((segment) =>
-      units.some((unit) => unit.segmentId === segment.segmentId)
-    );
-    if (segmentsWithExistingUnits.length > 0) {
+    if (currentMeaningUnits.length > 0) {
       const confirmed = window.confirm(
-        `Summaries already exist for ${segmentsWithExistingUnits
-          .map((segment) => segment.segmentId)
-          .join(", ")}. Regenerating will replace only those unit-level drafts. Continue?`
+        "Draft meaning units already exist. Redelineating will replace draft MU boundaries and clear later category/review outputs. Accepted/excluded decisions should be exported first if you need to preserve them. Continue?"
       );
       if (!confirmed) {
         return;
       }
-    }
-
-    const notReadySegment = requestedSegments.find(
-      (item) => !canRunMeaningUnitsForSegment(item)
-    );
-    if (notReadySegment) {
-      setApiStatus(
-        `${notReadySegment.segmentId} is not ready. Mark it ready before requesting AI assistance.`
-      );
-      return;
+      setDisplayCategories([]);
+      setReviewerOutputs([]);
+      setNarrative("");
     }
 
     const controller = new AbortController();
     meaningUnitAbortControllerRef.current = controller;
     setIsGeneratingMeaningUnits(true);
-    setGenerationProgress(
-      requestedSegments.length > 1
-        ? { current: 0, total: requestedSegments.length }
-        : { current: 1, label: requestedSegments[0].segmentId, total: 1 }
-    );
+    setGenerationProgress({ current: 1, label: "Confirmed transcript", total: 1 });
 
     try {
-      for (const [index, segment] of requestedSegments.entries()) {
-        if (controller.signal.aborted) {
-          break;
-        }
-        setGenerationProgress({
-          current: index + 1,
-          label: segment.segmentId,
-          total: requestedSegments.length
-        });
-        setApiStatus(
-          requestedSegments.length > 1
-            ? `Generating summaries for all meaning units... ${segment.segmentId} (${index + 1} of ${requestedSegments.length})`
-            : `Generating summary for ${segment.segmentId}...`
-        );
-        await generateMeaningUnitsForSegment(segment, controller.signal);
-      }
+      setApiStatus(
+        "Delineating draft meaning units from the confirmed transcript..."
+      );
+      await generateMeaningUnitsFromTranscript(controller.signal);
       if (!controller.signal.aborted) {
         setApiStatus(
-          requestedSegments.length > 1
-            ? `Summary generation completed for ${requestedSegments.length} meaning unit${requestedSegments.length === 1 ? "" : "s"}.`
-            : `Summary generation completed for ${requestedSegments[0].segmentId}.`
+          "Draft meaning units generated. Review, edit, accept, or exclude each MU before categorizing."
         );
       }
     } catch (error) {
@@ -3809,256 +3747,78 @@ export function GdiqrWorkspace({
                       Treat these boundaries as reviewable working decisions,
                       not automatic truth.
                     </p>
-                    <div className="upload-controls">
-                      <label className="label" htmlFor="segment-split-mode">
-                        Delineation mode
-                      </label>
-                      <select
-                        className="field"
-                        disabled={isAutoSplittingTranscript}
-                        id="segment-split-mode"
-                        onChange={(event) =>
-                          setSegmentSplitMode(event.target.value as AutoSegmentMode)
-                        }
-                        value={segmentSplitMode}
-                      >
-                        <option value="conservative">
-                          Conservative — fewer, larger meaning units
-                        </option>
-                        <option value="balanced">
-                          Balanced — meaning-shift based, recommended
-                        </option>
-                        <option value="detailed">
-                          Detailed — more granular meaning shifts
-                        </option>
-                      </select>
-                    </div>
                     <div className="button-row">
                       <button
                         className="button"
                         disabled={
-                          isAutoSplittingTranscript ||
+                          isGeneratingMeaningUnits ||
                           !editableTranscript.trim() ||
                           !transcriptConfirmed
                         }
-                        onClick={() => void autoSplitTranscriptSegments()}
+                        onClick={() => void generateMeaningUnits()}
                         title={
                           transcriptConfirmed
-                            ? "Optional support for draft meaning-unit boundaries"
-                            : "Confirm the transcript before auto-delineation"
+                            ? "Optional assistant support for draft meaning-unit delineation"
+                            : "Confirm the transcript before meaning-unit delineation"
                         }
                         type="button"
                       >
-                        <GitBranch size={18} />
-                        {isAutoSplittingTranscript
-                          ? "Delineating..."
-                          : "Optional assistant support: delineate"}
+                        <Play size={18} />
+                        {isGeneratingMeaningUnits
+                          ? "Delineating draft MUs..."
+                          : generationButtonLabel}
                       </button>
+                      {isGeneratingMeaningUnits && (
+                        <button
+                          className="button danger"
+                          onClick={stopMeaningUnitGeneration}
+                          type="button"
+                        >
+                          Stop
+                        </button>
+                      )}
                     </div>
-                    {displaySegments.length === 0 ? (
-                      <EmptyState text="No meaning units yet. Confirm the transcript, then delineate meaning shifts for review." />
-                    ) : (
-                      <div className="segment-list compact-list-panel">
-                        {displaySegments.map((segment) => (
-                          <button
-                            className={`segment-list-item ${
-                              segment.id === selectedSegment?.id ? "active" : ""
-                            }`}
-                            key={segment.id}
-                            onClick={() => setSelectedSegmentId(segment.id)}
-                            type="button"
-                          >
-                            <div>
-                              <strong>
-                                {segment.segmentId}: {segment.topicLabel}
-                              </strong>
-                              <p className="small">
-                                {segment.text.slice(0, 120)}
-                                {segment.text.length > 120 ? "..." : ""}
-                              </p>
-                              {(() => {
-                                const counts = segmentMeaningUnitCounts.get(
-                                  segment.segmentId
-                                ) ?? {
-                                  accepted: 0,
-                                  excluded: 0,
-                                  total: 0
-                                };
-                                return (
-                                  <p className="small">
-                                    {formatSegmentMeaningUnitCounts(counts)}
-                                  </p>
-                                );
-                              })()}
-                            </div>
-                            <StatusBadge
-                              label={getSegmentDisplayStatus(
-                                segment,
-                                segmentMeaningUnitCounts.get(segment.segmentId)
-                              )}
-                            />
-                          </button>
-                        ))}
-                      </div>
+                    {generationProgress && (
+                      <p className="small">
+                        Delineating draft meaning units from the confirmed
+                        transcript...
+                      </p>
                     )}
-                    {selectedSegment && (
-                      <div className="mini-card soft">
-                        <div className="category-header">
-                          <div>
-                            <span className="label">Selected meaning unit</span>
-                            <h3>{selectedSegment.segmentId}</h3>
-                          </div>
-                          <StatusBadge
-                            label={getSegmentDisplayStatus(
-                              selectedSegment,
-                              segmentMeaningUnitCounts.get(selectedSegment.segmentId)
-                            )}
-                          />
-                        </div>
-                        <label className="label">
-                          Meaning Unit ID / Topic
-                          <input
-                            className="field"
-                            onChange={(event) =>
-                              setSegmentDraftTitle(event.target.value)
-                            }
-                            value={segmentDraftTitle}
-                          />
-                        </label>
-                        <textarea
-                          className="textarea segment-textarea"
-                          id="segment-editor"
-                          onChange={(event) =>
-                            setSegmentDraftText(event.target.value)
-                          }
-                          ref={segmentTextAreaRef}
-                          value={segmentDraftText}
-                        />
-                        <div className="button-row">
-                          <button
-                            className="button"
-                            disabled={isSavingSegment}
-                            onClick={() => void saveSelectedSegment()}
-                            type="button"
-                          >
-                            Save meaning unit
-                          </button>
-                          <button
-                            className="button"
-                            disabled={isSavingSegment}
-                            onClick={() =>
-                              void saveSelectedSegment("Ready for MU Analysis")
-                            }
-                            type="button"
-                          >
-                            Mark ready
-                          </button>
-                          <button
-                            className="button"
-                            disabled={isSavingSegment}
-                            onClick={() => void runSegmentAction("split")}
-                            type="button"
-                          >
-                            Split
-                          </button>
-                          <button
-                            className="button"
-                            disabled={isSavingSegment}
-                            onClick={createSegmentFromSelection}
-                            type="button"
-                          >
-                            New unit from selection
-                          </button>
-                          <button
-                            className="button"
-                            disabled={isSavingSegment || !previousSegment}
-                            onClick={() =>
-                              void runSegmentAction("merge", "previous")
-                            }
-                            type="button"
-                          >
-                            Merge previous
-                          </button>
-                          <button
-                            className="button"
-                            disabled={isSavingSegment || !nextSegment}
-                            onClick={() => void runSegmentAction("merge", "next")}
-                            type="button"
-                          >
-                            Merge next
-                          </button>
-                        </div>
-                      </div>
+                    <div className="mini-card soft">
+                      <span className="label">Current MU review set</span>
+                      <h3>
+                        {currentMeaningUnits.length} draft meaning unit
+                        {currentMeaningUnits.length === 1 ? "" : "s"}
+                      </h3>
+                      <p className="small">
+                        {confirmedMeaningUnits.length} accepted ·{" "}
+                        {excludedMeaningUnits.length} context/excluded ·{" "}
+                        {unconfirmedMeaningUnits.length} awaiting review
+                      </p>
+                      <p className="small panel-note">
+                        Source references are shown on each MU for traceability.
+                        Internal transcript chunks are not analytic units.
+                      </p>
+                    </div>
+                    {currentMeaningUnits.length === 0 && (
+                      <EmptyState text="No draft meaning units yet. Confirm the transcript, then generate draft MUs for researcher review." />
                     )}
                   </section>
 
                   <section className="analysis-panel">
-                    <span className="flow-step">3 · Analytic summary</span>
-                    <span className="label">Analytic Summaries</span>
-                    <h3>Translate into concise summaries</h3>
+                    <span className="flow-step">3 · Researcher MU review</span>
+                    <span className="label">Draft Meaning Units</span>
+                    <h3>Review excerpts and summaries</h3>
                     <p className="small">
-                      Summaries should remain close to the participant's
-                      account. Any assistant suggestion is provisional and for
-                      researcher review.
+                      Each MU is provisional until you edit, accept, or exclude
+                      it. Interviewer questions are retained as context
+                      candidates and excluded by default where detected.
                     </p>
                     <p className="small panel-note">
                       Accept only the reviewed summaries that accurately
                       capture the participant meaning.
                     </p>
-                    <div className="scope-options">
-                      <label className="scope-option">
-                        <input
-                          checked={meaningUnitGenerationScope === "all"}
-                          disabled={isGeneratingMeaningUnits}
-                          name="mu-generation-scope"
-                          onChange={() => setMeaningUnitGenerationScope("all")}
-                          type="radio"
-                        />
-                        <span>All meaning units</span>
-                      </label>
-                      <label className="scope-option">
-                        <input
-                          checked={meaningUnitGenerationScope === "selected"}
-                          disabled={isGeneratingMeaningUnits}
-                          name="mu-generation-scope"
-                          onChange={() => setMeaningUnitGenerationScope("selected")}
-                          type="radio"
-                        />
-                        <span>Selected meaning unit only</span>
-                      </label>
-                    </div>
-                    <select
-                      className="field"
-                      disabled={
-                        isGeneratingMeaningUnits ||
-                        meaningUnitGenerationScope === "all"
-                      }
-                      id="mu-segment-select"
-                      onChange={(event) =>
-                        setMeaningUnitSegmentId(event.target.value)
-                      }
-                      value={meaningUnitSegmentId}
-                    >
-                      {displaySegments.map((segment) => (
-                        <option key={segment.id} value={segment.id}>
-                          {segment.segmentId} — {segment.topicLabel}
-                        </option>
-                      ))}
-                    </select>
                     <div className="button-row">
-                      <button
-                        className="button"
-                        disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
-                        onClick={() => void generateMeaningUnits()}
-                        type="button"
-                      >
-                        <Play size={18} />
-                        {isGeneratingMeaningUnits
-                          ? "Drafting summaries..."
-                          : transcriptConfirmed
-                            ? generationButtonLabel
-                            : "Confirm transcript first"}
-                      </button>
                       <button
                         className="button"
                         disabled={
@@ -4073,23 +3833,7 @@ export function GdiqrWorkspace({
                           ? "Saving accepted summaries..."
                           : "Accept reviewed summaries"}
                       </button>
-                      {isGeneratingMeaningUnits && (
-                        <button
-                          className="button danger"
-                          onClick={stopMeaningUnitGeneration}
-                          type="button"
-                        >
-                          Stop
-                        </button>
-                      )}
                     </div>
-                    {generationProgress && (
-                      <p className="small">
-                        {generationProgress.total > 1
-                          ? `Drafting summaries... ${generationProgress.label ?? ""} (${generationProgress.current} of ${generationProgress.total})`
-                          : `Drafting summary for ${generationProgress.label ?? generationTargetLabel}...`}
-                      </p>
-                    )}
                     <div className="summary-list">
                       {currentMeaningUnits.length === 0 ? (
                         <EmptyState text="No summaries yet. Delineate meaning units, then ask for optional assistant support or write summaries manually." />
@@ -5191,17 +4935,11 @@ function normalizeMeaningUnitNumbersForSegments(
   const segmentOrder = new Map(
     segments.map((segment, index) => [segment.segmentId, index])
   );
-  const validCaseIds = new Set(segments.map((segment) => segment.caseId));
 
   return units
-    .filter(
-      (unit) =>
-        segmentOrder.has(unit.segmentId) &&
-        (!unit.caseId || validCaseIds.has(unit.caseId))
-    )
     .sort((left, right) => {
-      const leftSegment = segmentOrder.get(left.segmentId) ?? 0;
-      const rightSegment = segmentOrder.get(right.segmentId) ?? 0;
+      const leftSegment = segmentOrder.get(left.segmentId) ?? Number.MAX_SAFE_INTEGER;
+      const rightSegment = segmentOrder.get(right.segmentId) ?? Number.MAX_SAFE_INTEGER;
       if (leftSegment !== rightSegment) {
         return leftSegment - rightSegment;
       }
@@ -6269,7 +6007,8 @@ function MeaningUnitReviewCard({
         <StatusBadge label={unit.humanStatus} />
       </div>
       <p className="small">
-        Source: {unit.caseId || "No case"} · {unit.segmentId || "No segment"} ·
+        Source reference: {unit.caseId || "No case"} ·{" "}
+        {unit.segmentId || "Transcript source"} ·
         Speaker: {unit.speaker || "Unspecified"}
       </p>
       {validationFlags.length > 0 && (
@@ -6306,7 +6045,7 @@ function MeaningUnitReviewCard({
         />
       </label>
       <label className="label">
-        Exclusion reason
+        Researcher memo / exclusion reason
         <textarea
           className="field"
           onChange={(event) =>

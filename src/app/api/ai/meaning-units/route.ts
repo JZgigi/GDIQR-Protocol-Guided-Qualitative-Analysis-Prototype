@@ -141,6 +141,12 @@ async function runMeaningUnitGeneration({
     );
     addRunEvent(
       runId,
+      segmentId
+        ? `Using internal source reference ${segmentId} for MU generation`
+        : "Using confirmed transcript as source; transcript segments remain internal"
+    );
+    addRunEvent(
+      runId,
       `Starting background meaning-unit job (${sourceTranscript.length} chars)`
     );
     const startedAt = Date.now();

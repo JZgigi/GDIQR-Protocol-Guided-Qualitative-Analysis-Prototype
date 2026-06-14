@@ -147,6 +147,36 @@ export async function generateMeaningUnits(
     allUncertainties.push(...result.uncertainties);
   }
 
+  const transcriptWordCount = countApproxWords(input.transcript);
+  const minimumExpectedUnits = Math.min(
+    8,
+    Math.max(1, Math.floor(transcriptWordCount / 140))
+  );
+  const participantUnitCount = allUnits.filter(
+    (unit) => !unit.analysisExcluded && !/interviewer/i.test(unit.speaker)
+  ).length;
+  if (
+    transcriptWordCount >= 280 &&
+    participantUnitCount < minimumExpectedUnits
+  ) {
+    addRunEvent(
+      input.runId,
+      `Ollama returned only ${participantUnitCount} participant MU${participantUnitCount === 1 ? "" : "s"} for ${transcriptWordCount} words; using rule-based fallback delineation`
+    );
+    const fallbackUnits = fallbackMeaningUnitsFromChunk(input.transcript, initialNumber, {
+      caseId,
+      segmentId: "Transcript fallback"
+    });
+    if (fallbackUnits.length > allUnits.length) {
+      allUnits.splice(0, allUnits.length, ...fallbackUnits);
+      allUncertainties.push({
+        note:
+          "Rule-based fallback delineation used because the local AI returned too few meaning units for the transcript length.",
+        unit: initialNumber
+      });
+    }
+  }
+
   return {
     provider: "ollama",
     model,
@@ -181,26 +211,29 @@ async function generateMeaningUnitsForChunk({
       {
         role: "user",
         content: `/no_think
-Create GDI-QR-informed draft meaning units from this reviewed transcript segment.
+Create GDI-QR-informed draft meaning units from this reviewed transcript source excerpt.
 
 Rules:
 - Preserve participant meaning closely.
 - Do not create categories in this step.
-- Do not compare this segment with other transcripts or segments.
+- Do not compare this excerpt with other transcripts.
 - Keep summaries concise and descriptive.
 - Write aiSummary and humanSummary in the same language as the interview transcript.
-- Treat this transcript chunk as a candidate meaning-unit boundary.
-- Usually create 1 meaning unit for the candidate chunk; create 2-3 only if there are clear meaning shifts inside it.
+- Treat this transcript excerpt as processing context, not as one meaning unit.
+- Delineate meaning units when a new meaning appears.
+- A meaning unit should be large enough to communicate a clear message, but small enough to remain analytically manageable.
+- Create multiple meaning units when the participant shifts topic, experience, feeling, action, evaluation, or implication.
+- Do not create one large meaning unit from the whole excerpt unless it genuinely contains only one clear meaning.
 - Do not merge interviewer/researcher questions into participant meaning units.
 - If the chunk is mainly an interviewer/researcher prompt, return it with speaker "Interviewer", reviewerStatus "Warning", and uncertainty "Context candidate; review for exclusion".
 - Set humanSummary to the exact same summary text as aiSummary.
 - Use reviewerStatus "Not run" unless there is a clear concern, then use "Warning".
 - Start numbering at ${startingNumber}.
-- Use caseId "${input.caseId ?? "CASE-001"}" and segmentId "${input.segmentId ?? "SEG-001"}".
+- Use caseId "${input.caseId ?? "CASE-001"}" and source reference "${sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)}".
 - Return only JSON matching this shape:
 {
   "caseId": "${input.caseId ?? "CASE-001"}",
-  "segmentId": "${input.segmentId ?? "SEG-001"}",
+  "segmentId": "${sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)}",
   "meaningUnits": [
     {
       "speaker": "Participant",
@@ -239,7 +272,10 @@ ${chunk}`
       startingNumber,
       {
         caseId: input.caseId ?? result.caseId ?? "CASE-001",
-        segmentId: input.segmentId ?? result.segmentId ?? "SEG-001"
+        segmentId:
+          input.segmentId ??
+          result.segmentId ??
+          sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)
       }
     ),
     uncertainties: (result.uncertainties ?? [])
@@ -260,12 +296,16 @@ async function generateMeaningUnitsForChunkWithFallback({
   startingNumber: number;
 }) {
   try {
-    return await generateMeaningUnitsForChunk({
+    const result = await generateMeaningUnitsForChunk({
       chunk,
       chunkIndex,
       input,
       startingNumber
     });
+    if (result.meaningUnits.length === 0) {
+      throw new Error("Ollama returned no draft meaning units.");
+    }
+    return result;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Meaning-unit chunk failed.";
@@ -277,7 +317,7 @@ async function generateMeaningUnitsForChunkWithFallback({
     return {
       meaningUnits: fallbackMeaningUnitsFromChunk(chunk, startingNumber, {
         caseId: input.caseId ?? "CASE-001",
-        segmentId: input.segmentId ?? "SEG-001"
+        segmentId: sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)
       }),
       uncertainties: [
         {
@@ -1049,6 +1089,13 @@ function chunkMeaningUnitCandidates(transcript: string, maxChars: number) {
     .filter(Boolean);
 
   return chunks.length > 0 ? chunks : chunkTranscript(normalized, maxChars);
+}
+
+function sourceReferenceForMeaningUnit(segmentId: string | undefined, chunkIndex: number) {
+  if (segmentId?.trim()) {
+    return segmentId.trim();
+  }
+  return `Transcript excerpt ${String(chunkIndex + 1).padStart(2, "0")}`;
 }
 
 function chunkBySpeakerTurns(transcript: string, maxChars: number) {
