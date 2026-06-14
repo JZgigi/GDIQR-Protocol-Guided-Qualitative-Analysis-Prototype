@@ -1455,13 +1455,19 @@ button {
   gap: 12px;
 }
 
+.category .category-header > div:first-child {
+  flex: 1;
+  min-width: 240px;
+}
+
 .category-title {
   margin: 0;
   font-size: 18px;
 }
 
 .category-title-input {
-  min-width: min(460px, 100%);
+  min-width: 0;
+  width: 100%;
   font-size: 17px;
   font-weight: 800;
 }

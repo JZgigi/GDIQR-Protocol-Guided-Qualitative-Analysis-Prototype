@@ -409,17 +409,43 @@ export function GdiqrWorkspace({
         : selectedMeaningUnitSegment &&
           canRunMeaningUnitsForSegment(selectedMeaningUnitSegment))
   );
+  const currentMeaningUnits = useMemo(
+    () => normalizeMeaningUnitNumbersForSegments(units, displaySegments),
+    [displaySegments, units]
+  );
+  const segmentMeaningUnitCounts = useMemo(() => {
+    const counts = new Map<
+      string,
+      { accepted: number; excluded: number; total: number }
+    >();
+    currentMeaningUnits.forEach((unit) => {
+      const current = counts.get(unit.segmentId) ?? {
+        accepted: 0,
+        excluded: 0,
+        total: 0
+      };
+      current.total += 1;
+      if (unit.analysisExcluded) {
+        current.excluded += 1;
+      }
+      if (unit.humanStatus === "Accepted" && !unit.analysisExcluded) {
+        current.accepted += 1;
+      }
+      counts.set(unit.segmentId, current);
+    });
+    return counts;
+  }, [currentMeaningUnits]);
   const confirmedMeaningUnits = useMemo(
-    () => units.filter((unit) => isConfirmedMeaningUnit(unit)),
-    [units]
+    () => currentMeaningUnits.filter((unit) => isConfirmedMeaningUnit(unit)),
+    [currentMeaningUnits]
   );
   const unconfirmedMeaningUnits = useMemo(
-    () => units.filter((unit) => !isConfirmedMeaningUnit(unit)),
-    [units]
+    () => currentMeaningUnits.filter((unit) => !isConfirmedMeaningUnit(unit)),
+    [currentMeaningUnits]
   );
   const excludedMeaningUnits = useMemo(
-    () => units.filter((unit) => unit.analysisExcluded),
-    [units]
+    () => currentMeaningUnits.filter((unit) => unit.analysisExcluded),
+    [currentMeaningUnits]
   );
   const hasFallbackCategoryLabels = displayCategories.some(isFallbackCategory);
   const hasTemporaryFallbackCategories = categoryDraftIsFallback;
@@ -450,7 +476,7 @@ export function GdiqrWorkspace({
         displayCategories.length > 0 &&
         !hasTemporaryFallbackCategories &&
         allSegmentsProcessedForModeC));
-  const canRunReviewer = units.length > 0;
+  const canRunReviewer = currentMeaningUnits.length > 0;
   const meaningUnitReviewIssues = useMemo(
     () => reviewerOutputs.filter((comment) => comment.workspace === "meaning-units"),
     [reviewerOutputs]
@@ -471,12 +497,40 @@ export function GdiqrWorkspace({
       : selectedMeaningUnitSegment?.segmentId ?? "Selected Meaning Unit";
   const selectedSegmentAlreadyHasUnits = Boolean(
     selectedMeaningUnitSegment &&
-      units.some((unit) => unit.segmentId === selectedMeaningUnitSegment.segmentId)
+      currentMeaningUnits.some(
+        (unit) => unit.segmentId === selectedMeaningUnitSegment.segmentId
+      )
   );
   const generationButtonLabel =
     meaningUnitGenerationScope === "all"
       ? "Assistant support: draft summaries for all ready meaning units"
       : `${selectedSegmentAlreadyHasUnits ? "Assistant support: redraft" : "Assistant support: draft"} summary for ${selectedMeaningUnitSegment?.segmentId ?? "selected meaning unit"}`;
+  const acceptedMeaningUnitNumberKey = confirmedMeaningUnits
+    .map((unit) => unit.number)
+    .join(",");
+
+  useEffect(() => {
+    const acceptedNumbers = new Set(
+      acceptedMeaningUnitNumberKey
+        .split(",")
+        .map((value) => Number(value))
+        .filter(Number.isFinite)
+    );
+    setDisplayCategories((current) => {
+      let changed = false;
+      const next = current.map((category) => {
+        const includedUnitIds = category.includedUnitIds.filter((number) =>
+          acceptedNumbers.has(number)
+        );
+        if (includedUnitIds.length !== category.includedUnitIds.length) {
+          changed = true;
+          return { ...category, includedUnitIds };
+        }
+        return category;
+      });
+      return changed ? next : current;
+    });
+  }, [acceptedMeaningUnitNumberKey]);
 
   function applyWorkspace(workspace: WorkspaceData) {
     setCurrentProject(workspace.project);
@@ -2136,7 +2190,7 @@ export function GdiqrWorkspace({
   }
 
   async function saveMeaningUnitExcerpt(unitId: string) {
-    const unit = units.find((item) => item.id === unitId);
+    const unit = currentMeaningUnits.find((item) => item.id === unitId);
     if (!unit) {
       return;
     }
@@ -2195,7 +2249,7 @@ export function GdiqrWorkspace({
   }
 
   async function saveMeaningUnitHumanSummary(unitId: string) {
-    const unit = units.find((item) => item.id === unitId);
+    const unit = currentMeaningUnits.find((item) => item.id === unitId);
     if (!unit) {
       return;
     }
@@ -2225,7 +2279,9 @@ export function GdiqrWorkspace({
   }
 
   async function acceptAllReviewedMeaningUnits() {
-    const includableUnits = units.filter((unit) => !unit.analysisExcluded);
+    const includableUnits = currentMeaningUnits.filter(
+      (unit) => !unit.analysisExcluded
+    );
     if (includableUnits.length === 0) {
       setApiStatus("Generate meaning units before accepting summaries.");
       return;
@@ -2677,7 +2733,7 @@ export function GdiqrWorkspace({
     if (format === "csv") {
       downloadFile(
         `gdi-qr-meaning-units-${timestamp}.csv`,
-        buildMeaningUnitCsv(units),
+        buildMeaningUnitCsv(currentMeaningUnits),
         "text/csv"
       );
       setApiStatus("CSV export downloaded");
@@ -2701,7 +2757,7 @@ export function GdiqrWorkspace({
       segments: displaySegments,
       audioFiles: displayAudioFiles,
       transcriptionJobs: displayTranscriptionJobs,
-      meaningUnits: units,
+      meaningUnits: currentMeaningUnits,
       categories: displayCategories,
       methodologicalIntegrityIssues: reviewerOutputs,
       reviewerComments: reviewerOutputs,
@@ -2755,7 +2811,7 @@ export function GdiqrWorkspace({
   }
 
   async function markAccepted(unitId: string) {
-    const unit = units.find((item) => item.id === unitId);
+    const unit = currentMeaningUnits.find((item) => item.id === unitId);
     if (!unit) {
       return;
     }
@@ -3670,8 +3726,30 @@ export function GdiqrWorkspace({
                                 {segment.text.slice(0, 120)}
                                 {segment.text.length > 120 ? "..." : ""}
                               </p>
+                              {(() => {
+                                const counts = segmentMeaningUnitCounts.get(
+                                  segment.segmentId
+                                ) ?? {
+                                  accepted: 0,
+                                  excluded: 0,
+                                  total: 0
+                                };
+                                return (
+                                  <p className="small">
+                                    {counts.total} meaning unit
+                                    {counts.total === 1 ? "" : "s"} ·{" "}
+                                    {counts.accepted} accepted ·{" "}
+                                    {counts.excluded} excluded/context
+                                  </p>
+                                );
+                              })()}
                             </div>
-                            <StatusBadge label={segment.status} />
+                            <StatusBadge
+                              label={getSegmentDisplayStatus(
+                                segment,
+                                segmentMeaningUnitCounts.get(segment.segmentId)
+                              )}
+                            />
                           </button>
                         ))}
                       </div>
@@ -3683,7 +3761,12 @@ export function GdiqrWorkspace({
                             <span className="label">Selected meaning unit</span>
                             <h3>{selectedSegment.segmentId}</h3>
                           </div>
-                          <StatusBadge label={selectedSegment.status} />
+                          <StatusBadge
+                            label={getSegmentDisplayStatus(
+                              selectedSegment,
+                              segmentMeaningUnitCounts.get(selectedSegment.segmentId)
+                            )}
+                          />
                         </div>
                         <label className="label">
                           Meaning Unit ID / Topic
@@ -3831,7 +3914,10 @@ export function GdiqrWorkspace({
                       </button>
                       <button
                         className="button"
-                        disabled={units.length === 0 || isAcceptingMeaningUnits}
+                        disabled={
+                          currentMeaningUnits.length === 0 ||
+                          isAcceptingMeaningUnits
+                        }
                         onClick={() => void acceptAllReviewedMeaningUnits()}
                         type="button"
                       >
@@ -3858,137 +3944,52 @@ export function GdiqrWorkspace({
                       </p>
                     )}
                     <div className="summary-list">
-                      {units.length === 0 ? (
+                      {currentMeaningUnits.length === 0 ? (
                         <EmptyState text="No summaries yet. Delineate meaning units, then ask for optional assistant support or write summaries manually." />
                       ) : (
-                        units.map((unit) => {
-                          const validationFlags =
-                            getMeaningUnitValidationFlags(unit);
-                          return (
-                            <article
-                              className={`summary-card ${
-                                unit.analysisExcluded ? "excluded-row" : ""
-                              }`}
-                              id={`mu-${unit.number}`}
-                              key={unit.id}
-                            >
-                            <div className="category-header">
-                              <strong>MU #{unit.number}</strong>
-                              <StatusBadge label={unit.humanStatus} />
-                            </div>
-                            <p className="small">
-                              Source: {unit.caseId || "No case"} ·{" "}
-                              {unit.segmentId || "No segment"} · Speaker:{" "}
-                              {unit.speaker || "Unspecified"}
-                            </p>
-                            {validationFlags.length > 0 && (
-                              <div className="button-row">
-                                {validationFlags.map((flag) => (
-                                  <span
-                                    className={`badge ${flag.tone ?? ""}`.trim()}
-                                    key={flag.label}
-                                  >
-                                    {flag.label}
-                                  </span>
+                        <>
+                          {currentMeaningUnits
+                            .filter((unit) => !unit.analysisExcluded)
+                            .map((unit) => (
+                              <MeaningUnitReviewCard
+                                key={unit.id}
+                                onAccept={markAccepted}
+                                onEditExclusionReason={updateExclusionReason}
+                                onEditExcerpt={updateMeaningUnitExcerpt}
+                                onEditSummary={updateHumanSummary}
+                                onExclude={excludeMeaningUnit}
+                                onRestore={restoreMeaningUnit}
+                                onReturnToTranscript={returnToTranscriptForUnit}
+                                onSaveExcerpt={saveMeaningUnitExcerpt}
+                                onSaveSummary={saveMeaningUnitHumanSummary}
+                                unit={unit}
+                              />
+                            ))}
+                          {excludedMeaningUnits.length > 0 && (
+                            <details className="workbook-details">
+                              <summary>
+                                Context/excluded candidates ({excludedMeaningUnits.length})
+                              </summary>
+                              <div className="summary-list">
+                                {excludedMeaningUnits.map((unit) => (
+                                  <MeaningUnitReviewCard
+                                    key={unit.id}
+                                    onAccept={markAccepted}
+                                    onEditExclusionReason={updateExclusionReason}
+                                    onEditExcerpt={updateMeaningUnitExcerpt}
+                                    onEditSummary={updateHumanSummary}
+                                    onExclude={excludeMeaningUnit}
+                                    onRestore={restoreMeaningUnit}
+                                    onReturnToTranscript={returnToTranscriptForUnit}
+                                    onSaveExcerpt={saveMeaningUnitExcerpt}
+                                    onSaveSummary={saveMeaningUnitHumanSummary}
+                                    unit={unit}
+                                  />
                                 ))}
                               </div>
-                            )}
-                            <span className="label">AI draft excerpt</span>
-                            <p className="small">
-                              {unit.aiExcerpt ?? unit.excerpt}
-                            </p>
-                            <label className="label">
-                              Researcher-reviewed excerpt
-                              <textarea
-                                className="field"
-                                disabled={unit.analysisExcluded}
-                                onBlur={() =>
-                                  void saveMeaningUnitExcerpt(unit.id)
-                                }
-                                onChange={(event) =>
-                                  updateMeaningUnitExcerpt(
-                                    unit.id,
-                                    event.target.value
-                                  )
-                                }
-                                value={unit.excerpt}
-                              />
-                            </label>
-                            <span className="label">Suggested summary</span>
-                            <p className="small">{unit.aiSummary || "No draft yet."}</p>
-                            <label className="label">
-                              Researcher summary
-                              <textarea
-                                className="field"
-                                disabled={unit.analysisExcluded}
-                                onBlur={() =>
-                                  void saveMeaningUnitHumanSummary(unit.id)
-                                }
-                                onChange={(event) =>
-                                  updateHumanSummary(unit.id, event.target.value)
-                                }
-                                value={unit.humanSummary}
-                              />
-                            </label>
-                            <label className="label">
-                              Exclusion reason
-                              <textarea
-                                className="field"
-                                onChange={(event) =>
-                                  updateExclusionReason(
-                                    unit.id,
-                                    event.target.value
-                                  )
-                                }
-                                placeholder={
-                                  unit.speaker === "Interviewer"
-                                    ? "Example: interviewer prompt or contextual question"
-                                    : "Required before excluding this meaning unit"
-                                }
-                                value={unit.exclusionReason ?? ""}
-                              />
-                            </label>
-                            <div className="button-row">
-                              {!unit.analysisExcluded && (
-                                <button
-                                  className="button icon"
-                                  onClick={() => markAccepted(unit.id)}
-                                  title="Accept meaning unit"
-                                  type="button"
-                                >
-                                  <Check size={18} />
-                                </button>
-                              )}
-                              {unit.analysisExcluded ? (
-                                <button
-                                  className="button"
-                                  onClick={() => void restoreMeaningUnit(unit)}
-                                  type="button"
-                                >
-                                  Restore
-                                </button>
-                              ) : (
-                                <button
-                                  className="button"
-                                  onClick={() => void excludeMeaningUnit(unit)}
-                                  type="button"
-                                >
-                                  Exclude
-                                </button>
-                              )}
-                              <button
-                                className="button icon"
-                                disabled={unit.analysisExcluded}
-                                onClick={() => returnToTranscriptForUnit(unit)}
-                                title="Fix source transcript and redraft"
-                                type="button"
-                              >
-                                <Pencil size={18} />
-                              </button>
-                            </div>
-                            </article>
-                          );
-                        })
+                            </details>
+                          )}
+                        </>
                       )}
                     </div>
                   </section>
@@ -4049,7 +4050,7 @@ export function GdiqrWorkspace({
                       }`}
                     >
                       Accepted meaning units: {confirmedMeaningUnits.length} /{" "}
-                      {units.length - excludedMeaningUnits.length}
+                      {currentMeaningUnits.length - excludedMeaningUnits.length}
                     </span>
                     {displayCategories.length > 0 && (
                       <span className="badge blue">
@@ -4448,7 +4449,7 @@ export function GdiqrWorkspace({
                 <MethodologicalIntegrityChecklist
                   categoryCount={displayCategories.length}
                   issueCount={reviewerOutputs.filter((issue) => issue.status !== "dismissed").length}
-                  meaningUnitCount={units.length}
+                  meaningUnitCount={currentMeaningUnits.length}
                   narrativeReviewed={integrationReviewed}
                   transcriptConfirmed={transcriptConfirmed}
                 />
@@ -4663,6 +4664,16 @@ function StatusBadge({ label }: { label: string }) {
         ? "badge"
         : "badge blue";
   return <span className={className}>{label}</span>;
+}
+
+function getSegmentDisplayStatus(
+  segment: TranscriptSegment,
+  counts?: { accepted: number; excluded: number; total: number }
+) {
+  if ((counts?.total ?? 0) === 0 && segment.status === "Needs Review") {
+    return "Ready for delineation";
+  }
+  return segment.status;
 }
 
 function StepGuidance({ step }: { step: WorkflowStep }) {
@@ -4955,6 +4966,35 @@ function canRunMeaningUnitsForSegment(segment: TranscriptSegment) {
 
 function isConfirmedMeaningUnit(unit: MeaningUnit) {
   return !unit.analysisExcluded && unit.humanStatus === "Accepted";
+}
+
+function normalizeMeaningUnitNumbersForSegments(
+  units: MeaningUnit[],
+  segments: TranscriptSegment[]
+) {
+  const segmentOrder = new Map(
+    segments.map((segment, index) => [segment.segmentId, index])
+  );
+  const validCaseIds = new Set(segments.map((segment) => segment.caseId));
+
+  return units
+    .filter(
+      (unit) =>
+        segmentOrder.has(unit.segmentId) &&
+        (!unit.caseId || validCaseIds.has(unit.caseId))
+    )
+    .sort((left, right) => {
+      const leftSegment = segmentOrder.get(left.segmentId) ?? 0;
+      const rightSegment = segmentOrder.get(right.segmentId) ?? 0;
+      if (leftSegment !== rightSegment) {
+        return leftSegment - rightSegment;
+      }
+      return left.number - right.number;
+    })
+    .map((unit, index) => ({
+      ...unit,
+      number: index + 1
+    }));
 }
 
 function getMeaningUnitValidationFlags(
@@ -5978,6 +6018,134 @@ function ReviewerPanel({
   );
 }
 
+function MeaningUnitReviewCard({
+  onAccept,
+  onEditExclusionReason,
+  onEditExcerpt,
+  onEditSummary,
+  onExclude,
+  onRestore,
+  onReturnToTranscript,
+  onSaveExcerpt,
+  onSaveSummary,
+  unit
+}: {
+  onAccept: (unitId: string) => void;
+  onEditExclusionReason: (unitId: string, value: string) => void;
+  onEditExcerpt: (unitId: string, value: string) => void;
+  onEditSummary: (unitId: string, value: string) => void;
+  onExclude: (unit: MeaningUnit) => void;
+  onRestore: (unit: MeaningUnit) => void;
+  onReturnToTranscript: (unit: MeaningUnit) => void;
+  onSaveExcerpt: (unitId: string) => void;
+  onSaveSummary: (unitId: string) => void;
+  unit: MeaningUnit;
+}) {
+  const validationFlags = getMeaningUnitValidationFlags(unit);
+
+  return (
+    <article
+      className={`summary-card ${unit.analysisExcluded ? "excluded-row" : ""}`}
+      id={`mu-${unit.number}`}
+    >
+      <div className="category-header">
+        <strong>MU #{unit.number}</strong>
+        <StatusBadge label={unit.humanStatus} />
+      </div>
+      <p className="small">
+        Source: {unit.caseId || "No case"} · {unit.segmentId || "No segment"} ·
+        Speaker: {unit.speaker || "Unspecified"}
+      </p>
+      {validationFlags.length > 0 && (
+        <div className="button-row">
+          {validationFlags.map((flag) => (
+            <span className={`badge ${flag.tone ?? ""}`.trim()} key={flag.label}>
+              {flag.label}
+            </span>
+          ))}
+        </div>
+      )}
+      <span className="label">AI draft excerpt</span>
+      <p className="small">{unit.aiExcerpt ?? unit.excerpt}</p>
+      <label className="label">
+        Researcher-reviewed excerpt
+        <textarea
+          className="field"
+          disabled={unit.analysisExcluded}
+          onBlur={() => void onSaveExcerpt(unit.id)}
+          onChange={(event) => onEditExcerpt(unit.id, event.target.value)}
+          value={unit.excerpt}
+        />
+      </label>
+      <span className="label">Suggested summary</span>
+      <p className="small">{unit.aiSummary || "No draft yet."}</p>
+      <label className="label">
+        Researcher summary
+        <textarea
+          className="field"
+          disabled={unit.analysisExcluded}
+          onBlur={() => void onSaveSummary(unit.id)}
+          onChange={(event) => onEditSummary(unit.id, event.target.value)}
+          value={unit.humanSummary}
+        />
+      </label>
+      <label className="label">
+        Exclusion reason
+        <textarea
+          className="field"
+          onChange={(event) =>
+            onEditExclusionReason(unit.id, event.target.value)
+          }
+          placeholder={
+            unit.speaker === "Interviewer"
+              ? "Example: interviewer prompt or contextual question"
+              : "Required before excluding this meaning unit"
+          }
+          value={unit.exclusionReason ?? ""}
+        />
+      </label>
+      <div className="button-row">
+        {!unit.analysisExcluded && (
+          <button
+            className="button icon"
+            onClick={() => onAccept(unit.id)}
+            title="Accept meaning unit"
+            type="button"
+          >
+            <Check size={18} />
+          </button>
+        )}
+        {unit.analysisExcluded ? (
+          <button
+            className="button"
+            onClick={() => void onRestore(unit)}
+            type="button"
+          >
+            Restore
+          </button>
+        ) : (
+          <button
+            className="button"
+            onClick={() => void onExclude(unit)}
+            type="button"
+          >
+            Exclude
+          </button>
+        )}
+        <button
+          className="button icon"
+          disabled={unit.analysisExcluded}
+          onClick={() => onReturnToTranscript(unit)}
+          title="Fix source transcript and redraft"
+          type="button"
+        >
+          <Pencil size={18} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function reviewSummaryText(
   issues: ReviewerComment[],
   warningCount: number,
@@ -6078,7 +6246,7 @@ function CategoryBlock({
           <StatusBadge label={statusLabel} />
           {isFallback && <span className="badge warning">Please review</span>}
           <span className="badge">
-            Units {category.includedUnitIds.join(", ")}
+            Units {includedUnits.map((unit) => unit.number).join(", ") || "None"}
           </span>
         </div>
       </div>
