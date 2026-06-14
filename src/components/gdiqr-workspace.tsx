@@ -219,6 +219,8 @@ export function GdiqrWorkspace({
     label?: string;
     total: number;
   } | null>(null);
+  const [meaningUnitGenerationStage, setMeaningUnitGenerationStage] =
+    useState("");
   const [isRunningCategories, setIsRunningCategories] = useState(false);
   const [isRunningReviewer, setIsRunningReviewer] = useState(false);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
@@ -227,6 +229,8 @@ export function GdiqrWorkspace({
     "Imported transcript"
   );
   const [isImportingTranscript, setIsImportingTranscript] = useState(false);
+  const [transcriptPreparationStage, setTranscriptPreparationStage] =
+    useState("");
   const [isConfirmingTranscript, setIsConfirmingTranscript] = useState(false);
   const [activeMeaningUnitRunId, setActiveMeaningUnitRunId] = useState("");
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
@@ -778,6 +782,7 @@ export function GdiqrWorkspace({
 
       setTranscriptImportText(result.transcript);
       setTranscriptImportName(result.filename ?? file.name);
+      setTranscriptPreparationStage("");
       setApiStatus(`Transcript loaded from ${result.filename ?? file.name}. Review it before importing.`);
     } catch (error) {
       setApiStatus(
@@ -788,29 +793,45 @@ export function GdiqrWorkspace({
     }
   }
 
-  async function importTranscript() {
+  async function importTranscript(forceRuleBased = false) {
     if (!transcriptImportText.trim()) {
       setApiStatus("Paste text or choose a transcript file before importing.");
       return;
     }
 
     setIsImportingTranscript(true);
+    setTranscriptPreparationStage(
+      forceRuleBased
+        ? "Using quick local transcript preparation. Please review speaker labels and sensitive details carefully."
+        : "Preparing transcript with local AI first. If it is slow, the app will switch to quick local preparation automatically."
+    );
+    const slowNoticeTimer = window.setTimeout(() => {
+      setTranscriptPreparationStage(
+        "Still preparing. Local AI can be slow; the app will use quick local preparation if needed."
+      );
+    }, 30000);
     setApiStatus(
-      "Preparing transcript. The app will label speakers and flag possible private details for your review."
+      forceRuleBased
+        ? "Preparing transcript with quick local rules..."
+        : "Preparing transcript. The app will label speakers and flag possible private details for your review."
     );
 
     try {
       const response = await fetchWithTimeout("/api/transcripts/prepare", {
         body: JSON.stringify({
+          forceRuleBased,
           language: uploadLanguage,
+          timeoutMs: 45000,
           transcript: transcriptImportText
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 600000
+        timeoutMs: 75000
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
+        fallbackUsed?: boolean;
+        model?: string;
         prepared?: boolean;
         privacyFindings?: string[];
         speakerNotes?: string[];
@@ -834,8 +855,13 @@ export function GdiqrWorkspace({
       );
 
       setTranscriptImportText("");
+      setTranscriptPreparationStage(
+        result.fallbackUsed || forceRuleBased
+          ? "Quick local preparation completed. Please review speaker labels and sensitive-information items before confirming."
+          : "AI-assisted transcript preparation completed. Please review before confirming."
+      );
       setApiStatus(
-        `Transcript prepared locally and not saved yet. Please review speaker labels, sensitive-information items, and wording before saving or confirming${
+        `${result.fallbackUsed || forceRuleBased ? "Transcript prepared with quick local rules" : "Transcript prepared locally"} and not saved yet. Please review speaker labels, sensitive-information items, and wording before saving or confirming${
           result.privacyFindings?.length
             ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
             : ""
@@ -846,6 +872,7 @@ export function GdiqrWorkspace({
         error instanceof Error ? error.message : "Transcript import failed"
       );
     } finally {
+      window.clearTimeout(slowNoticeTimer);
       setIsImportingTranscript(false);
     }
   }
@@ -1531,21 +1558,24 @@ export function GdiqrWorkspace({
   }
 
   async function generateMeaningUnitsFromTranscript(
+    forceRuleBased: boolean,
     signal: AbortSignal
   ) {
     const response = await fetchWithTimeout("/api/ai/meaning-units", {
       body: JSON.stringify({
         background: false,
         caseId: displaySegments[0]?.caseId ?? "CASE-001",
+        forceRuleBased,
         lightInterpretation,
         projectId: currentProject.id,
         startingNumber: 1,
+        timeoutMs: 45000,
         transcript: editableTranscript
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
       signal,
-      timeoutMs: 900000
+      timeoutMs: 75000
     });
 
     if (!response.ok) {
@@ -1557,6 +1587,8 @@ export function GdiqrWorkspace({
 
     const result = (await response.json()) as {
       meaningUnits?: MeaningUnit[];
+      fallbackUsed?: boolean;
+      model?: string;
       persisted?: boolean;
       provider?: string;
     };
@@ -1577,15 +1609,23 @@ export function GdiqrWorkspace({
       );
       recordLocalAuditEvent({
         actor: "AI",
-        action: `Generated ${draftUnits.length} draft meaning unit${draftUnits.length === 1 ? "" : "s"} from the confirmed transcript`,
+        action: `${forceRuleBased || result.fallbackUsed ? "Generated rule-based" : "Generated AI-assisted"} ${draftUnits.length} draft meaning unit${draftUnits.length === 1 ? "" : "s"} from the confirmed transcript`,
         target: "Step 2 Meaning Units"
       });
+      setMeaningUnitGenerationStage(
+        forceRuleBased || result.fallbackUsed
+          ? "Rule-based draft MUs generated. Review carefully before accepting."
+          : "AI-assisted draft MUs generated. Review carefully before accepting."
+      );
     }
 
     return result;
   }
 
-  async function generateMeaningUnits(segmentOverride?: TranscriptSegment | null) {
+  async function generateMeaningUnits(
+    segmentOverride?: TranscriptSegment | null,
+    forceRuleBased = false
+  ) {
     if (!editableTranscript.trim()) {
       setApiStatus("Prepare and confirm a transcript before generating meaning units.");
       return;
@@ -1615,18 +1655,35 @@ export function GdiqrWorkspace({
     }
 
     const controller = new AbortController();
+    const slowNoticeTimer = window.setTimeout(() => {
+      setMeaningUnitGenerationStage(
+        "Still working. If local AI is slow, the system will switch to rule-based draft MUs automatically."
+      );
+    }, 30000);
     meaningUnitAbortControllerRef.current = controller;
     setIsGeneratingMeaningUnits(true);
     setGenerationProgress({ current: 1, label: "Confirmed transcript", total: 1 });
+    setMeaningUnitGenerationStage(
+      forceRuleBased
+        ? "Generating rule-based draft MUs from speaker turns and meaning-preserving boundaries."
+        : "Generation started. Trying local AI first; rule-based fallback will be used if it takes too long. This may take a moment."
+    );
 
     try {
       setApiStatus(
-        "Delineating draft meaning units from the confirmed transcript..."
+        forceRuleBased
+          ? "Generating rule-based draft meaning units..."
+          : "Delineating draft meaning units from the confirmed transcript..."
       );
-      await generateMeaningUnitsFromTranscript(controller.signal);
+      const result = await generateMeaningUnitsFromTranscript(
+        forceRuleBased,
+        controller.signal
+      );
       if (!controller.signal.aborted) {
         setApiStatus(
-          "Draft meaning units generated. Review, edit, accept, or exclude each MU before categorizing."
+          result.fallbackUsed || forceRuleBased
+            ? "Rule-based draft meaning units generated. Review, edit, accept, or exclude each MU before categorizing."
+            : "Draft meaning units generated. Review, edit, accept, or exclude each MU before categorizing."
         );
       }
     } catch (error) {
@@ -1638,6 +1695,7 @@ export function GdiqrWorkspace({
         error instanceof Error ? error.message : "Meaning-unit API failed"
       );
     } finally {
+      window.clearTimeout(slowNoticeTimer);
       meaningUnitAbortControllerRef.current = null;
       setIsGeneratingMeaningUnits(false);
       setGenerationProgress(null);
@@ -1649,6 +1707,7 @@ export function GdiqrWorkspace({
     meaningUnitAbortControllerRef.current = null;
     setIsGeneratingMeaningUnits(false);
     setGenerationProgress(null);
+    setMeaningUnitGenerationStage("Generation stopped by user.");
     setApiStatus("Generation stopped by user.");
   }
 
@@ -3342,7 +3401,7 @@ export function GdiqrWorkspace({
                     <button
                       className="button primary"
                       disabled={isImportingTranscript || !transcriptImportText.trim()}
-                      onClick={importTranscript}
+                      onClick={() => void importTranscript(false)}
                       type="button"
                     >
                       <Upload size={18} />
@@ -3350,6 +3409,20 @@ export function GdiqrWorkspace({
                         ? "Preparing transcript..."
                         : "Prepare transcript"}
                     </button>
+                    <button
+                      className="button"
+                      disabled={isImportingTranscript || !transcriptImportText.trim()}
+                      onClick={() => void importTranscript(true)}
+                      type="button"
+                    >
+                      Use quick local preparation
+                    </button>
+                    {transcriptPreparationStage && (
+                      <div className="mini-card warning-card">
+                        <strong>Transcript preparation status</strong>
+                        <p className="small">{transcriptPreparationStage}</p>
+                      </div>
+                    )}
                   </div>
                 </details>
               </div>
@@ -3777,12 +3850,31 @@ export function GdiqrWorkspace({
                           Stop
                         </button>
                       )}
+                      <button
+                        className="button"
+                        disabled={
+                          isGeneratingMeaningUnits ||
+                          !editableTranscript.trim() ||
+                          !transcriptConfirmed
+                        }
+                        onClick={() => void generateMeaningUnits(null, true)}
+                        type="button"
+                      >
+                        Use rule-based draft MUs
+                      </button>
                     </div>
-                    {generationProgress && (
-                      <p className="small">
-                        Delineating draft meaning units from the confirmed
-                        transcript...
-                      </p>
+                    {(generationProgress || meaningUnitGenerationStage) && (
+                      <div className="mini-card warning-card">
+                        <strong>
+                          {isGeneratingMeaningUnits
+                            ? "Meaning-unit generation in progress"
+                            : "Meaning-unit generation status"}
+                        </strong>
+                        <p className="small">
+                          {meaningUnitGenerationStage ||
+                            "Delineating draft meaning units from the confirmed transcript. This may take a moment."}
+                        </p>
+                      </div>
                     )}
                     <div className="mini-card soft">
                       <span className="label">Current MU review set</span>
@@ -4960,6 +5052,9 @@ function getMeaningUnitValidationFlags(
   const wordCount = approximateWordCount(excerpt);
   const speaker = unit.speaker.toLowerCase();
 
+  if (unit.uncertainty?.toLowerCase().includes("rule-based draft")) {
+    flags.push({ label: "Rule-based draft — review required", tone: "warning" });
+  }
   if (!reviewedSummary) {
     flags.push({ label: "Researcher summary missing", tone: "warning" });
   }
@@ -6034,6 +6129,9 @@ function MeaningUnitReviewCard({
       </label>
       <span className="label">Suggested summary</span>
       <p className="small">{unit.aiSummary || "No draft yet."}</p>
+      {unit.uncertainty && (
+        <p className="small panel-note">{unit.uncertainty}</p>
+      )}
       <label className="label">
         Researcher summary
         <textarea

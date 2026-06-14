@@ -16,8 +16,10 @@ export async function POST(request: NextRequest) {
     caseId?: string;
     lightInterpretation?: boolean;
     projectId?: string;
+    forceRuleBased?: boolean;
     segmentId?: string;
     startingNumber?: number;
+    timeoutMs?: number;
     transcript?: string;
   };
   const runId = startRunLog(
@@ -36,9 +38,11 @@ export async function POST(request: NextRequest) {
         caseId: body.caseId,
         lightInterpretation: body.lightInterpretation,
         projectId,
+        forceRuleBased: body.forceRuleBased,
         runId,
         segmentId: body.segmentId,
         startingNumber: body.startingNumber,
+        timeoutMs: body.timeoutMs,
         transcript: body.transcript
       });
 
@@ -66,9 +70,11 @@ export async function POST(request: NextRequest) {
       caseId: body.caseId,
       lightInterpretation: body.lightInterpretation,
       projectId,
+      forceRuleBased: body.forceRuleBased,
       runId,
       segmentId: body.segmentId,
       startingNumber: body.startingNumber,
+      timeoutMs: body.timeoutMs,
       transcript: body.transcript
     }).catch(() => undefined);
   }, 0);
@@ -94,23 +100,28 @@ async function runMeaningUnitGeneration({
   abortSignal,
   lightInterpretation,
   projectId,
+  forceRuleBased,
   runId,
   caseId,
   segmentId,
   startingNumber,
+  timeoutMs,
   transcript
 }: {
   abortSignal?: AbortSignal;
   caseId?: string;
+  forceRuleBased?: boolean;
   lightInterpretation?: boolean;
   projectId: string;
   runId: string;
   segmentId?: string;
   startingNumber?: number;
+  timeoutMs?: number;
   transcript?: string;
 }) {
   try {
-    const [{ generateMeaningUnits }, repository] = await Promise.all([
+    const [{ generateMeaningUnits, generateRuleBasedMeaningUnits }, repository] =
+      await Promise.all([
       import("@/lib/ai-provider"),
       import("@/lib/gdiqr-repository")
     ]);
@@ -150,27 +161,85 @@ async function runMeaningUnitGeneration({
       `Starting background meaning-unit job (${sourceTranscript.length} chars)`
     );
     const startedAt = Date.now();
-    const result = await generateMeaningUnits({
+    console.info("[gdiqr:mu-api] generation start", {
+      forceRuleBased: Boolean(forceRuleBased),
+      provider: "ollama",
+      transcriptChars: sourceTranscript.length
+    });
+    const generationInput = {
       lightInterpretation:
         lightInterpretation ?? project.lightInterpretation,
       project,
       runId,
       caseId,
-      abortSignal,
       segmentId,
       startingNumber,
       transcript: sourceTranscript
-    });
+    };
+    let fallbackUsed = Boolean(forceRuleBased);
+    let result = forceRuleBased
+      ? generateRuleBasedMeaningUnits(
+          generationInput,
+          "Rule-based draft — for researcher review. Requested directly from the Step 2 fallback button."
+        )
+      : null;
+    if (!result) {
+      const demoTimeoutMs = getMeaningUnitDemoTimeoutMs(timeoutMs);
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        result = await withTimeout(
+          generateMeaningUnits({
+            ...generationInput,
+            abortSignal: controller.signal
+          }),
+          demoTimeoutMs,
+          () => {
+            controller.abort();
+          }
+        );
+      } catch (error) {
+        if (abortSignal?.aborted) {
+          throw error;
+        }
+        fallbackUsed = true;
+        const message =
+          error instanceof Error ? error.message : "AI generation did not finish.";
+        addRunEvent(
+          runId,
+          `AI generation did not finish quickly enough; using rule-based fallback. ${message}`
+        );
+        console.warn("[gdiqr:mu-api] fallback triggered", {
+          message,
+          timeoutMs: demoTimeoutMs,
+          transcriptChars: sourceTranscript.length
+        });
+        result = generateRuleBasedMeaningUnits(
+          generationInput,
+          `Rule-based draft — for researcher review. Fallback used because AI generation did not finish within ${formatDuration(demoTimeoutMs)} or returned unusable output.`
+        );
+      } finally {
+        abortSignal?.removeEventListener("abort", onAbort);
+      }
+    }
     addRunEvent(
       runId,
-      `Ollama meaning-unit generation finished in ${formatDuration(Date.now() - startedAt)}`
+      `${fallbackUsed ? "Rule-based fallback" : "Ollama meaning-unit generation"} finished in ${formatDuration(Date.now() - startedAt)} with ${result.meaningUnits.length} MU${result.meaningUnits.length === 1 ? "" : "s"}`
     );
+    console.info("[gdiqr:mu-api] generation finished", {
+      fallbackUsed,
+      meaningUnits: result.meaningUnits.length,
+      ms: Date.now() - startedAt
+    });
 
     if (storageMode !== "supabase") {
       addRunEvent(runId, "Meaning units returned to browser state only");
       finishRunLog(runId);
       return {
         meaningUnits: result.meaningUnits,
+        fallbackUsed,
+        model: result.model,
         persisted: false,
         provider: result.provider
       };
@@ -196,6 +265,8 @@ async function runMeaningUnitGeneration({
     finishRunLog(runId);
     return {
       meaningUnits: saveResult.units ?? result.meaningUnits,
+      fallbackUsed,
+      model: result.model,
       persisted: saveResult.saved,
       provider: result.provider
     };
@@ -206,5 +277,42 @@ async function runMeaningUnitGeneration({
         : "Meaning-unit generation failed.";
     failRunLog(runId, message);
     throw error;
+  }
+}
+
+function getMeaningUnitDemoTimeoutMs(requestedTimeoutMs?: number) {
+  const configured = Number(
+    requestedTimeoutMs ?? process.env.MU_DEMO_AI_TIMEOUT_MS ?? 45000
+  );
+  if (!Number.isFinite(configured)) {
+    return 45000;
+  }
+  return Math.max(15000, Math.min(configured, 90000));
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => void
+) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          onTimeout();
+          reject(
+            new Error(
+              `Meaning-unit AI generation exceeded ${formatDuration(timeoutMs)}.`
+            )
+          );
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
   }
 }

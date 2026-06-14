@@ -49,6 +49,7 @@ interface ReviewerInput {
 }
 
 interface TranscriptProcessingInput {
+  abortSignal?: AbortSignal;
   language: Project["language"];
   runId?: string;
   transcript: string;
@@ -114,6 +115,12 @@ export async function generateMeaningUnits(
     input.transcript,
     Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 1200)
   );
+  console.info("[gdiqr:mu] generation start", {
+    candidateChunkCount: chunks.length,
+    model,
+    provider: "ollama",
+    transcriptChars: input.transcript.length
+  });
   const caseId = input.caseId ?? "CASE-001";
   const segmentId = input.segmentId ?? "SEG-001";
   const initialNumber = input.startingNumber ?? 1;
@@ -168,6 +175,11 @@ export async function generateMeaningUnits(
       segmentId: "Transcript fallback"
     });
     if (fallbackUnits.length > allUnits.length) {
+      console.info("[gdiqr:mu] fallback triggered because AI returned too few MUs", {
+        fallbackUnits: fallbackUnits.length,
+        participantUnitCount,
+        transcriptWordCount
+      });
       allUnits.splice(0, allUnits.length, ...fallbackUnits);
       allUncertainties.push({
         note:
@@ -176,6 +188,13 @@ export async function generateMeaningUnits(
       });
     }
   }
+  console.info("[gdiqr:mu] generation finished", {
+    fallbackTriggered: allUncertainties.some((item) =>
+      item.note.toLowerCase().includes("fallback")
+    ),
+    meaningUnits: allUnits.length,
+    provider: "ollama"
+  });
 
   return {
     provider: "ollama",
@@ -186,6 +205,82 @@ export async function generateMeaningUnits(
     meaningUnits: allUnits,
     uncertainties: allUncertainties,
     nextInstruction: "Review and accept or edit the generated meaning units."
+  };
+}
+
+export function generateRuleBasedMeaningUnits(
+  input: MeaningUnitInput,
+  reason = "Rule-based draft — for researcher review."
+): MeaningUnitResult {
+  assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
+
+  const maxChars = Math.min(
+    Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 900),
+    900
+  );
+  const chunks = chunkMeaningUnitCandidates(input.transcript, maxChars);
+  const caseId = input.caseId ?? "CASE-001";
+  const initialNumber = input.startingNumber ?? 1;
+  const allUnits: MeaningUnit[] = [];
+
+  console.info("[gdiqr:mu] rule-based fallback start", {
+    candidateChunkCount: chunks.length,
+    transcriptChars: input.transcript.length
+  });
+  addRunEvent(
+    input.runId,
+    `Rule-based fallback split transcript into ${chunks.length} candidate chunk${chunks.length === 1 ? "" : "s"}`
+  );
+
+  chunks.forEach((chunk, chunkIndex) => {
+    const chunkUnits = fallbackMeaningUnitsFromChunk(
+      chunk,
+      initialNumber + allUnits.length,
+      {
+        caseId,
+        segmentId: sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)
+      }
+    ).map((unit) => ({
+      ...unit,
+      aiSummary: unit.aiSummary.startsWith("Rule-based draft")
+        ? unit.aiSummary
+        : unit.aiSummary,
+      humanSummary: unit.humanSummary || unit.aiSummary,
+      reviewerStatus: "Warning" as const,
+      uncertainty: [
+        "Rule-based draft — for researcher review.",
+        unit.uncertainty,
+        reason
+      ]
+        .filter(Boolean)
+        .join(" ")
+    }));
+    allUnits.push(...chunkUnits);
+  });
+
+  console.info("[gdiqr:mu] rule-based fallback finished", {
+    meaningUnits: allUnits.length
+  });
+  addRunEvent(
+    input.runId,
+    `Rule-based fallback generated ${allUnits.length} draft meaning unit${allUnits.length === 1 ? "" : "s"}`
+  );
+
+  return {
+    provider: "ollama",
+    model: "rule-based-fallback",
+    caseId,
+    segmentId: input.segmentId ?? "Transcript fallback",
+    lightInterpretation: input.lightInterpretation,
+    meaningUnits: allUnits,
+    uncertainties: [
+      {
+        note: reason,
+        unit: initialNumber
+      }
+    ],
+    nextInstruction:
+      "Rule-based draft MUs are provisional. Review, edit, accept, or exclude each unit."
   };
 }
 
@@ -507,6 +602,7 @@ export async function processTranscriptForPrivacyAndSpeakers(
       chunkIndex: index,
       language: input.language,
       runId: input.runId,
+      signal: input.abortSignal,
       transcriptionSegments:
         chunks.length === 1 ? input.transcriptionSegments : undefined
     });
@@ -533,6 +629,39 @@ export async function processTranscriptForPrivacyAndSpeakers(
     sanitizedTranscript,
     privacyFindings: results.flatMap((result) => result.privacyFindings),
     speakerNotes: results.flatMap((result) => result.speakerNotes)
+  };
+}
+
+export function prepareTranscriptWithLocalRules(
+  input: TranscriptProcessingInput,
+  reason = "Local rule-based transcript preparation used for demo responsiveness."
+): TranscriptProcessingResult {
+  assertNonEmpty(input.transcript, "Transcript is required before privacy review.");
+
+  const chunks = chunkTranscript(
+    input.transcript,
+    Number(process.env.TRANSCRIPT_PROCESS_CHUNK_CHARS ?? 6000)
+  );
+  console.info("[gdiqr:transcript-prepare] local fallback start", {
+    chunkCount: chunks.length,
+    transcriptChars: input.transcript.length
+  });
+  addRunEvent(
+    input.runId,
+    `Local rule-based transcript preparation started (${chunks.length} chunk${chunks.length === 1 ? "" : "s"})`
+  );
+  const sanitizedTranscript = chunks.map(fallbackPrepareTranscript).join("\n\n");
+
+  return {
+    provider: "ollama",
+    model: "local-rule-based-fallback",
+    sanitizedTranscript,
+    privacyFindings: [
+      `${reason} Please review names, places, institutions, contact details, and other sensitive information before saving or analysis.`
+    ],
+    speakerNotes: [
+      "Speaker labels were inferred by local rules for demo responsiveness. Please check Interviewer/Participant labels carefully."
+    ]
   };
 }
 
@@ -775,12 +904,14 @@ async function processTranscriptChunk({
   chunkIndex,
   language,
   runId,
+  signal,
   transcriptionSegments
 }: {
   chunk: string;
   chunkIndex: number;
   language: Project["language"];
   runId?: string;
+  signal?: AbortSignal;
   transcriptionSegments?: TranscriptProcessingInput["transcriptionSegments"];
 }): Promise<TranscriptProcessingResult> {
   const model = getOllamaModel();
@@ -828,9 +959,8 @@ ${JSON.stringify(transcriptionSegments?.slice(0, 60) ?? [], null, 2)}`
         maxTokens: Number(
           process.env.OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS ?? 4096
         ),
-        timeoutMs: Number(
-          process.env.OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS ?? 300000
-        )
+        signal,
+        timeoutMs: getTranscriptProcessTimeoutMs()
       }
     );
 
@@ -1019,6 +1149,17 @@ function getMeaningUnitChunkTimeoutMs() {
   return Number(
     process.env.OLLAMA_MU_CHUNK_TIMEOUT_MS ?? Math.min(getOllamaTimeoutMs(), 120000)
   );
+}
+
+function getTranscriptProcessTimeoutMs() {
+  const configured = Number(
+    process.env.OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS ??
+      Math.min(getOllamaTimeoutMs(), 45000)
+  );
+  if (!Number.isFinite(configured)) {
+    return 45000;
+  }
+  return Math.max(10000, Math.min(configured, 45000));
 }
 
 function assertOllamaConfigured() {
