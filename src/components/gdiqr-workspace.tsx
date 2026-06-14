@@ -65,6 +65,22 @@ interface MeaningUnitValidationFlag {
   tone?: "blue" | "danger" | "warning";
 }
 
+interface IntegrationRelationship {
+  evidenceUnitNumbers: number[];
+  id: string;
+  rationale: string;
+  researcherNote: string;
+  sourceCategoryId: string;
+  targetCategoryId: string;
+  type: string;
+}
+
+interface IntegrationMapGroup {
+  categories: CategoryNode[];
+  description: string;
+  label: string;
+}
+
 const steps: Array<{
   id: WorkflowStep;
   label: string;
@@ -162,6 +178,15 @@ export function GdiqrWorkspace({
   const [narrative, setNarrative] = useState(integratedNarrative);
   const [integrationReviewed, setIntegrationReviewed] = useState(false);
   const [integrationNote, setIntegrationNote] = useState("");
+  const [integrationRelationships, setIntegrationRelationships] = useState<
+    IntegrationRelationship[]
+  >([]);
+  const [integrationStructureExplanation, setIntegrationStructureExplanation] =
+    useState("");
+  const [integrationStructureNotice, setIntegrationStructureNotice] =
+    useState("");
+  const [integrationStructureTitle, setIntegrationStructureTitle] =
+    useState("");
   const [categoryDraftNotice, setCategoryDraftNotice] = useState("");
   const [categoryDraftIsFallback, setCategoryDraftIsFallback] = useState(false);
   const [allSegmentsProcessedForModeC, setAllSegmentsProcessedForModeC] =
@@ -468,6 +493,30 @@ export function GdiqrWorkspace({
   const confirmedCategoryCount = displayCategories.filter(
     (category) => category.status === "confirmed"
   ).length;
+  const acceptedMeaningUnitNumbers = useMemo(
+    () => new Set(confirmedMeaningUnits.map((unit) => unit.number)),
+    [confirmedMeaningUnits]
+  );
+  const reviewedIntegrationCategories = useMemo(
+    () =>
+      displayCategories.filter(
+        (category) =>
+          category.status !== "rejected" &&
+          category.includedUnitIds.some((unitNumber) =>
+            acceptedMeaningUnitNumbers.has(unitNumber)
+          )
+      ),
+    [acceptedMeaningUnitNumbers, displayCategories]
+  );
+  const integrationMapGroups = useMemo(
+    () => buildIntegrationMapGroups(reviewedIntegrationCategories),
+    [reviewedIntegrationCategories]
+  );
+  const canGenerateIntegrationStructure =
+    allSegmentsProcessedForModeC &&
+    confirmedMeaningUnits.length > 0 &&
+    reviewedIntegrationCategories.length >= 2 &&
+    !hasTemporaryFallbackCategories;
   const canRunCategories =
     confirmedMeaningUnits.length > 0 &&
     (mode === "A" ||
@@ -1839,6 +1888,101 @@ export function GdiqrWorkspace({
     }
   }
 
+  function generateIntegrationStructureDraft() {
+    if (hasTemporaryFallbackCategories) {
+      setApiStatus(
+        "This category set is still a fallback draft. Review or regenerate categories before integrating."
+      );
+      return;
+    }
+    if (confirmedMeaningUnits.length === 0 || reviewedIntegrationCategories.length < 2) {
+      setApiStatus(
+        "Not enough reviewed categories to generate an integration structure. Please return to Step 3 and accept or revise categories first."
+      );
+      return;
+    }
+    if (!allSegmentsProcessedForModeC) {
+      setApiStatus(
+        "Confirm that all meaning units in this transcript have been processed and reviewed before generating an integration draft."
+      );
+      return;
+    }
+
+    const draft = buildIntegrationStructureDraft({
+      categories: reviewedIntegrationCategories,
+      researchQuestion: currentProject.researchQuestion,
+      units: confirmedMeaningUnits
+    });
+    setIntegrationStructureTitle(draft.title);
+    setIntegrationStructureExplanation(draft.explanation);
+    setIntegrationRelationships(draft.relationships);
+    setIntegrationStructureNotice(
+      "Provisional relationship structure generated from reviewed categories. Researcher review needed; edit before treating it as an analytic finding."
+    );
+    setNarrative(draft.narrative);
+    setIntegrationReviewed(false);
+    setApiStatus(
+      "Provisional relationship structure, draft category map, and editable narrative created from reviewed categories."
+    );
+  }
+
+  function addIntegrationRelationship() {
+    if (reviewedIntegrationCategories.length < 2) {
+      setApiStatus(
+        "Add at least two reviewed categories before creating a relationship."
+      );
+      return;
+    }
+    const [source, target] = reviewedIntegrationCategories;
+    const nextRelationship: IntegrationRelationship = {
+      evidenceUnitNumbers: Array.from(
+        new Set([
+          ...source.includedUnitIds.filter((unitNumber) =>
+            acceptedMeaningUnitNumbers.has(unitNumber)
+          ),
+          ...target.includedUnitIds.filter((unitNumber) =>
+            acceptedMeaningUnitNumbers.has(unitNumber)
+          )
+        ])
+      ).slice(0, 4),
+      id: `rel_manual_${Date.now()}`,
+      rationale:
+        "Researcher-created provisional relationship. Edit the rationale and evidence references before use.",
+      researcherNote: "",
+      sourceCategoryId: source.id,
+      targetCategoryId: target.id,
+      type: "co-occurs with"
+    };
+    setIntegrationRelationships((current) => [...current, nextRelationship]);
+    setIntegrationStructureNotice(
+      "Relationship added as an editable researcher draft."
+    );
+  }
+
+  function updateIntegrationRelationship(
+    relationshipId: string,
+    updates: Partial<IntegrationRelationship>
+  ) {
+    setIntegrationRelationships((current) =>
+      current.map((relationship) =>
+        relationship.id === relationshipId
+          ? { ...relationship, ...updates }
+          : relationship
+      )
+    );
+    setIntegrationReviewed(false);
+  }
+
+  function removeIntegrationRelationship(relationshipId: string) {
+    setIntegrationRelationships((current) =>
+      current.filter((relationship) => relationship.id !== relationshipId)
+    );
+    setIntegrationStructureNotice(
+      "Relationship removed from the provisional structure."
+    );
+    setIntegrationReviewed(false);
+  }
+
   async function runReviewer(reviewerWorkspace: ReviewerWorkspace) {
     if (units.length === 0) {
       setApiStatus("Generate meaning units before running methodological integrity checks.");
@@ -2762,6 +2906,12 @@ export function GdiqrWorkspace({
       methodologicalIntegrityIssues: reviewerOutputs,
       reviewerComments: reviewerOutputs,
       integratedNarrative: narrative,
+      integrationStructure: {
+        title: integrationStructureTitle,
+        explanation: integrationStructureExplanation,
+        relationships: integrationRelationships,
+        note: integrationStructureNotice
+      },
       auditEvents: displayAuditEvents
     };
   }
@@ -4269,7 +4419,11 @@ export function GdiqrWorkspace({
               <div className="section-body grid">
                 <div className="mini-card soft relationship-structure-card">
                   <span className="flow-step">1 · Relationship Structure</span>
-                  <span className="label">Developing Structure</span>
+                  <span className="label">Provisional relationship structure</span>
+                  <h3>
+                    {integrationStructureTitle ||
+                      "Generate or sketch a relationship structure"}
+                  </h3>
                   <p className="small">
                     Integration involves identifying how categories relate to one
                     another and developing a coherent summary structure. Summary
@@ -4298,34 +4452,62 @@ export function GdiqrWorkspace({
                     <button
                       className="button"
                       disabled={
-                        displayCategories.length === 0 ||
-                        !allSegmentsProcessedForModeC ||
-                        isRunningCategories
+                        !canGenerateIntegrationStructure || isRunningCategories
                       }
-                      onClick={() => void runCategories({ modeOverride: "C" })}
+                      onClick={generateIntegrationStructureDraft}
                       type="button"
                     >
                       <GitBranch size={18} />
-                      Optional assistant support: suggest structure
+                      Optional assistant support: suggest relationship structure
                     </button>
-                    <button className="button" type="button">
+                    <button
+                      className="button"
+                      onClick={addIntegrationRelationship}
+                      type="button"
+                    >
                       Add relationship
                     </button>
-                    <button className="button" type="button">
-                      Edit relationship
-                    </button>
-                    <button className="button" type="button">
-                      Reorder categories
-                    </button>
                   </div>
+                  {integrationStructureNotice && (
+                    <p className="small panel-note">{integrationStructureNotice}</p>
+                  )}
+                  {integrationStructureExplanation && (
+                    <label className="label">
+                      Structure explanation
+                      <textarea
+                        className="textarea compact-textarea"
+                        onChange={(event) => {
+                          setIntegrationStructureExplanation(event.target.value);
+                          setIntegrationReviewed(false);
+                        }}
+                        value={integrationStructureExplanation}
+                      />
+                    </label>
+                  )}
+                  {integrationRelationships.length === 0 ? (
+                    <EmptyState text="No relationships yet. Generate a provisional structure or add a researcher-created relationship." />
+                  ) : (
+                    <div className="relationship-card-list">
+                      {integrationRelationships.map((relationship) => (
+                        <IntegrationRelationshipCard
+                          categories={reviewedIntegrationCategories}
+                          key={relationship.id}
+                          onRemove={removeIntegrationRelationship}
+                          onUpdate={updateIntegrationRelationship}
+                          relationship={relationship}
+                          units={confirmedMeaningUnits}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="mini-card relationship-map-card">
                   <span className="flow-step">2 · Category Map</span>
-                  <span className="label">Category Relationship Map</span>
-                  <h3>How do the provisional categories connect?</h3>
-                  {displayCategories.length === 0 ? (
+                  <span className="label">Draft category map</span>
+                  <h3>How do the reviewed categories connect?</h3>
+                  {reviewedIntegrationCategories.length < 2 ? (
                     <div className="relationship-map-placeholder">
-                      <EmptyState text="No categories yet. Review provisional categories before integrating." />
+                      <EmptyState text="Not enough reviewed categories to generate an integration structure. Please return to Step 3 and accept or revise categories first." />
                       <div className="relationship-example-map" aria-hidden="true">
                         <div className="example-map-node primary">
                           Reviewed category 1
@@ -4346,42 +4528,47 @@ export function GdiqrWorkspace({
                       </p>
                     </div>
                   ) : (
-                    <div className="relationship-map">
-                      {displayCategories
-                        .filter((category) => category.status !== "rejected")
-                        .map((category, index) => (
-                          <div className="relationship-node" key={category.id}>
-                            <span className="relationship-index">{index + 1}</span>
-                            <strong>{category.name}</strong>
-                            <p className="small">{category.definition}</p>
-                            <p className="small">
-                              Evidence: {category.includedUnitIds.length} meaning
-                              unit{category.includedUnitIds.length === 1 ? "" : "s"}
-                            </p>
-                            <StatusBadge
-                              label={category.status ? formatCategoryStatus(category.status) : "Needs review"}
-                            />
-                            {index <
-                              displayCategories.filter(
-                                (item) => item.status !== "rejected"
-                              ).length -
-                                1 && (
-                              <span
-                                aria-hidden="true"
-                                className="relationship-arrow"
-                              >
-                                ↓
-                              </span>
-                            )}
+                    <>
+                      <div className="relationship-map">
+                        {integrationMapGroups.map((group) => (
+                          <div className="relationship-map-group" key={group.label}>
+                            <span className="label">{group.label}</span>
+                            <p className="small">{group.description}</p>
+                            {group.categories.map((category) => (
+                              <div className="relationship-node compact" key={category.id}>
+                                <strong>{category.name}</strong>
+                                <p className="small">{category.definition}</p>
+                                <span className="badge blue">
+                                  Evidence MU{" "}
+                                  {category.includedUnitIds
+                                    .filter((unitNumber) =>
+                                      acceptedMeaningUnitNumbers.has(unitNumber)
+                                    )
+                                    .join(", ") || "not assigned"}
+                                </span>
+                              </div>
+                            ))}
                           </div>
                         ))}
-                    </div>
+                      </div>
+                      {integrationRelationships.length > 0 && (
+                        <div className="relationship-flow-list">
+                          {integrationRelationships.map((relationship) => (
+                            <RelationshipFlowRow
+                              categories={reviewedIntegrationCategories}
+                              key={relationship.id}
+                              relationship={relationship}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
                 <div className="integration-narrative-area">
                   <span className="flow-step">3 · Summary Narrative</span>
                   <IntegrationDraftPanel
-                    categories={displayCategories}
+                    categories={reviewedIntegrationCategories}
                     integrationNote={integrationNote}
                     integrationReviewed={integrationReviewed}
                     narrative={narrative}
@@ -6468,6 +6655,173 @@ function UnassignedMeaningUnits({
   );
 }
 
+const relationshipTypeOptions = [
+  "context for",
+  "contributes to",
+  "supports",
+  "constrains",
+  "leads to",
+  "co-occurs with",
+  "tension with",
+  "practical implication for"
+];
+
+function IntegrationRelationshipCard({
+  categories,
+  onRemove,
+  onUpdate,
+  relationship,
+  units
+}: {
+  categories: CategoryNode[];
+  onRemove: (relationshipId: string) => void;
+  onUpdate: (
+    relationshipId: string,
+    updates: Partial<IntegrationRelationship>
+  ) => void;
+  relationship: IntegrationRelationship;
+  units: MeaningUnit[];
+}) {
+  const sourceCategory = categories.find(
+    (category) => category.id === relationship.sourceCategoryId
+  );
+  const targetCategory = categories.find(
+    (category) => category.id === relationship.targetCategoryId
+  );
+  const evidenceUnits = units.filter((unit) =>
+    relationship.evidenceUnitNumbers.includes(unit.number)
+  );
+
+  return (
+    <article className="relationship-card">
+      <div className="category-header">
+        <div>
+          <span className="label">Editable relationship</span>
+          <h3>
+            {sourceCategory?.name ?? "Select source"} {"->"}{" "}
+            {targetCategory?.name ?? "Select target"}
+          </h3>
+        </div>
+        <StatusBadge label="Researcher review needed" />
+      </div>
+      <div className="relationship-card-grid">
+        <label className="label">
+          Source category
+          <select
+            className="select"
+            onChange={(event) =>
+              onUpdate(relationship.id, { sourceCategoryId: event.target.value })
+            }
+            value={relationship.sourceCategoryId}
+          >
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="label">
+          Relationship type
+          <select
+            className="select"
+            onChange={(event) =>
+              onUpdate(relationship.id, { type: event.target.value })
+            }
+            value={relationship.type}
+          >
+            {relationshipTypeOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="label">
+          Target category
+          <select
+            className="select"
+            onChange={(event) =>
+              onUpdate(relationship.id, { targetCategoryId: event.target.value })
+            }
+            value={relationship.targetCategoryId}
+          >
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <label className="label">
+        Relationship rationale
+        <textarea
+          className="textarea compact-textarea"
+          onChange={(event) =>
+            onUpdate(relationship.id, { rationale: event.target.value })
+          }
+          value={relationship.rationale}
+        />
+      </label>
+      <div className="evidence-strip">
+        <span className="label">Evidence grounding</span>
+        {evidenceUnits.length === 0 ? (
+          <span className="badge warning">No linked MU evidence yet</span>
+        ) : (
+          evidenceUnits.map((unit) => (
+            <span className="badge blue" key={unit.id}>
+              MU {unit.number}
+            </span>
+          ))
+        )}
+      </div>
+      <label className="label">
+        Researcher note
+        <textarea
+          className="textarea compact-textarea"
+          onChange={(event) =>
+            onUpdate(relationship.id, { researcherNote: event.target.value })
+          }
+          placeholder="Revise, qualify, or reject this relationship after checking the evidence."
+          value={relationship.researcherNote}
+        />
+      </label>
+      <button
+        className="button danger"
+        onClick={() => onRemove(relationship.id)}
+        type="button"
+      >
+        Remove relationship
+      </button>
+    </article>
+  );
+}
+
+function RelationshipFlowRow({
+  categories,
+  relationship
+}: {
+  categories: CategoryNode[];
+  relationship: IntegrationRelationship;
+}) {
+  const sourceCategory = categories.find(
+    (category) => category.id === relationship.sourceCategoryId
+  );
+  const targetCategory = categories.find(
+    (category) => category.id === relationship.targetCategoryId
+  );
+
+  return (
+    <div className="relationship-flow-row">
+      <strong>{sourceCategory?.name ?? "Source category"}</strong>
+      <span className="relationship-flow-type">{relationship.type}</span>
+      <strong>{targetCategory?.name ?? "Target category"}</strong>
+      <p className="small">{relationship.rationale}</p>
+    </div>
+  );
+}
+
 function IntegrationDraftPanel({
   categories,
   integrationNote,
@@ -6556,4 +6910,225 @@ function IntegrationDraftPanel({
       </button>
     </div>
   );
+}
+
+function buildIntegrationMapGroups(
+  categories: CategoryNode[]
+): IntegrationMapGroup[] {
+  const groupDefinitions = [
+    {
+      key: "context",
+      label: "Context / starting point",
+      description:
+        "Categories that describe the situation, condition, or concern that frames the account."
+    },
+    {
+      key: "process",
+      label: "Experience / process",
+      description:
+        "Categories that describe what the participant noticed, did, felt, or made sense of."
+    },
+    {
+      key: "support",
+      label: "Supportive condition",
+      description:
+        "Categories that appear to support, enable, or shape the experience described."
+    },
+    {
+      key: "boundary",
+      label: "Boundary / tension",
+      description:
+        "Categories that qualify the account, introduce limits, or show tension in the interpretation."
+    },
+    {
+      key: "implication",
+      label: "Practical implication",
+      description:
+        "Categories that point toward cautious practical considerations within this transcript."
+    }
+  ];
+
+  return groupDefinitions
+    .map((group) => ({
+      categories: categories.filter(
+        (category) => classifyIntegrationCategory(category) === group.key
+      ),
+      description: group.description,
+      label: group.label
+    }))
+    .filter((group) => group.categories.length > 0);
+}
+
+function classifyIntegrationCategory(category: CategoryNode) {
+  const text = `${category.name} ${category.definition}`.toLowerCase();
+  if (
+    /\b(context|background|before|stress|pressure|symptom|anxiety|uncertainty|starting|initial)\b/.test(
+      text
+    )
+  ) {
+    return "context";
+  }
+  if (
+    /\b(peer|group|support|shared|relationship|recognised|recognized|belong|wechat|community)\b/.test(
+      text
+    )
+  ) {
+    return "support";
+  }
+  if (
+    /\b(limit|barrier|privacy|discomfort|difficulty|challenge|tension|concern|risk|hesitat)\b/.test(
+      text
+    )
+  ) {
+    return "boundary";
+  }
+  if (
+    /\b(implication|suggest|recommend|design|programme|program|practice|flexible|future|should)\b/.test(
+      text
+    )
+  ) {
+    return "implication";
+  }
+  return "process";
+}
+
+function buildIntegrationStructureDraft({
+  categories,
+  researchQuestion,
+  units
+}: {
+  categories: CategoryNode[];
+  researchQuestion: string;
+  units: MeaningUnit[];
+}) {
+  const acceptedUnitNumbers = new Set(units.map((unit) => unit.number));
+  const mapGroups = buildIntegrationMapGroups(categories);
+  const representativeByGroup = new Map(
+    mapGroups.map((group) => [group.label, group.categories[0]])
+  );
+  const relationships: IntegrationRelationship[] = [];
+
+  const addRelationship = (
+    source: CategoryNode | undefined,
+    target: CategoryNode | undefined,
+    type: string,
+    rationale: string
+  ) => {
+    if (!source || !target || source.id === target.id) {
+      return;
+    }
+    if (
+      relationships.some(
+        (relationship) =>
+          relationship.sourceCategoryId === source.id &&
+          relationship.targetCategoryId === target.id &&
+          relationship.type === type
+      )
+    ) {
+      return;
+    }
+    const evidenceUnitNumbers = [
+      ...source.includedUnitIds,
+      ...target.includedUnitIds
+    ].filter((unitNumber, index, array) =>
+      acceptedUnitNumbers.has(unitNumber) && array.indexOf(unitNumber) === index
+    );
+    relationships.push({
+      evidenceUnitNumbers: evidenceUnitNumbers.slice(0, 6),
+      id: `rel-${relationships.length + 1}-${source.id}-${target.id}`,
+      rationale,
+      researcherNote: "",
+      sourceCategoryId: source.id,
+      targetCategoryId: target.id,
+      type
+    });
+  };
+
+  const contextCategory = representativeByGroup.get("Context / starting point");
+  const processCategory = representativeByGroup.get("Experience / process");
+  const supportCategory = representativeByGroup.get("Supportive condition");
+  const boundaryCategory = representativeByGroup.get("Boundary / tension");
+  const implicationCategory = representativeByGroup.get("Practical implication");
+
+  addRelationship(
+    contextCategory,
+    processCategory,
+    "context for",
+    buildRelationshipRationale(contextCategory, processCategory, "may frame")
+  );
+  addRelationship(
+    supportCategory,
+    processCategory,
+    "supports",
+    buildRelationshipRationale(supportCategory, processCategory, "may support")
+  );
+  addRelationship(
+    boundaryCategory,
+    processCategory ?? supportCategory,
+    "tension with",
+    buildRelationshipRationale(boundaryCategory, processCategory ?? supportCategory, "may qualify")
+  );
+  addRelationship(
+    processCategory,
+    implicationCategory,
+    "practical implication for",
+    buildRelationshipRationale(processCategory, implicationCategory, "may inform")
+  );
+
+  if (relationships.length === 0) {
+    categories.slice(0, 4).forEach((category, index, array) => {
+      const nextCategory = array[index + 1];
+      addRelationship(
+        category,
+        nextCategory,
+        "co-occurs with",
+        buildRelationshipRationale(category, nextCategory, "may be read alongside")
+      );
+    });
+  }
+
+  const categoryNames = categories.map((category) => category.name);
+  const narrative = [
+    `In relation to the research question${
+      researchQuestion.trim() ? ` ("${researchQuestion.trim()}")` : ""
+    }, the reviewed categories can be read as a provisional structure rather than final findings.`,
+    categoryNames.length > 0
+      ? `The current structure connects ${categoryNames
+          .slice(0, 4)
+          .join(", ")}${categoryNames.length > 4 ? ", and related categories" : ""}.`
+      : "",
+    relationships.length > 0
+      ? `The suggested links point to possible relationships among categories, grounded in accepted meaning units. These links should be checked against the source excerpts before being treated as analytic claims.`
+      : `No relationship has been confirmed yet. Add or revise links after reviewing the category evidence.`,
+    `Because this is a single-transcript prototype, the narrative should remain cautious: describe what appears in this account and avoid causal or generalisable claims.`
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  return {
+    explanation:
+      "This temporary draft organises reviewed categories into a cautious relationship structure. It is generated from accepted MUs and editable category assignments, not from unreviewed transcript text.",
+    narrative,
+    relationships,
+    title:
+      relationships.length > 0
+        ? "Provisional relationship structure from reviewed categories"
+        : "Researcher-created relationship structure needed"
+  };
+}
+
+function buildRelationshipRationale(
+  source: CategoryNode | undefined,
+  target: CategoryNode | undefined,
+  verb: string
+) {
+  if (!source || !target) {
+    return "Review the category evidence before treating this as an analytic relationship.";
+  }
+  const evidenceIds = [...source.includedUnitIds, ...target.includedUnitIds]
+    .filter((unitNumber, index, array) => array.indexOf(unitNumber) === index)
+    .slice(0, 4);
+  return `"${source.name}" ${verb} "${target.name}" in this transcript. Check MU ${evidenceIds.join(
+    ", "
+  ) || "evidence"} before confirming or revising this link.`;
 }

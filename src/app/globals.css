@@ -831,12 +831,23 @@ button {
 
 .relationship-map {
   display: grid;
-  justify-items: center;
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: stretch;
+  gap: 12px;
   border: 1px solid var(--accent-soft);
   border-radius: 16px;
   background: linear-gradient(180deg, #fbfdfb 0%, #f2f8f5 100%);
-  padding: 26px;
+  padding: 16px;
+}
+
+.relationship-map-group {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 14px;
 }
 
 .relationship-node {
@@ -872,6 +883,78 @@ button {
   color: var(--accent);
   font-size: 24px;
   font-weight: 900;
+}
+
+.relationship-node.compact {
+  width: 100%;
+  gap: 6px;
+  border-radius: 12px;
+  padding: 12px;
+  text-align: left;
+  box-shadow: none;
+}
+
+.relationship-card-list {
+  display: grid;
+  gap: 12px;
+}
+
+.relationship-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  padding: 14px;
+}
+
+.relationship-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.evidence-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 12px;
+  background: #f7fbf9;
+  padding: 10px;
+}
+
+.relationship-flow-list {
+  display: grid;
+  gap: 10px;
+}
+
+.relationship-flow-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  padding: 12px;
+}
+
+.relationship-flow-row .small {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.relationship-flow-type {
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 900;
+  text-align: center;
+  text-transform: uppercase;
 }
 
 .integration-narrative-area {
