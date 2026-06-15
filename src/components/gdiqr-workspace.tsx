@@ -2601,6 +2601,11 @@ export function GdiqrWorkspace({
     if (!confirmed) {
       return;
     }
+    const acceptedDraftSummaryWithoutEditCount = includableUnits.filter(
+      (unit) =>
+        (unit.humanSummary || unit.aiSummary).trim() ===
+        (unit.aiSummary || "").trim()
+    ).length;
 
     setIsAcceptingMeaningUnits(true);
     setApiStatus("Saving accepted meaning-unit summaries...");
@@ -2620,7 +2625,10 @@ export function GdiqrWorkspace({
           )
         );
         recordLocalAuditEvent({
-          action: `Accepted ${includableUnits.length} reviewed meaning unit${includableUnits.length === 1 ? "" : "s"} in bulk`,
+          action:
+            acceptedDraftSummaryWithoutEditCount > 0
+              ? `Accepted ${includableUnits.length} reviewed meaning unit${includableUnits.length === 1 ? "" : "s"} in bulk (${acceptedDraftSummaryWithoutEditCount} draft summar${acceptedDraftSummaryWithoutEditCount === 1 ? "y" : "ies"} accepted without edit)`
+              : `Accepted ${includableUnits.length} reviewed meaning unit${includableUnits.length === 1 ? "" : "s"} in bulk`,
           target: "Step 2 meaning-unit review"
         });
         setApiStatus(
@@ -3132,6 +3140,8 @@ export function GdiqrWorkspace({
     }
     const reviewedExcerpt = unit.excerpt.trim();
     const reviewedSummary = (unit.humanSummary || unit.aiSummary).trim();
+    const acceptedDraftSummaryWithoutEdit =
+      reviewedSummary === (unit.aiSummary || "").trim();
     if (!reviewedExcerpt || !reviewedSummary) {
       setApiStatus(
         `Review the excerpt and summary before accepting MU #${unit.number}.`
@@ -3163,7 +3173,9 @@ export function GdiqrWorkspace({
 
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
-        action: `Accepted MU #${unit.number}`,
+        action: acceptedDraftSummaryWithoutEdit
+          ? `Accepted MU #${unit.number} draft summary without edit`
+          : `Accepted MU #${unit.number}`,
         target: unit.id
       });
       setApiStatus("Meaning-unit decision saved locally.");
@@ -5252,6 +5264,9 @@ function getMeaningUnitValidationFlags(
   if (!reviewedSummary) {
     flags.push({ label: "Researcher summary missing", tone: "warning" });
   }
+  if (reviewedSummary && summaryIsTooCloseToExcerpt(reviewedSummary, excerpt)) {
+    flags.push({ label: "Summary may be too close to excerpt", tone: "warning" });
+  }
   if (excerpt && wordCount < 3) {
     flags.push({ label: "Excerpt may be too short", tone: "warning" });
   }
@@ -5410,6 +5425,16 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "summary"
       );
     }
+    if (summary && summaryIsTooCloseToExcerpt(summary, excerpt)) {
+      addIssue(
+        unit,
+        "Summary may be too close to excerpt",
+        "warning",
+        "The researcher summary appears to repeat the MU excerpt rather than condensing the participant's main meaning.",
+        "Could this be condensed into a brief statement of the participant's main meaning?",
+        "summary"
+      );
+    }
     if (summary && summaryPossiblyGoesBeyondExcerpt(summary, excerpt)) {
       addIssue(
         unit,
@@ -5503,6 +5528,49 @@ function summaryPossiblyGoesBeyondExcerpt(summary: string, excerpt: string) {
   return interpretiveTerms.some(
     (term) => lowerSummary.includes(term) && !lowerExcerpt.includes(term)
   );
+}
+
+function summaryIsTooCloseToExcerpt(summary: string, excerpt: string) {
+  const normalizedSummary = normalizeForSummarySimilarity(summary);
+  const normalizedExcerpt = normalizeForSummarySimilarity(excerpt);
+  if (!normalizedSummary || !normalizedExcerpt) {
+    return false;
+  }
+  if (
+    normalizedExcerpt.includes(normalizedSummary) &&
+    normalizedSummary.length > 24
+  ) {
+    return true;
+  }
+  if (/[\u3400-\u9fff]/.test(normalizedSummary)) {
+    const summaryChars = new Set([...normalizedSummary.replace(/\s/g, "")]);
+    const excerptChars = new Set([...normalizedExcerpt.replace(/\s/g, "")]);
+    if (summaryChars.size < 8) {
+      return false;
+    }
+    const overlap = [...summaryChars].filter((char) =>
+      excerptChars.has(char)
+    ).length;
+    return overlap / summaryChars.size > 0.9 && normalizedSummary.length > 24;
+  }
+  const summaryTokens = new Set(normalizedSummary.split(" ").filter(Boolean));
+  const excerptTokens = new Set(normalizedExcerpt.split(" ").filter(Boolean));
+  if (summaryTokens.size < 5) {
+    return false;
+  }
+  const overlap = [...summaryTokens].filter((token) =>
+    excerptTokens.has(token)
+  ).length;
+  return overlap / summaryTokens.size > 0.86 && summaryTokens.size > 10;
+}
+
+function normalizeForSummarySimilarity(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/^(interviewer|researcher|moderator|facilitator|participant|interviewee|student|[IQPA])\s*[:：]\s*/i, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function approximateWordCount(text: string) {
@@ -6607,7 +6675,7 @@ function MeaningUnitReviewCard({
           value={unit.excerpt}
         />
       </label>
-      <span className="label">Suggested summary</span>
+      <span className="label">Draft Meaning Unit Summary</span>
       <p className="small">{unit.aiSummary || "No draft yet."}</p>
       {unit.uncertainty &&
         !unit.uncertainty.toLowerCase().includes("rule-based draft") && (
@@ -6706,6 +6774,9 @@ function reviewerIssueTitle(issue: ReviewerComment) {
   }
   if (normalized.includes("summary missing")) {
     return `${target} needs a researcher summary`;
+  }
+  if (normalized.includes("too close to excerpt")) {
+    return `${target} summary may repeat the excerpt`;
   }
   if (normalized.includes("interviewer")) {
     return `${target} may be contextual material`;

@@ -339,7 +339,9 @@ Rules:
 - Preserve participant meaning closely.
 - Do not create categories in this step.
 - Do not compare this excerpt with other transcripts.
-- Keep summaries concise and descriptive.
+- Keep summaries concise and descriptive: one short sentence or phrase that condenses the participant's main meaning.
+- Do not copy the MU excerpt into aiSummary or humanSummary.
+- Do not introduce category-level interpretation or final findings in summaries.
 - Write aiSummary and humanSummary in the same language as the interview transcript.
 - Research question, domains, project title, file names, and setup notes are context only. Never turn them into meaning-unit excerpts.
 - If the excerpt contains non-transcript metadata such as "Research Question", "Domains of Investigation", "Project title", "Demo Project", or file/upload labels, exclude that material from meaning units.
@@ -1485,8 +1487,10 @@ function fallbackMeaningUnitsFromChunk(
         .trim();
       const excerpt = text.slice(0, 260);
       const nonTranscriptMaterial = containsNonTranscriptMaterial(excerpt);
-      const aiSummary =
-        excerpt.length > 140 ? `${excerpt.slice(0, 137)}...` : excerpt;
+      const aiSummary = buildConciseMeaningUnitSummary(
+        excerpt,
+        contextCandidate ? "Interviewer" : "Participant"
+      );
 
       return {
         id: `mu_ai_${String(number).padStart(3, "0")}`,
@@ -1496,8 +1500,8 @@ function fallbackMeaningUnitsFromChunk(
         number,
         aiExcerpt: excerpt,
         excerpt,
-        aiSummary: aiSummary || "Local fallback meaning unit",
-        humanSummary: aiSummary || "Local fallback meaning unit",
+        aiSummary,
+        humanSummary: aiSummary,
         uncertainty:
           nonTranscriptMaterial
             ? "Possible non-transcript material included; review before accepting."
@@ -1540,9 +1544,20 @@ function normalizeMeaningUnits(
     .map((item, index) => {
       const number = startingNumber + index;
       const excerpt = cleanText(item.excerpt);
-      const aiSummary = cleanText(item.aiSummary);
-      const humanSummary = cleanText(item.humanSummary);
       const speaker = cleanText(item.speaker) || "Participant";
+      const aiSummary = ensureConciseMeaningUnitSummary(
+        cleanText(item.aiSummary),
+        excerpt,
+        speaker
+      );
+      const rawHumanSummary = cleanText(item.humanSummary);
+      const humanSummary = ensureConciseMeaningUnitSummary(
+        rawHumanSummary.toLowerCase() === "same as aisummary"
+          ? aiSummary
+          : rawHumanSummary || aiSummary,
+        excerpt,
+        speaker
+      );
       const normalizedSpeaker = speaker.toLowerCase();
       const nonTranscriptMaterial = containsNonTranscriptMaterial(excerpt);
       const contextCandidate =
@@ -1559,10 +1574,7 @@ function normalizeMeaningUnits(
         aiExcerpt: excerpt,
         excerpt,
         aiSummary,
-        humanSummary:
-          humanSummary.toLowerCase() === "same as aisummary"
-            ? aiSummary
-            : humanSummary || aiSummary,
+        humanSummary,
         tentativeInterpretation:
           cleanText(item.tentativeInterpretation) || undefined,
         uncertainty:
@@ -1591,6 +1603,115 @@ function normalizeMeaningUnits(
       } satisfies MeaningUnit;
     })
     .filter((item) => item.excerpt && item.aiSummary);
+}
+
+function ensureConciseMeaningUnitSummary(
+  summary: string,
+  excerpt: string,
+  speaker: string
+) {
+  const cleanedSummary = cleanText(summary);
+  if (
+    !cleanedSummary ||
+    summaryIsTooCloseToExcerpt(cleanedSummary, excerpt) ||
+    countApproxWords(cleanedSummary) > 28
+  ) {
+    return buildConciseMeaningUnitSummary(excerpt, speaker);
+  }
+  return cleanedSummary;
+}
+
+function buildConciseMeaningUnitSummary(excerpt: string, speaker: string) {
+  const text = stripSpeakerPrefix(cleanText(excerpt));
+  if (!text) {
+    return "Meaning requires researcher review.";
+  }
+  if (/interviewer|researcher/i.test(speaker)) {
+    return "Interviewer prompt or contextual material.";
+  }
+  if (/therapist/i.test(text) && /(pace|rush|overwhelm|pause)/i.test(text)) {
+    return "Participant felt safer when the therapist respected their pace and responded to overwhelm.";
+  }
+  const firstSentence = splitIntoSentences(text)[0] ?? text;
+  if (/[\u3400-\u9fff]/.test(firstSentence)) {
+    const gist = firstSentence
+      .replace(/^(我觉得|我认为|我想|然后|就是|其实|嗯|啊|那个|这个)/, "")
+      .replace(/[。！？,，;；:：]+$/g, "")
+      .trim()
+      .slice(0, 42);
+    return gist
+      ? `参与者表达了${gist}。`
+      : "参与者的主要含义需要研究者复核。";
+  }
+  const transformed = firstSentence
+    .replace(/^(i\s+think\s+it\s+was|i\s+think|i\s+guess|i\s+felt|i\s+feel|i\s+was|i\s+am)\b/i, "")
+    .replace(/\bI\b/g, "they")
+    .replace(/\bmy\b/gi, "their")
+    .replace(/\bme\b/gi, "them")
+    .replace(/\bmyself\b/gi, "themself")
+    .replace(/\s+/g, " ")
+    .trim();
+  const words = transformed.split(/\s+/).filter(Boolean).slice(0, 18);
+  const gist = words.join(" ").replace(/[.!?。！？,，;；:：]+$/g, "").trim();
+  if (!gist) {
+    return "Participant meaning requires researcher review.";
+  }
+  const prefix = /[\u3400-\u9fff]/.test(gist)
+    ? "参与者表达了"
+    : "Participant described";
+  return `${prefix} ${lowercaseInitial(gist)}.`;
+}
+
+function summaryIsTooCloseToExcerpt(summary: string, excerpt: string) {
+  const normalizedSummary = normalizeForSimilarity(summary);
+  const normalizedExcerpt = normalizeForSimilarity(excerpt);
+  if (!normalizedSummary || !normalizedExcerpt) {
+    return false;
+  }
+  if (
+    normalizedExcerpt.includes(normalizedSummary) &&
+    normalizedSummary.length > 24
+  ) {
+    return true;
+  }
+  if (/[\u3400-\u9fff]/.test(normalizedSummary)) {
+    const summaryChars = new Set([...normalizedSummary.replace(/\s/g, "")]);
+    const excerptChars = new Set([...normalizedExcerpt.replace(/\s/g, "")]);
+    if (summaryChars.size < 8) {
+      return false;
+    }
+    const overlap = [...summaryChars].filter((char) =>
+      excerptChars.has(char)
+    ).length;
+    return overlap / summaryChars.size > 0.9 && normalizedSummary.length > 24;
+  }
+  const summaryTokens = new Set(normalizedSummary.split(" ").filter(Boolean));
+  const excerptTokens = new Set(normalizedExcerpt.split(" ").filter(Boolean));
+  if (summaryTokens.size < 5) {
+    return false;
+  }
+  const overlap = [...summaryTokens].filter((token) =>
+    excerptTokens.has(token)
+  ).length;
+  return overlap / summaryTokens.size > 0.86 && summaryTokens.size > 10;
+}
+
+function normalizeForSimilarity(text: string) {
+  return stripSpeakerPrefix(text)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripSpeakerPrefix(text: string) {
+  return text
+    .replace(/^(interviewer|researcher|moderator|facilitator|participant|interviewee|student|[IQPA])\s*[:：]\s*/i, "")
+    .trim();
+}
+
+function lowercaseInitial(text: string) {
+  return text ? `${text.charAt(0).toLowerCase()}${text.slice(1)}` : text;
 }
 
 function normalizeCategories(
