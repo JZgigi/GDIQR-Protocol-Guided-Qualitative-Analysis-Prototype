@@ -37,6 +37,10 @@ import type { WorkspaceData } from "@/lib/gdiqr-repository";
 import type { RunLog } from "@/lib/run-logs";
 import { autoSplitTranscript, type AutoSegmentMode } from "@/lib/auto-segmenter";
 import type { StorageMode } from "@/lib/storage-mode";
+import {
+  cleanTranscriptSourceForAnalysis,
+  containsNonTranscriptMaterial
+} from "@/lib/transcript-source-cleaner";
 
 const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
@@ -922,7 +926,18 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    const transcriptForStorage = prepareTranscriptForStorage(editableTranscript);
+    const preparedTranscript = prepareTranscriptForStorage(editableTranscript);
+    const cleanedSource = cleanTranscriptSourceForAnalysis(
+      preparedTranscript,
+      currentProject
+    );
+    const transcriptForStorage = cleanedSource.transcript;
+    if (!transcriptForStorage.trim()) {
+      setApiStatus(
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before confirming for analysis."
+      );
+      return;
+    }
     if (isLocalOnlyMode) {
       setEditableTranscript(transcriptForStorage);
       setTranscriptConfirmed(false);
@@ -985,7 +1000,18 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    const transcriptForStorage = prepareTranscriptForStorage(editableTranscript);
+    const preparedTranscript = prepareTranscriptForStorage(editableTranscript);
+    const cleanedSource = cleanTranscriptSourceForAnalysis(
+      preparedTranscript,
+      currentProject
+    );
+    const transcriptForStorage = cleanedSource.transcript;
+    if (!transcriptForStorage.trim()) {
+      setApiStatus(
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before confirming for analysis."
+      );
+      return;
+    }
     if (isLocalOnlyMode) {
       const now = new Date().toISOString();
       setEditableTranscript(transcriptForStorage);
@@ -1049,7 +1075,9 @@ export function GdiqrWorkspace({
         ...current
       ]);
       setApiStatus(
-        "Reviewed transcript confirmed locally. Internal source chunks are ready; generate draft meaning units when you are ready to review them."
+        cleanedSource.removedLineCount > 0
+          ? `Reviewed transcript confirmed locally. Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before analysis.`
+          : "Reviewed transcript confirmed locally. Internal source chunks are ready; generate draft meaning units when you are ready to review them."
       );
       return;
     }
@@ -1088,7 +1116,9 @@ export function GdiqrWorkspace({
       setEditableTranscript(transcriptForStorage);
       setTranscriptStorageStatus("Anonymised version saved");
       setApiStatus(
-        "Transcript confirmed. You can now generate meaning units from the reviewed text."
+        cleanedSource.removedLineCount > 0
+          ? `Transcript confirmed. Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before analysis.`
+          : "Transcript confirmed. You can now generate meaning units from the reviewed text."
       );
     } catch (error) {
       setApiStatus(
@@ -1527,13 +1557,23 @@ export function GdiqrWorkspace({
     setApiStatus("Auto-delineating transcript into draft meaning units...");
 
     try {
+      const cleanedSource = cleanTranscriptSourceForAnalysis(
+        editableTranscript,
+        currentProject
+      );
+      if (!cleanedSource.transcript.trim()) {
+        setApiStatus(
+          "Only project setup or metadata was detected. Add the interview transcript / participant account before auto-delineation."
+        );
+        return;
+      }
       const response = await fetch("/api/segments/auto-split", {
         body: JSON.stringify({
           caseId: selectedSegment?.caseId ?? "CASE-001",
           projectId: currentProject.id,
           researchQuestion: currentProject.researchQuestion,
           splittingMode: segmentSplitMode,
-          transcript: editableTranscript
+          transcript: cleanedSource.transcript
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST"
@@ -1575,6 +1615,15 @@ export function GdiqrWorkspace({
     forceRuleBased: boolean,
     signal: AbortSignal
   ) {
+    const cleanedSource = cleanTranscriptSourceForAnalysis(
+      editableTranscript,
+      currentProject
+    );
+    if (!cleanedSource.transcript.trim()) {
+      throw new Error(
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before generating meaning units."
+      );
+    }
     const response = await fetchWithTimeout("/api/ai/meaning-units", {
       body: JSON.stringify({
         background: false,
@@ -1584,7 +1633,7 @@ export function GdiqrWorkspace({
         projectId: currentProject.id,
         startingNumber: 1,
         timeoutMs: 45000,
-        transcript: editableTranscript
+        transcript: cleanedSource.transcript
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
@@ -2535,6 +2584,17 @@ export function GdiqrWorkspace({
       );
       return;
     }
+    const nonTranscriptUnit = includableUnits.find(
+      (unit) =>
+        containsNonTranscriptMaterial(unit.excerpt) &&
+        !unit.exclusionReason?.trim()
+    );
+    if (nonTranscriptUnit) {
+      setApiStatus(
+        `MU #${nonTranscriptUnit.number} may contain project setup or other non-transcript material. Add a researcher memo or exclude it before accepting all.`
+      );
+      return;
+    }
     const confirmed = window.confirm(
       "Accept all visible, non-excluded meaning units? This records the current researcher-reviewed excerpts and summaries as accepted analytic material."
     );
@@ -2817,18 +2877,27 @@ export function GdiqrWorkspace({
   }
 
   function cleanTranscript() {
-    const cleaned = editableTranscript
+    const spacingCleaned = editableTranscript
       .split("\n")
       .map((line) => line.trim())
       .join("\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
+    const sourceCleaned = cleanTranscriptSourceForAnalysis(
+      spacingCleaned,
+      currentProject
+    );
+    const cleaned = sourceCleaned.transcript;
     setEditableTranscript(cleaned);
     setTranscriptConfirmed(false);
     setAiPrivacyFindings(extractPrivacyReviewMarkers(cleaned));
     setPrivacyOverrideAccepted(false);
     setTranscriptStorageStatus("Not saved yet — local draft only");
-    setApiStatus("Transcript spacing cleaned. Review the text, save a reviewed transcript, then confirm before analysis.");
+    setApiStatus(
+      sourceCleaned.removedLineCount > 0
+        ? `Transcript cleaned. Removed ${sourceCleaned.removedLineCount} non-transcript setup/metadata line${sourceCleaned.removedLineCount === 1 ? "" : "s"}. Review, save, then confirm before analysis.`
+        : "Transcript spacing cleaned. Review the text, save a reviewed transcript, then confirm before analysis."
+    );
   }
 
   function focusSensitiveItem(item: SensitiveReviewItem) {
@@ -3066,6 +3135,15 @@ export function GdiqrWorkspace({
     if (!reviewedExcerpt || !reviewedSummary) {
       setApiStatus(
         `Review the excerpt and summary before accepting MU #${unit.number}.`
+      );
+      return;
+    }
+    if (
+      containsNonTranscriptMaterial(reviewedExcerpt) &&
+      !unit.exclusionReason?.trim()
+    ) {
+      setApiStatus(
+        `MU #${unit.number} may contain project setup or other non-transcript material. Add a researcher memo explaining why it belongs in analysis, or exclude it.`
       );
       return;
     }
@@ -5129,7 +5207,11 @@ function canRunMeaningUnitsForSegment(segment: TranscriptSegment) {
 }
 
 function isConfirmedMeaningUnit(unit: MeaningUnit) {
-  return !unit.analysisExcluded && unit.humanStatus === "Accepted";
+  return (
+    !unit.analysisExcluded &&
+    unit.humanStatus === "Accepted" &&
+    (!containsNonTranscriptMaterial(unit.excerpt) || Boolean(unit.exclusionReason?.trim()))
+  );
 }
 
 function normalizeMeaningUnitNumbersForSegments(
@@ -5188,6 +5270,9 @@ function getMeaningUnitValidationFlags(
   }
   if (!unit.caseId || !unit.segmentId) {
     flags.push({ label: "Source reference missing", tone: "danger" });
+  }
+  if (containsNonTranscriptMaterial(excerpt)) {
+    flags.push({ label: "Possible non-transcript material included", tone: "danger" });
   }
 
   return flags;
@@ -5301,6 +5386,15 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         unit.humanStatus === "Accepted" ? "major" : "info",
         "This MU is missing a source reference, making auditability weaker.",
         "Can you link this MU back to the transcript source reference?"
+      );
+    }
+    if (containsNonTranscriptMaterial(excerpt)) {
+      addIssue(
+        unit,
+        "Possible non-transcript material included",
+        "major",
+        "This MU excerpt appears to contain project setup, research question, domain labels, demo metadata, file labels, or another non-transcript source.",
+        "Should this be removed from analysis or explicitly justified as part of the participant account?"
       );
     }
     if (
@@ -6625,6 +6719,9 @@ function reviewerIssueTitle(issue: ReviewerComment) {
   if (normalized.includes("beyond participant")) {
     return `${target} summary may over-interpret`;
   }
+  if (normalized.includes("non-transcript")) {
+    return `${target} may include project setup or metadata`;
+  }
   if (normalized.includes("excluded without reason")) {
     return `${target} needs an exclusion reason`;
   }
@@ -6839,7 +6936,7 @@ function CategoryBlock({
                     onClick={() => onRemoveUnit(category.id, unit.number)}
                     type="button"
                   >
-                    Remove from category
+                    {isConfirmedCategory ? "Remove from category" : "Remove from cluster"}
                   </button>
                   <select
                     className="select compact"

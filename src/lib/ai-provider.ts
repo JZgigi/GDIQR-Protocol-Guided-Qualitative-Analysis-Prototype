@@ -12,6 +12,10 @@ import {
   getOllamaConnectionErrorMessage,
   getOllamaModel
 } from "@/lib/ollama-config";
+import {
+  cleanTranscriptSourceForAnalysis,
+  containsNonTranscriptMaterial
+} from "@/lib/transcript-source-cleaner";
 
 type AiProvider = "ollama";
 
@@ -109,17 +113,31 @@ export async function generateMeaningUnits(
 ): Promise<MeaningUnitResult> {
   assertOllamaConfigured();
   assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
+  const cleanedSource = cleanTranscriptSourceForAnalysis(
+    input.transcript,
+    input.project
+  );
+  assertNonEmpty(
+    cleanedSource.transcript,
+    "Interview transcript / participant account is required before generating meaning units."
+  );
+  if (cleanedSource.removedLineCount > 0) {
+    addRunEvent(
+      input.runId,
+      `Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before MU generation`
+    );
+  }
 
   const model = getOllamaModel();
   const chunks = chunkMeaningUnitCandidates(
-    input.transcript,
+    cleanedSource.transcript,
     Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 1200)
   );
   console.info("[gdiqr:mu] generation start", {
     candidateChunkCount: chunks.length,
     model,
     provider: "ollama",
-    transcriptChars: input.transcript.length
+    transcriptChars: cleanedSource.transcript.length
   });
   const caseId = input.caseId ?? "CASE-001";
   const segmentId = input.segmentId ?? "SEG-001";
@@ -154,7 +172,7 @@ export async function generateMeaningUnits(
     allUncertainties.push(...result.uncertainties);
   }
 
-  const transcriptWordCount = countApproxWords(input.transcript);
+  const transcriptWordCount = countApproxWords(cleanedSource.transcript);
   const minimumExpectedUnits = Math.min(
     8,
     Math.max(1, Math.floor(transcriptWordCount / 140))
@@ -170,7 +188,7 @@ export async function generateMeaningUnits(
       input.runId,
       `Ollama returned only ${participantUnitCount} participant MU${participantUnitCount === 1 ? "" : "s"} for ${transcriptWordCount} words; using rule-based fallback delineation`
     );
-    const fallbackUnits = fallbackMeaningUnitsFromChunk(input.transcript, initialNumber, {
+    const fallbackUnits = fallbackMeaningUnitsFromChunk(cleanedSource.transcript, initialNumber, {
       caseId,
       segmentId: "Transcript fallback"
     });
@@ -213,12 +231,20 @@ export function generateRuleBasedMeaningUnits(
   reason = "Rule-based draft — for researcher review."
 ): MeaningUnitResult {
   assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
+  const cleanedSource = cleanTranscriptSourceForAnalysis(
+    input.transcript,
+    input.project
+  );
+  assertNonEmpty(
+    cleanedSource.transcript,
+    "Interview transcript / participant account is required before generating meaning units."
+  );
 
   const maxChars = Math.min(
     Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 900),
     900
   );
-  const chunks = chunkMeaningUnitCandidates(input.transcript, maxChars);
+  const chunks = chunkMeaningUnitCandidates(cleanedSource.transcript, maxChars);
   const caseId = input.caseId ?? "CASE-001";
   const initialNumber = input.startingNumber ?? 1;
   const allUnits: MeaningUnit[] = [];
@@ -227,8 +253,14 @@ export function generateRuleBasedMeaningUnits(
 
   console.info("[gdiqr:mu] rule-based fallback start", {
     candidateChunkCount: chunks.length,
-    transcriptChars: input.transcript.length
+    transcriptChars: cleanedSource.transcript.length
   });
+  if (cleanedSource.removedLineCount > 0) {
+    addRunEvent(
+      input.runId,
+      `Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before rule-based MU generation`
+    );
+  }
   addRunEvent(
     input.runId,
     `Rule-based fallback split transcript into ${chunks.length} candidate chunk${chunks.length === 1 ? "" : "s"}`
@@ -309,6 +341,8 @@ Rules:
 - Do not compare this excerpt with other transcripts.
 - Keep summaries concise and descriptive.
 - Write aiSummary and humanSummary in the same language as the interview transcript.
+- Research question, domains, project title, file names, and setup notes are context only. Never turn them into meaning-unit excerpts.
+- If the excerpt contains non-transcript metadata such as "Research Question", "Domains of Investigation", "Project title", "Demo Project", or file/upload labels, exclude that material from meaning units.
 - Treat this transcript excerpt as processing context, not as one meaning unit.
 - Delineate meaning units when a new meaning appears.
 - A meaning unit should be large enough to communicate a clear message, but small enough to remain analytically manageable.
@@ -1450,6 +1484,7 @@ function fallbackMeaningUnitsFromChunk(
         .replace(/^(interviewer|researcher|moderator|facilitator|participant|interviewee|student|[IQPA])\s*[:：]\s*/i, "")
         .trim();
       const excerpt = text.slice(0, 260);
+      const nonTranscriptMaterial = containsNonTranscriptMaterial(excerpt);
       const aiSummary =
         excerpt.length > 140 ? `${excerpt.slice(0, 137)}...` : excerpt;
 
@@ -1464,9 +1499,11 @@ function fallbackMeaningUnitsFromChunk(
         aiSummary: aiSummary || "Local fallback meaning unit",
         humanSummary: aiSummary || "Local fallback meaning unit",
         uncertainty:
-          contextCandidate
-            ? "Context candidate; review for exclusion. Generated by local fallback because the Ollama meaning-unit chunk failed."
-            : "Generated by local fallback because the Ollama meaning-unit chunk failed.",
+          nonTranscriptMaterial
+            ? "Possible non-transcript material included; review before accepting."
+            : contextCandidate
+              ? "Context candidate; review for exclusion. Generated by local fallback because the Ollama meaning-unit chunk failed."
+              : "Generated by local fallback because the Ollama meaning-unit chunk failed.",
         humanStatus: contextCandidate ? "Excluded" : "Draft",
         reviewerStatus: "Warning",
         analysisExcluded: contextCandidate,
@@ -1502,14 +1539,16 @@ function normalizeMeaningUnits(
   return items
     .map((item, index) => {
       const number = startingNumber + index;
+      const excerpt = cleanText(item.excerpt);
       const aiSummary = cleanText(item.aiSummary);
       const humanSummary = cleanText(item.humanSummary);
       const speaker = cleanText(item.speaker) || "Participant";
       const normalizedSpeaker = speaker.toLowerCase();
+      const nonTranscriptMaterial = containsNonTranscriptMaterial(excerpt);
       const contextCandidate =
         normalizedSpeaker.includes("interviewer") ||
         (!normalizedSpeaker.includes("participant") &&
-          isInterviewerCandidate(cleanText(item.excerpt)));
+          isInterviewerCandidate(excerpt));
 
       return {
         id: `mu_ai_${String(number).padStart(3, "0")}`,
@@ -1517,8 +1556,8 @@ function normalizeMeaningUnits(
         caseId: cleanText(item.caseId) || defaults.caseId,
         speaker: contextCandidate ? "Interviewer" : speaker,
         number,
-        aiExcerpt: cleanText(item.excerpt),
-        excerpt: cleanText(item.excerpt),
+        aiExcerpt: excerpt,
+        excerpt,
         aiSummary,
         humanSummary:
           humanSummary.toLowerCase() === "same as aisummary"
@@ -1526,9 +1565,18 @@ function normalizeMeaningUnits(
             : humanSummary || aiSummary,
         tentativeInterpretation:
           cleanText(item.tentativeInterpretation) || undefined,
-        uncertainty: cleanText(item.uncertainty) || undefined,
+        uncertainty:
+          nonTranscriptMaterial
+            ? [
+                cleanText(item.uncertainty),
+                "Possible non-transcript material included; review before accepting."
+              ]
+                .filter(Boolean)
+                .join(" ")
+            : cleanText(item.uncertainty) || undefined,
         humanStatus: contextCandidate ? "Excluded" : "Draft",
         reviewerStatus:
+          nonTranscriptMaterial ||
           contextCandidate ||
           item.reviewerStatus === "Warning" ||
           item.reviewerStatus === "Major issue"

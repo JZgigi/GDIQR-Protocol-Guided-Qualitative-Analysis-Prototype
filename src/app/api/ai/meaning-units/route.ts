@@ -6,6 +6,7 @@ import {
   startRunLog
 } from "@/lib/run-logs";
 import { getStorageMode } from "@/lib/storage-mode";
+import { cleanTranscriptSourceForAnalysis } from "@/lib/transcript-source-cleaner";
 import type { Project } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -156,15 +157,30 @@ async function runMeaningUnitGeneration({
         ? `Using internal source reference ${segmentId} for MU generation`
         : "Using confirmed transcript as source; transcript segments remain internal"
     );
+    const cleanedSource = cleanTranscriptSourceForAnalysis(
+      sourceTranscript,
+      project
+    );
+    if (!cleanedSource.transcript.trim()) {
+      throw new Error(
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before generating meaning units."
+      );
+    }
+    if (cleanedSource.removedLineCount > 0) {
+      addRunEvent(
+        runId,
+        `Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before MU generation`
+      );
+    }
     addRunEvent(
       runId,
-      `Starting background meaning-unit job (${sourceTranscript.length} chars)`
+      `Starting background meaning-unit job (${cleanedSource.transcript.length} chars)`
     );
     const startedAt = Date.now();
     console.info("[gdiqr:mu-api] generation start", {
       forceRuleBased: Boolean(forceRuleBased),
       provider: "ollama",
-      transcriptChars: sourceTranscript.length
+      transcriptChars: cleanedSource.transcript.length
     });
     const generationInput = {
       lightInterpretation:
@@ -174,7 +190,7 @@ async function runMeaningUnitGeneration({
       caseId,
       segmentId,
       startingNumber,
-      transcript: sourceTranscript
+      transcript: cleanedSource.transcript
     };
     let fallbackUsed = Boolean(forceRuleBased);
     let result = forceRuleBased
@@ -213,7 +229,7 @@ async function runMeaningUnitGeneration({
         console.warn("[gdiqr:mu-api] fallback triggered", {
           message,
           timeoutMs: demoTimeoutMs,
-          transcriptChars: sourceTranscript.length
+          transcriptChars: cleanedSource.transcript.length
         });
         result = generateRuleBasedMeaningUnits(
           generationInput,
