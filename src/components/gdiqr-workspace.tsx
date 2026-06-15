@@ -65,6 +65,11 @@ interface MeaningUnitValidationFlag {
   tone?: "blue" | "danger" | "warning";
 }
 
+interface ReviewerIssueContext {
+  label: string;
+  text: string;
+}
+
 interface IntegrationRelationship {
   evidenceUnitNumbers: number[];
   id: string;
@@ -235,6 +240,7 @@ export function GdiqrWorkspace({
   const [activeMeaningUnitRunId, setActiveMeaningUnitRunId] = useState("");
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
   const [muReviewOpen, setMuReviewOpen] = useState(true);
+  const [muIntegrityReviewRan, setMuIntegrityReviewRan] = useState(false);
   const [categoryReviewOpen, setCategoryReviewOpen] = useState(true);
   const [expandedReviewIssueIds, setExpandedReviewIssueIds] = useState<
     string[]
@@ -528,6 +534,14 @@ export function GdiqrWorkspace({
   const meaningUnitReviewIssues = useMemo(
     () => reviewerOutputs.filter((comment) => comment.workspace === "meaning-units"),
     [reviewerOutputs]
+  );
+  const meaningUnitIssueContextById = useMemo(
+    () =>
+      buildMeaningUnitIssueContextById(
+        meaningUnitReviewIssues,
+        currentMeaningUnits
+      ),
+    [currentMeaningUnits, meaningUnitReviewIssues]
   );
   const categoryReviewIssues = useMemo(
     () => reviewerOutputs.filter((comment) => comment.workspace === "categories"),
@@ -1985,6 +1999,10 @@ export function GdiqrWorkspace({
       setApiStatus("Generate meaning units before running methodological integrity checks.");
       return;
     }
+    if (reviewerWorkspace === "meaning-units") {
+      runMeaningUnitIntegrityReview();
+      return;
+    }
     if (reviewerWorkspace === "categories" && displayCategories.length === 0) {
       setApiStatus("Create categories before running the category review.");
       return;
@@ -2038,6 +2056,29 @@ export function GdiqrWorkspace({
     } finally {
       setIsRunningReviewer(false);
     }
+  }
+
+  function runMeaningUnitIntegrityReview() {
+    setIsRunningReviewer(true);
+    setApiStatus("Running Meaning Unit Integrity Support...");
+
+    const comments = buildMeaningUnitIntegrityIssues(currentMeaningUnits);
+    setReviewerOutputs((current) => [
+      ...current.filter((comment) => comment.workspace !== "meaning-units"),
+      ...comments
+    ]);
+    setMuIntegrityReviewRan(true);
+    recordLocalAuditEvent({
+      actor: "Reviewer",
+      action: `Ran Step 2 MU integrity support (${comments.length} issue${comments.length === 1 ? "" : "s"})`,
+      target: "Meaning Unit Integrity Support"
+    });
+    setApiStatus(
+      comments.length === 0
+        ? "No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
+        : `Meaning Unit Integrity Support found ${comments.length} point${comments.length === 1 ? "" : "s"} for researcher review.`
+    );
+    setIsRunningReviewer(false);
   }
 
   function updateCategoryDraft(
@@ -2204,7 +2245,8 @@ export function GdiqrWorkspace({
     commentId: string,
     updates: { memo?: string; status?: ReviewerComment["status"] }
   ) {
-    if (isLocalOnlyMode) {
+    const isSessionOnlyIssue = commentId.startsWith("mu_integrity_");
+    if (isLocalOnlyMode || isSessionOnlyIssue) {
       setReviewerOutputs((current) =>
         current.map((comment) =>
           comment.id === commentId
@@ -2223,7 +2265,13 @@ export function GdiqrWorkspace({
             : comment
         )
       );
-      setApiStatus("Integrity issue updated locally.");
+      recordLocalAuditEvent({
+        action: updates.status
+          ? `${updates.status === "resolved" ? "Resolved" : "Dismissed"} MU integrity issue`
+          : "Updated memo on MU integrity issue",
+        target: commentId
+      });
+      setApiStatus("Meaning Unit Integrity Support item updated for this session.");
       return;
     }
 
@@ -2253,6 +2301,12 @@ export function GdiqrWorkspace({
   }
 
   function viewReviewerTarget(comment: ReviewerComment) {
+    if (comment.workspace === "meaning-units") {
+      recordLocalAuditEvent({
+        action: "Opened MU from integrity issue",
+        target: comment.target
+      });
+    }
     const targetId =
       comment.targetType === "category" || comment.targetType === "subcategory"
         ? `category-${comment.targetId}`
@@ -3978,12 +4032,17 @@ export function GdiqrWorkspace({
                   </section>
                 </div>
                 <details className="workbook-details">
-                  <summary>Methodological integrity support</summary>
+                  <summary>Meaning Unit Integrity Support</summary>
                   <ReviewerPanel
+                    dismissActionLabel="Dismiss with memo"
+                    emptyText="Run a lightweight Step 2 review after draft meaning units are available. The assistant will flag possible MU boundary, summary, source, and context issues for researcher judgement."
                     expandedIssueIds={expandedReviewIssueIds}
+                    hasRun={muIntegrityReviewRan}
+                    issueContextById={meaningUnitIssueContextById}
                     isOpen={muReviewOpen}
                     issues={meaningUnitReviewIssues}
                     isRunning={isRunningReviewer}
+                    noActiveText="No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
                     onAddMemo={(issue) => {
                       const memo = window.prompt(
                         "Researcher note for this integrity issue:",
@@ -3993,9 +4052,18 @@ export function GdiqrWorkspace({
                         void updateReviewerIssue(issue.id, { memo });
                       }
                     }}
-                    onDismiss={(issue) =>
-                      void updateReviewerIssue(issue.id, { status: "dismissed" })
-                    }
+                    onDismiss={(issue) => {
+                      const memo = window.prompt(
+                        "Dismissal memo: why is this not a Step 2 integrity concern?",
+                        issue.researcherMemo ?? ""
+                      );
+                      if (memo !== null) {
+                        void updateReviewerIssue(issue.id, {
+                          memo,
+                          status: "dismissed"
+                        });
+                      }
+                    }}
                     onResolve={(issue) =>
                       void updateReviewerIssue(issue.id, { status: "resolved" })
                     }
@@ -4009,7 +4077,12 @@ export function GdiqrWorkspace({
                       )
                     }
                     onView={viewReviewerTarget}
-                    title="GDI-QR-informed Review"
+                    panelBadge="Step 2 support"
+                    responsibilityText="The assistant flags possible issues only. The researcher decides what needs revision before accepting meaning units."
+                    runButtonLabel="Review meaning-unit integrity"
+                    showAddMemoAction={false}
+                    title="Meaning Unit Integrity Support"
+                    viewActionLabel="Edit MU"
                   />
                 </details>
               </div>
@@ -4363,42 +4436,26 @@ export function GdiqrWorkspace({
                         support, tension, or shared context.
                       </p>
                     </div>
+                  ) : integrationRelationships.length === 0 ? (
+                    <div className="relationship-map-placeholder">
+                      <EmptyState text="No draft relationships yet. Generate a provisional structure or add a relationship to begin mapping how categories may connect." />
+                      <p className="small">
+                        This map should show possible relationships among
+                        categories. Evidence MUs appear only as secondary
+                        review references under each relationship.
+                      </p>
+                    </div>
                   ) : (
-                    <>
-                      <div className="relationship-map">
-                        {integrationMapGroups.map((group) => (
-                          <div className="relationship-map-group" key={group.label}>
-                            <span className="label">{group.label}</span>
-                            <p className="small">{group.description}</p>
-                            {group.categories.map((category) => (
-                              <div className="relationship-node compact" key={category.id}>
-                                <strong>{category.name}</strong>
-                                <p className="small">{category.definition}</p>
-                                <span className="badge blue">
-                                  Evidence MU{" "}
-                                  {category.includedUnitIds
-                                    .filter((unitNumber) =>
-                                      acceptedMeaningUnitNumbers.has(unitNumber)
-                                    )
-                                    .join(", ") || "not assigned"}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        ))}
-                      </div>
-                      {integrationRelationships.length > 0 && (
-                        <div className="relationship-flow-list">
-                          {integrationRelationships.map((relationship) => (
-                            <RelationshipFlowRow
-                              categories={reviewedIntegrationCategories}
-                              key={relationship.id}
-                              relationship={relationship}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </>
+                    <div className="relationship-map relationship-network">
+                      {integrationRelationships.map((relationship) => (
+                        <RelationshipFlowRow
+                          categories={reviewedIntegrationCategories}
+                          key={relationship.id}
+                          relationship={relationship}
+                          units={confirmedMeaningUnits}
+                        />
+                      ))}
+                    </div>
                   )}
                 </div>
                 <div className="integration-narrative-area">
@@ -4477,10 +4534,15 @@ export function GdiqrWorkspace({
                   <summary>Open detailed reflection panels</summary>
                   <div className="review-layout">
                     <ReviewerPanel
+                      dismissActionLabel="Dismiss with memo"
+                      emptyText="Run a lightweight Step 2 review after draft meaning units are available. The assistant will flag possible MU boundary, summary, source, and context issues for researcher judgement."
                       expandedIssueIds={expandedReviewIssueIds}
+                      hasRun={muIntegrityReviewRan}
+                      issueContextById={meaningUnitIssueContextById}
                       isOpen={muReviewOpen}
                       issues={meaningUnitReviewIssues}
                       isRunning={isRunningReviewer}
+                      noActiveText="No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
                       onAddMemo={(issue) => {
                         const memo = window.prompt(
                           "Researcher note for this integrity issue:",
@@ -4490,9 +4552,18 @@ export function GdiqrWorkspace({
                           void updateReviewerIssue(issue.id, { memo });
                         }
                       }}
-                      onDismiss={(issue) =>
-                        void updateReviewerIssue(issue.id, { status: "dismissed" })
-                      }
+                      onDismiss={(issue) => {
+                        const memo = window.prompt(
+                          "Dismissal memo: why is this not a Step 2 integrity concern?",
+                          issue.researcherMemo ?? ""
+                        );
+                        if (memo !== null) {
+                          void updateReviewerIssue(issue.id, {
+                            memo,
+                            status: "dismissed"
+                          });
+                        }
+                      }}
                       onResolve={(issue) =>
                         void updateReviewerIssue(issue.id, { status: "resolved" })
                       }
@@ -4506,7 +4577,12 @@ export function GdiqrWorkspace({
                         )
                       }
                       onView={viewReviewerTarget}
-                      title="Meaning Unit Integrity Check"
+                      panelBadge="Step 2 support"
+                      responsibilityText="The assistant flags possible issues only. The researcher decides what needs revision before accepting meaning units."
+                      runButtonLabel="Review meaning-unit integrity"
+                      showAddMemoAction={false}
+                      title="Meaning Unit Integrity Support"
+                      viewActionLabel="Edit MU"
                     />
                     <ReviewerPanel
                       expandedIssueIds={expandedReviewIssueIds}
@@ -5079,6 +5155,224 @@ function getMeaningUnitValidationFlags(
   }
 
   return flags;
+}
+
+function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
+  const now = new Date().toISOString();
+  const issues: ReviewerComment[] = [];
+  const addIssue = (
+    unit: MeaningUnit,
+    issueType: string,
+    severity: ReviewerComment["severity"],
+    comment: string,
+    suggestedAction: string,
+    targetType: ReviewerComment["targetType"] = "meaning_unit"
+  ) => {
+    issues.push({
+      agent: "Meaning Unit Integrity Support",
+      comment,
+      createdAt: now,
+      id: `mu_integrity_${unit.id}_${issueType
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")}`,
+      issueType,
+      resolved: false,
+      severity,
+      status: "unresolved",
+      suggestedAction,
+      target: `MU ${unit.number}`,
+      targetId: `MU${unit.number}`,
+      targetType,
+      workspace: "meaning-units"
+    });
+  };
+
+  units.forEach((unit) => {
+    const excerpt = unit.excerpt.trim();
+    const summary = unit.humanSummary.trim();
+    const aiSummary = unit.aiSummary.trim();
+    const wordCount = approximateWordCount(excerpt);
+    const speaker = unit.speaker.toLowerCase();
+
+    if (!summary) {
+      addIssue(
+        unit,
+        "Researcher summary missing",
+        "warning",
+        "This MU does not yet have a researcher-reviewed summary.",
+        "What concise participant-close wording best captures this MU?",
+        "summary"
+      );
+    }
+    if (wordCount > 0 && wordCount < 3) {
+      addIssue(
+        unit,
+        "Excerpt may be too short",
+        "info",
+        "This MU excerpt is very short and may not communicate a clear meaning on its own.",
+        "Would including surrounding participant text better represent the intended meaning?"
+      );
+    }
+    if (wordCount > 140) {
+      addIssue(
+        unit,
+        "MU may contain several meanings",
+        "major",
+        "This MU is long enough that it may contain several shifts in meaning.",
+        "Can this MU be split into smaller meaning-based units?"
+      );
+    } else if (wordCount > 80) {
+      addIssue(
+        unit,
+        "Excerpt may be long",
+        "info",
+        "This MU excerpt is relatively long and may benefit from a boundary check.",
+        "Does this still communicate one coherent meaning, or are there multiple meanings here?"
+      );
+    }
+    if (
+      !unit.analysisExcluded &&
+      (speaker.includes("interviewer") ||
+        /^interviewer\s*:/i.test(excerpt) ||
+        /\?\s*$/.test(excerpt))
+    ) {
+      const acceptedInterviewerPrompt = unit.humanStatus === "Accepted";
+      addIssue(
+        unit,
+        acceptedInterviewerPrompt
+          ? "Interviewer prompt accepted as participant MU"
+          : "Possible interviewer/context material",
+        acceptedInterviewerPrompt ? "major" : "info",
+        acceptedInterviewerPrompt
+          ? "This MU appears to contain an interviewer or researcher prompt, but it has been accepted as a participant meaning unit."
+          : "This MU may contain interviewer prompt or contextual material and should be reviewed before analysis.",
+        "Should this be treated as context rather than a participant meaning unit?"
+      );
+    }
+    if (unit.analysisExcluded && !unit.exclusionReason?.trim()) {
+      addIssue(
+        unit,
+        "Excluded without reason",
+        "warning",
+        "This MU is excluded but does not include a researcher reason.",
+        "What methodological reason explains the exclusion?"
+      );
+    }
+    if (!unit.caseId || !unit.segmentId) {
+      addIssue(
+        unit,
+        "Source reference missing",
+        unit.humanStatus === "Accepted" ? "major" : "info",
+        "This MU is missing a source reference, making auditability weaker.",
+        "Can you link this MU back to the transcript source reference?"
+      );
+    }
+    if (
+      unit.humanStatus === "Accepted" &&
+      (!summary || summary === aiSummary || summary.toLowerCase() === "same as aisummary")
+    ) {
+      addIssue(
+        unit,
+        "Accepted without clear researcher-reviewed summary",
+        "warning",
+        "This MU is accepted but the summary appears unchanged or missing.",
+        "Have you reviewed the summary wording and confirmed it represents the participant account?",
+        "summary"
+      );
+    }
+    if (summary && summaryPossiblyGoesBeyondExcerpt(summary, excerpt)) {
+      addIssue(
+        unit,
+        "Summary may go beyond participant account",
+        "major",
+        "The summary may introduce wording that is not clearly grounded in the MU excerpt.",
+        "Can the summary be revised closer to the participant's words?",
+        "summary"
+      );
+    }
+  });
+
+  const seen = new Map<string, MeaningUnit>();
+  units.forEach((unit) => {
+    const key = normalizeForOverlapCheck(unit.excerpt);
+    if (!key || key.length < 30) {
+      return;
+    }
+    const previous = seen.get(key);
+    if (previous) {
+      addIssue(
+        unit,
+        "Duplicate or overlapping MU",
+        "warning",
+        `This MU appears to overlap strongly with MU ${previous.number}.`,
+        "Should these MUs be merged, revised, or kept separate for a methodological reason?"
+      );
+    } else {
+      seen.set(key, unit);
+    }
+  });
+
+  return issues;
+}
+
+function normalizeForOverlapCheck(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+function buildMeaningUnitIssueContextById(
+  issues: ReviewerComment[],
+  units: MeaningUnit[]
+) {
+  const unitsByTargetId = new Map(
+    units.map((unit) => [`MU${unit.number}`, unit])
+  );
+
+  return issues.reduce<Record<string, ReviewerIssueContext>>((contexts, issue) => {
+    const unit = unitsByTargetId.get(issue.targetId);
+    if (!unit) {
+      return contexts;
+    }
+    const isSummaryIssue = issue.targetType === "summary";
+    const text = isSummaryIssue
+      ? unit.humanSummary || unit.aiSummary || "No summary available yet."
+      : unit.excerpt || unit.aiExcerpt || "No excerpt available yet.";
+    contexts[issue.id] = {
+      label: isSummaryIssue ? "Current summary" : "Current excerpt",
+      text: truncateForReviewSnippet(text)
+    };
+    return contexts;
+  }, {});
+}
+
+function truncateForReviewSnippet(text: string, maxLength = 220) {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxLength - 1).trim()}…`;
+}
+
+function summaryPossiblyGoesBeyondExcerpt(summary: string, excerpt: string) {
+  const lowerSummary = summary.toLowerCase();
+  const lowerExcerpt = excerpt.toLowerCase();
+  const interpretiveTerms = [
+    "causes",
+    "clinical",
+    "diagnosis",
+    "improves",
+    "psychological",
+    "therapeutic",
+    "trauma",
+    "treatment"
+  ];
+  return interpretiveTerms.some(
+    (term) => lowerSummary.includes(term) && !lowerExcerpt.includes(term)
+  );
 }
 
 function approximateWordCount(text: string) {
@@ -5918,10 +6212,15 @@ function ModeButton({
 }
 
 function ReviewerPanel({
+  dismissActionLabel = "Dismiss",
+  emptyText = "Integrity check not yet run. The system flags possible issues; the researcher decides how to address them.",
   expandedIssueIds,
+  hasRun = false,
+  issueContextById = {},
   isOpen,
   issues,
   isRunning,
+  noActiveText = "No active review issues. Dismissed and resolved items remain in the review trail.",
   onAddMemo,
   onDismiss,
   onResolve,
@@ -5929,12 +6228,22 @@ function ReviewerPanel({
   onToggle,
   onToggleIssue,
   onView,
-  title
+  panelBadge = "Methodological Integrity Review",
+  responsibilityText,
+  runButtonLabel = "Review methodological integrity",
+  showAddMemoAction = true,
+  title,
+  viewActionLabel = "View target"
 }: {
+  dismissActionLabel?: string;
+  emptyText?: string;
   expandedIssueIds: string[];
+  hasRun?: boolean;
+  issueContextById?: Record<string, ReviewerIssueContext>;
   isOpen: boolean;
   issues: ReviewerComment[];
   isRunning: boolean;
+  noActiveText?: string;
   onAddMemo: (issue: ReviewerComment) => void;
   onDismiss: (issue: ReviewerComment) => void;
   onResolve: (issue: ReviewerComment) => void;
@@ -5942,12 +6251,19 @@ function ReviewerPanel({
   onToggle: () => void;
   onToggleIssue: (issueId: string) => void;
   onView: (issue: ReviewerComment) => void;
+  panelBadge?: string;
+  responsibilityText?: string;
+  runButtonLabel?: string;
+  showAddMemoAction?: boolean;
   title: string;
+  viewActionLabel?: string;
 }) {
-  const activeIssues = issues.filter((issue) => issue.status !== "dismissed");
+  const activeIssues = issues.filter((issue) => issue.status === "unresolved");
   const warningCount = activeIssues.filter(
     (issue) => issue.severity === "warning"
   ).length;
+  const infoCount = activeIssues.filter((issue) => issue.severity === "info")
+    .length;
   const majorCount = activeIssues.filter((issue) => issue.severity === "major")
     .length;
   const resolvedCount = issues.filter((issue) => issue.status === "resolved")
@@ -5960,9 +6276,19 @@ function ReviewerPanel({
     <aside className={`review-panel ${isOpen ? "" : "collapsed"}`}>
       <div className="category-header">
         <div>
-          <span className="badge blue">Methodological Integrity Review</span>
+          <span className="badge blue">{panelBadge}</span>
           <h3>{title}</h3>
-          <p className="small">{reviewSummaryText(issues, warningCount, majorCount)}</p>
+          <p className="small">
+            {hasRun && issues.length === 0
+              ? "No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
+              : reviewSummaryText(
+                  issues,
+                  infoCount,
+                  warningCount,
+                  majorCount,
+                  resolvedCount
+                )}
+          </p>
         </div>
         <button className="button icon" onClick={onToggle} type="button">
           {isOpen ? "−" : "+"}
@@ -5978,7 +6304,7 @@ function ReviewerPanel({
               type="button"
             >
               <ShieldCheck size={18} />
-              {isRunning ? "Reviewing..." : "Review methodological integrity"}
+              {isRunning ? "Reviewing..." : runButtonLabel}
             </button>
             <span className="badge">
               {activeIssues.length} active · {resolvedCount} resolved
@@ -5987,16 +6313,26 @@ function ReviewerPanel({
               <span className="badge blue">{dismissedCount} dismissed</span>
             )}
           </div>
+          {responsibilityText && (
+            <p className="small review-responsibility-note">{responsibilityText}</p>
+          )}
           {issues.length === 0 ? (
-            <EmptyState text="Integrity check not yet run. The system flags possible issues; the researcher decides how to address them." />
+            <EmptyState
+              text={
+                hasRun
+                  ? "No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
+                  : emptyText
+              }
+            />
           ) : activeIssues.length === 0 ? (
-            <EmptyState text="No active review issues. Dismissed and resolved items remain in the review trail." />
+            <EmptyState text={noActiveText} />
           ) : (
             Object.entries(groupedIssues).map(([group, groupIssues]) => (
               <div className="review-group" key={group}>
                 <span className="label">{group}</span>
                 {groupIssues.map((issue) => {
                   const expanded = expandedIssueIds.includes(issue.id);
+                  const issueContext = issueContextById[issue.id];
                   return (
                     <article className="review-issue" key={issue.id}>
                       <button
@@ -6005,16 +6341,28 @@ function ReviewerPanel({
                         type="button"
                       >
                         <div>
-                          <strong>{issue.issueType}</strong>
-                          <p className="small">{issue.target}</p>
+                          <span className="review-issue-kicker">
+                            <StatusBadge label={issue.severity} />
+                            <span>{issue.target}</span>
+                          </span>
+                          <strong>{reviewerIssueTitle(issue)}</strong>
+                          <p className="small">{issue.issueType}</p>
                         </div>
-                        <StatusBadge label={issue.severity} />
                       </button>
                       {expanded && (
                         <div className="review-issue-body">
-                          <p>{issue.comment}</p>
+                          {issueContext && (
+                            <div className="review-issue-snippet">
+                              <span className="label">{issueContext.label}</span>
+                              <p>{issueContext.text}</p>
+                            </div>
+                          )}
+                          <div>
+                            <span className="label">Why this may need review</span>
+                            <p>{issue.comment}</p>
+                          </div>
                           <p className="small">
-                            <strong>Suggested action:</strong>{" "}
+                            <strong>Reflection question:</strong>{" "}
                             {issue.suggestedAction || "Researcher review needed."}
                           </p>
                           {issue.researcherMemo && (
@@ -6028,7 +6376,7 @@ function ReviewerPanel({
                               onClick={() => onView(issue)}
                               type="button"
                             >
-                              View target
+                              {viewActionLabel}
                             </button>
                             <button
                               className="button"
@@ -6043,15 +6391,17 @@ function ReviewerPanel({
                               onClick={() => onDismiss(issue)}
                               type="button"
                             >
-                              Dismiss
+                              {dismissActionLabel}
                             </button>
-                            <button
-                              className="button"
-                              onClick={() => onAddMemo(issue)}
-                              type="button"
-                            >
-                              Add memo
-                            </button>
+                            {showAddMemoAction && (
+                              <button
+                                className="button"
+                                onClick={() => onAddMemo(issue)}
+                                type="button"
+                              >
+                                Add memo
+                              </button>
+                            )}
                           </div>
                         </div>
                       )}
@@ -6129,9 +6479,10 @@ function MeaningUnitReviewCard({
       </label>
       <span className="label">Suggested summary</span>
       <p className="small">{unit.aiSummary || "No draft yet."}</p>
-      {unit.uncertainty && (
-        <p className="small panel-note">{unit.uncertainty}</p>
-      )}
+      {unit.uncertainty &&
+        !unit.uncertainty.toLowerCase().includes("rule-based draft") && (
+          <p className="small panel-note">{unit.uncertainty}</p>
+        )}
       <label className="label">
         Researcher summary
         <textarea
@@ -6201,16 +6552,47 @@ function MeaningUnitReviewCard({
 
 function reviewSummaryText(
   issues: ReviewerComment[],
+  infoCount: number,
   warningCount: number,
-  majorCount: number
+  majorCount: number,
+  resolvedCount: number
 ) {
   if (issues.length === 0) {
     return "No integrity review yet";
   }
-  if (majorCount === 0 && warningCount === 0) {
-    return "No major concerns found";
+  return `${majorCount} major · ${warningCount} warning${
+    warningCount === 1 ? "" : "s"
+  } · ${infoCount} info · ${resolvedCount} resolved`;
+}
+
+function reviewerIssueTitle(issue: ReviewerComment) {
+  const target = issue.target || issue.targetId;
+  const normalized = issue.issueType.toLowerCase();
+  if (normalized.includes("too short")) {
+    return `${target} may be too short`;
   }
-  return `${warningCount} point${warningCount === 1 ? "" : "s"} to consider, ${majorCount} major concern${majorCount === 1 ? "" : "s"}`;
+  if (normalized.includes("too long") || normalized.includes("several meanings")) {
+    return `${target} may contain more than one meaning`;
+  }
+  if (normalized.includes("summary missing")) {
+    return `${target} needs a researcher summary`;
+  }
+  if (normalized.includes("interviewer")) {
+    return `${target} may be contextual material`;
+  }
+  if (normalized.includes("source reference")) {
+    return `${target} needs a clearer source reference`;
+  }
+  if (normalized.includes("duplicate") || normalized.includes("overlap")) {
+    return `${target} may overlap with another MU`;
+  }
+  if (normalized.includes("beyond participant")) {
+    return `${target} summary may over-interpret`;
+  }
+  if (normalized.includes("excluded without reason")) {
+    return `${target} needs an exclusion reason`;
+  }
+  return `${target}: ${issue.issueType}`;
 }
 
 function groupReviewerIssues(issues: ReviewerComment[]) {
@@ -6223,6 +6605,17 @@ function groupReviewerIssues(issues: ReviewerComment[]) {
 
 function reviewerGroupLabel(issueType: string) {
   const normalized = issueType.toLowerCase();
+  if (
+    normalized.includes("excerpt") ||
+    normalized.includes("source reference") ||
+    normalized.includes("summary") ||
+    normalized.includes("interviewer") ||
+    normalized.includes("duplicate") ||
+    normalized.includes("overlap") ||
+    normalized.includes("excluded")
+  ) {
+    return "Potential issues for review";
+  }
   if (normalized.includes("coverage")) {
     return "Coverage";
   }
@@ -6241,7 +6634,7 @@ function reviewerGroupLabel(issueType: string) {
   if (normalized.includes("integration") || normalized.includes("narrative")) {
     return "Integration limits";
   }
-  return "Rule compliance";
+  return "Potential issues for review";
 }
 
 function CategoryBlock({
@@ -6493,14 +6886,15 @@ function UnassignedMeaningUnits({
 }
 
 const relationshipTypeOptions = [
-  "context for",
-  "contributes to",
   "supports",
-  "constrains",
-  "leads to",
+  "contrasts with",
+  "develops into",
+  "contextualises",
+  "overlaps with",
+  "tensions with",
+  "part of / contains",
   "co-occurs with",
-  "tension with",
-  "practical implication for"
+  "unresolved relation"
 ];
 
 function IntegrationRelationshipCard({
@@ -6637,10 +7031,12 @@ function IntegrationRelationshipCard({
 
 function RelationshipFlowRow({
   categories,
-  relationship
+  relationship,
+  units
 }: {
   categories: CategoryNode[];
   relationship: IntegrationRelationship;
+  units: MeaningUnit[];
 }) {
   const sourceCategory = categories.find(
     (category) => category.id === relationship.sourceCategoryId
@@ -6648,13 +7044,49 @@ function RelationshipFlowRow({
   const targetCategory = categories.find(
     (category) => category.id === relationship.targetCategoryId
   );
+  const evidenceUnits = units.filter((unit) =>
+    relationship.evidenceUnitNumbers.includes(unit.number)
+  );
 
   return (
     <div className="relationship-flow-row">
-      <strong>{sourceCategory?.name ?? "Source category"}</strong>
-      <span className="relationship-flow-type">{relationship.type}</span>
-      <strong>{targetCategory?.name ?? "Target category"}</strong>
-      <p className="small">{relationship.rationale}</p>
+      <div className="relationship-map-node">
+        <span className="label">Category node</span>
+        <strong>{sourceCategory?.name ?? "Source category"}</strong>
+      </div>
+      <div className="relationship-map-link">
+        <span className="relationship-flow-type">
+          Possible relationship · {relationship.type}
+        </span>
+        <span className="relationship-arrow-inline">--&gt;</span>
+      </div>
+      <div className="relationship-map-node">
+        <span className="label">Category node</span>
+        <strong>{targetCategory?.name ?? "Target category"}</strong>
+      </div>
+      <p className="small">
+        <strong>Draft rationale:</strong> {relationship.rationale}
+      </p>
+      <details className="relationship-evidence-details">
+        <summary>
+          Review MU evidence ({evidenceUnits.length || relationship.evidenceUnitNumbers.length})
+        </summary>
+        <div className="evidence-strip">
+          {evidenceUnits.length === 0 ? (
+            <span className="badge warning">No linked MU evidence yet</span>
+          ) : (
+            evidenceUnits.map((unit) => (
+              <span className="badge blue" key={unit.id} title={unit.humanSummary || unit.aiSummary}>
+                MU {unit.number}
+              </span>
+            ))
+          )}
+        </div>
+        <p className="small">
+          Evidence is secondary here. Use it to check whether the draft
+          relationship is grounded before confirming or revising it.
+        </p>
+      </details>
     </div>
   );
 }
@@ -6890,7 +7322,7 @@ function buildIntegrationStructureDraft({
   addRelationship(
     contextCategory,
     processCategory,
-    "context for",
+    "contextualises",
     buildRelationshipRationale(contextCategory, processCategory, "may frame")
   );
   addRelationship(
@@ -6902,13 +7334,13 @@ function buildIntegrationStructureDraft({
   addRelationship(
     boundaryCategory,
     processCategory ?? supportCategory,
-    "tension with",
+    "tensions with",
     buildRelationshipRationale(boundaryCategory, processCategory ?? supportCategory, "may qualify")
   );
   addRelationship(
     processCategory,
     implicationCategory,
-    "practical implication for",
+    "develops into",
     buildRelationshipRationale(processCategory, implicationCategory, "may inform")
   );
 

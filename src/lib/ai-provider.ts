@@ -222,6 +222,8 @@ export function generateRuleBasedMeaningUnits(
   const caseId = input.caseId ?? "CASE-001";
   const initialNumber = input.startingNumber ?? 1;
   const allUnits: MeaningUnit[] = [];
+  const fallbackNote =
+    "Rule-based draft — review and edit before accepting.";
 
   console.info("[gdiqr:mu] rule-based fallback start", {
     candidateChunkCount: chunks.length,
@@ -242,18 +244,11 @@ export function generateRuleBasedMeaningUnits(
       }
     ).map((unit) => ({
       ...unit,
-      aiSummary: unit.aiSummary.startsWith("Rule-based draft")
-        ? unit.aiSummary
-        : unit.aiSummary,
       humanSummary: unit.humanSummary || unit.aiSummary,
       reviewerStatus: "Warning" as const,
-      uncertainty: [
-        "Rule-based draft — for researcher review.",
-        unit.uncertainty,
-        reason
-      ]
-        .filter(Boolean)
-        .join(" ")
+      uncertainty: unit.analysisExcluded
+        ? `${fallbackNote} Context candidate; review for exclusion.`
+        : fallbackNote
     }));
     allUnits.push(...chunkUnits);
   });

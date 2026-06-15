@@ -930,20 +930,56 @@ button {
   gap: 10px;
 }
 
+.relationship-network {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
 .relationship-flow-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 16px;
   background: #fff;
-  padding: 12px;
+  padding: 14px;
 }
 
-.relationship-flow-row .small {
+.relationship-map-node {
+  display: grid;
+  gap: 6px;
+  min-height: 84px;
+  align-content: center;
+  border: 1px solid var(--accent-soft);
+  border-radius: 14px;
+  background: #f7fbf9;
+  padding: 14px;
+}
+
+.relationship-map-link {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  min-width: 150px;
+}
+
+.relationship-arrow-inline {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.relationship-flow-row > .small,
+.relationship-evidence-details {
   grid-column: 1 / -1;
   margin: 0;
+}
+
+.relationship-evidence-details {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
 }
 
 .relationship-flow-type {
@@ -1358,6 +1394,12 @@ button {
   gap: 12px;
 }
 
+.review-responsibility-note {
+  margin: 0;
+  border-left: 3px solid rgba(31, 122, 94, 0.28);
+  padding-left: 10px;
+}
+
 .review-issue {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1376,11 +1418,35 @@ button {
   text-align: left;
 }
 
+.review-issue-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .review-issue-body {
   display: grid;
   gap: 10px;
   border-top: 1px solid var(--line);
   padding: 12px;
+}
+
+.review-issue-snippet {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(31, 122, 94, 0.16);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.review-issue-snippet p {
+  margin: 0;
+  color: var(--ink);
 }
 
 .target-highlight {
