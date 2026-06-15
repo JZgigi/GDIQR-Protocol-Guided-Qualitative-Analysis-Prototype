@@ -1626,6 +1626,7 @@ button {
 }
 
 .comparison-reflection-panel,
+.optional-draft-panel,
 .emerging-category-panel {
   display: grid;
   gap: 10px;
@@ -1637,6 +1638,22 @@ button {
 
 .comparison-reflection-panel {
   background: #f7fbf9;
+}
+
+.optional-draft-panel {
+  background: #fffdf7;
+  border-color: #eadfbf;
+}
+
+.assistant-draft-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.assistant-draft-text {
+  margin: 4px 0 0;
+  font-size: 15px;
+  line-height: 1.45;
 }
 
 .integration-textarea {

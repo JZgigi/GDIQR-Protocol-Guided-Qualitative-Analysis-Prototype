@@ -6930,10 +6930,24 @@ function getCategoryDisplayTitle(category: CategoryNode) {
 }
 
 function getCategoryTitleInputValue(category: CategoryNode) {
+  if (
+    category.status === "ai_draft" ||
+    category.status === "fallback_draft" ||
+    category.status === "needs_review"
+  ) {
+    return "";
+  }
   return isAutomaticCategoryTitle(category.name) ? "" : category.name;
 }
 
 function getCategoryDescriptionValue(category: CategoryNode) {
+  if (
+    category.status === "ai_draft" ||
+    category.status === "fallback_draft" ||
+    category.status === "needs_review"
+  ) {
+    return "";
+  }
   if (isSystemGeneratedCategoryDescription(category.definition)) {
     return "";
   }
@@ -6995,6 +7009,104 @@ function isSystemGeneratedCategoryDescription(description: string) {
   );
 }
 
+function getOptionalCategoryDraft(
+  category: CategoryNode,
+  includedUnits: MeaningUnit[]
+) {
+  const assistantLabel =
+    !isAutomaticCategoryTitle(category.name) &&
+    category.status !== "edited" &&
+    category.status !== "confirmed" &&
+    category.name.trim()
+      ? category.name.trim()
+      : "";
+  const assistantDefinition =
+    !isSystemGeneratedCategoryDescription(category.definition) &&
+    category.status !== "edited" &&
+    category.status !== "confirmed" &&
+    category.definition.trim()
+      ? category.definition.trim()
+      : "";
+  const evidenceText = includedUnits
+    .map((unit) => `${unit.humanSummary || unit.aiSummary} ${unit.excerpt}`)
+    .join(" ")
+    .toLowerCase();
+  const evidenceSuggestion = buildEvidenceBasedCategorySuggestion(evidenceText);
+  const label = assistantLabel || evidenceSuggestion.label;
+  const definition = assistantDefinition || evidenceSuggestion.definition;
+  const rationale =
+    category.rationale && !isSystemGeneratedCategoryDescription(category.rationale)
+      ? category.rationale
+      : evidenceSuggestion.rationale;
+
+  return {
+    available: Boolean(label || definition),
+    definition,
+    label,
+    rationale,
+    statusNote: isFallbackCategory(category)
+      ? "Assistant draft label unavailable; this cautious suggestion is derived from the assigned MUs for review."
+      : "Assistant suggestion only · researcher confirmation required"
+  };
+}
+
+function buildEvidenceBasedCategorySuggestion(evidenceText: string) {
+  if (!evidenceText.trim()) {
+    return {
+      definition: "",
+      label: "",
+      rationale: ""
+    };
+  }
+  if (
+    /(safe|safety|trust|therapist|therapy|pace|overwhelm|emotion|emotional)/i.test(
+      evidenceText
+    )
+  ) {
+    return {
+      definition:
+        "These MUs may share a meaning around feeling sufficiently safe to approach difficult emotional experience.",
+      label: "Feeling safe enough to engage with difficult emotions",
+      rationale:
+        "The assigned MUs appear to connect emotional difficulty with conditions that made engagement feel safer. Review whether this wording fits the participant account."
+    };
+  }
+  if (/(confidence|confident|capable|able|ability|self-confidence)/i.test(evidenceText)) {
+    return {
+      definition:
+        "These MUs may share a meaning around developing a stronger sense of personal capability.",
+      label: "Developing a stronger sense of capability",
+      rationale:
+        "Several assigned MUs appear to describe shifts in confidence or perceived ability. Review similarities and exceptions before naming."
+    };
+  }
+  if (/(uncertain|uncertainty|change|changing|transition|different)/i.test(evidenceText)) {
+    return {
+      definition:
+        "These MUs may share a meaning around making sense of uncertainty or change in experience.",
+      label: "Making sense of uncertainty and change",
+      rationale:
+        "The assigned MUs appear to involve uncertainty, transition, or changing self-understanding. Check whether they belong together."
+    };
+  }
+  if (/(stress|body|physical|symptom|tired|sleep|pain|breath|breathing)/i.test(evidenceText)) {
+    return {
+      definition:
+        "These MUs may share a meaning around how experience is noticed or expressed through the body.",
+      label: "Noticing experience through the body",
+      rationale:
+        "Several assigned MUs appear to connect participant experience with bodily sensations or physical states. Review for fit."
+    };
+  }
+  return {
+    definition:
+      "These MUs may share a related meaning. Compare their summaries and excerpts before deciding how to name the category.",
+    label: "Possible shared meaning across accepted MUs",
+    rationale:
+      "This is a structural draft to support comparison, not a confirmed category name."
+  };
+}
+
 function CategoryBlock({
   categories,
   category,
@@ -7034,6 +7146,8 @@ function CategoryBlock({
   const [similarityNote, setSimilarityNote] = useState("");
   const [differenceNote, setDifferenceNote] = useState("");
   const [clusterDecision, setClusterDecision] = useState("partly");
+  const [assistantDraftIgnored, setAssistantDraftIgnored] = useState(false);
+  const assistantDraft = getOptionalCategoryDraft(category, includedUnits);
   return (
     <article
       className={`category ${isFallback ? "temporary-draft" : ""}`}
@@ -7149,6 +7263,78 @@ function CategoryBlock({
           <option value="partly">Partly / needs revision</option>
           <option value="no">No, split or reassign these meaning units</option>
         </select>
+      </section>
+      <section className="optional-draft-panel">
+        <div className="category-header">
+          <div>
+            <span className="label">Optional assistant draft</span>
+            <p className="small">
+              Possible shared meaning · draft label for review · not confirmed
+            </p>
+          </div>
+          <span className="badge blue">Researcher confirmation required</span>
+        </div>
+        {assistantDraftIgnored ? (
+          <EmptyState text="Assistant draft ignored for this cluster. You can still name the category by comparing the accepted meaning units." />
+        ) : assistantDraft.available ? (
+          <div className="assistant-draft-grid">
+            <div>
+              <span className="label">Draft category label</span>
+              <p className="assistant-draft-text">{assistantDraft.label}</p>
+            </div>
+            <div>
+              <span className="label">Draft shared-meaning definition</span>
+              <p className="assistant-draft-text">{assistantDraft.definition}</p>
+            </div>
+            <div>
+              <span className="label">Why these MUs may belong together</span>
+              <p className="small">{assistantDraft.rationale}</p>
+            </div>
+            <p className="small panel-note">{assistantDraft.statusNote}</p>
+            <div className="button-row">
+              <button
+                className="button"
+                disabled={!assistantDraft.label}
+                onClick={() => onUpdate(category.id, { name: assistantDraft.label })}
+                type="button"
+              >
+                Use label
+              </button>
+              <button
+                className="button"
+                disabled={!assistantDraft.definition}
+                onClick={() =>
+                  onUpdate(category.id, { definition: assistantDraft.definition })
+                }
+                type="button"
+              >
+                Use definition
+              </button>
+              <button
+                className="button"
+                disabled={!assistantDraft.label && !assistantDraft.definition}
+                onClick={() =>
+                  onUpdate(category.id, {
+                    definition: assistantDraft.definition,
+                    name: assistantDraft.label
+                  })
+                }
+                type="button"
+              >
+                Edit before using
+              </button>
+              <button
+                className="button"
+                onClick={() => setAssistantDraftIgnored(true)}
+                type="button"
+              >
+                Ignore suggestion
+              </button>
+            </div>
+          </div>
+        ) : (
+          <EmptyState text="Assistant draft label unavailable. You can still name this category by comparing the accepted meaning units." />
+        )}
       </section>
       <section className="emerging-category-panel">
         <span className="label">Emerging Category</span>
