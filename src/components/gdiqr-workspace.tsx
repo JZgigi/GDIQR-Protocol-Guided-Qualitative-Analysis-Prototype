@@ -2023,6 +2023,9 @@ export function GdiqrWorkspace({
     relationshipId: string,
     updates: Partial<IntegrationRelationship>
   ) {
+    const existingRelationship = integrationRelationships.find(
+      (relationship) => relationship.id === relationshipId
+    );
     setIntegrationRelationships((current) =>
       current.map((relationship) =>
         relationship.id === relationshipId
@@ -2030,6 +2033,44 @@ export function GdiqrWorkspace({
           : relationship
       )
     );
+    if (existingRelationship) {
+      const auditActions: string[] = [];
+      if (
+        updates.evidenceUnitNumbers &&
+        updates.evidenceUnitNumbers.join(",") !==
+          existingRelationship.evidenceUnitNumbers.join(",")
+      ) {
+        const previous = new Set(existingRelationship.evidenceUnitNumbers);
+        const next = new Set(updates.evidenceUnitNumbers);
+        const added = updates.evidenceUnitNumbers.filter(
+          (unitNumber) => !previous.has(unitNumber)
+        );
+        const removed = existingRelationship.evidenceUnitNumbers.filter(
+          (unitNumber) => !next.has(unitNumber)
+        );
+        if (added.length > 0) {
+          auditActions.push(`Added MU evidence ${added.join(", ")} to relationship`);
+        }
+        if (removed.length > 0) {
+          auditActions.push(`Removed MU evidence ${removed.join(", ")} from relationship`);
+        }
+      }
+      if (
+        typeof updates.rationale === "string" &&
+        updates.rationale !== existingRelationship.rationale
+      ) {
+        auditActions.push("Edited relationship rationale");
+      }
+      if (updates.type && updates.type !== existingRelationship.type) {
+        auditActions.push(`Changed relationship type to ${updates.type}`);
+      }
+      auditActions.forEach((action) =>
+        recordLocalAuditEvent({
+          action,
+          target: `Step 4 relationship ${relationshipId}`
+        })
+      );
+    }
     setIntegrationReviewed(false);
   }
 
@@ -7514,6 +7555,69 @@ const relationshipTypeOptions = [
   "unresolved relation"
 ];
 
+function buildRelationshipEvidenceGroups({
+  relationship,
+  sourceCategory,
+  targetCategory,
+  units
+}: {
+  relationship: IntegrationRelationship;
+  sourceCategory: CategoryNode | undefined;
+  targetCategory: CategoryNode | undefined;
+  units: MeaningUnit[];
+}) {
+  const sourceNumbers = new Set(sourceCategory?.includedUnitIds ?? []);
+  const targetNumbers = new Set(targetCategory?.includedUnitIds ?? []);
+  const assignedNumbers = new Set<number>();
+  const sourceUnits = units.filter((unit) => {
+    const included = sourceNumbers.has(unit.number);
+    if (included) {
+      assignedNumbers.add(unit.number);
+    }
+    return included;
+  });
+  const targetUnits = units.filter((unit) => {
+    const included =
+      targetNumbers.has(unit.number) && !assignedNumbers.has(unit.number);
+    if (included) {
+      assignedNumbers.add(unit.number);
+    }
+    return included;
+  });
+  const otherUnits = units.filter(
+    (unit) =>
+      !assignedNumbers.has(unit.number) ||
+      relationship.evidenceUnitNumbers.includes(unit.number)
+  );
+
+  return [
+    {
+      label: `Source category MUs · ${sourceCategory?.name ?? "Source category"}`,
+      units: sourceUnits
+    },
+    {
+      label: `Target category MUs · ${targetCategory?.name ?? "Target category"}`,
+      units: targetUnits
+    },
+    {
+      label: "Other accepted MUs",
+      units: otherUnits.filter(
+        (unit, index, array) =>
+          array.findIndex((item) => item.number === unit.number) === index &&
+          !sourceNumbers.has(unit.number) &&
+          !targetNumbers.has(unit.number)
+      )
+    }
+  ];
+}
+
+function buildRelationshipEvidenceOptionText(unit: MeaningUnit) {
+  const summary = (unit.humanSummary || unit.aiSummary).trim();
+  const excerpt = unit.excerpt.trim();
+  const text = summary || excerpt || "No summary or excerpt available.";
+  return text.length > 150 ? `${text.slice(0, 147).trim()}...` : text;
+}
+
 function IntegrationRelationshipCard({
   categories,
   onRemove,
@@ -7539,6 +7643,21 @@ function IntegrationRelationshipCard({
   const evidenceUnits = units.filter((unit) =>
     relationship.evidenceUnitNumbers.includes(unit.number)
   );
+  const evidenceGroups = buildRelationshipEvidenceGroups({
+    relationship,
+    sourceCategory,
+    targetCategory,
+    units
+  });
+  const selectedEvidenceNumbers = new Set(relationship.evidenceUnitNumbers);
+  const updateEvidenceSelection = (unitNumber: number, selected: boolean) => {
+    const nextEvidenceNumbers = selected
+      ? Array.from(new Set([...relationship.evidenceUnitNumbers, unitNumber]))
+      : relationship.evidenceUnitNumbers.filter((number) => number !== unitNumber);
+    onUpdate(relationship.id, {
+      evidenceUnitNumbers: nextEvidenceNumbers.sort((left, right) => left - right)
+    });
+  };
 
   return (
     <article className="relationship-card">
@@ -7612,18 +7731,78 @@ function IntegrationRelationshipCard({
           value={relationship.rationale}
         />
       </label>
-      <div className="evidence-strip">
-        <span className="label">Evidence grounding</span>
-        {evidenceUnits.length === 0 ? (
-          <span className="badge warning">No linked MU evidence yet</span>
-        ) : (
-          evidenceUnits.map((unit) => (
-            <span className="badge blue" key={unit.id}>
-              MU {unit.number}
+      <section className="relationship-evidence-selector">
+        <div className="category-header">
+          <div>
+            <span className="label">Evidence grounding</span>
+            <p className="small">
+              Choose the accepted meaning units that support, complicate, or
+              qualify this relationship.
+            </p>
+          </div>
+          {evidenceUnits.length === 0 ? (
+            <span className="badge warning">
+              This relationship has no evidence grounding yet
             </span>
-          ))
-        )}
-      </div>
+          ) : (
+            <span className="badge blue">
+              {evidenceUnits.length} selected MU{evidenceUnits.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+        <div className="selected-evidence-list">
+          <span className="label">Selected meaning-unit evidence</span>
+          {evidenceUnits.length === 0 ? (
+            <p className="small">No linked MU evidence yet.</p>
+          ) : (
+            <div className="evidence-chip-list">
+              {evidenceUnits.map((unit) => (
+                <button
+                  className="evidence-chip"
+                  key={unit.id}
+                  onClick={() => updateEvidenceSelection(unit.number, false)}
+                  title="Remove evidence"
+                  type="button"
+                >
+                  MU {unit.number}
+                  <span>Remove evidence</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <details className="relationship-evidence-picker" open>
+          <summary>Select meaning-unit evidence for this relationship</summary>
+          {evidenceGroups.map((group) => (
+            <div className="relationship-evidence-group" key={group.label}>
+              <span className="label">{group.label}</span>
+              {group.units.length === 0 ? (
+                <p className="small">No accepted MUs in this group.</p>
+              ) : (
+                group.units.map((unit) => (
+                  <label className="relationship-evidence-option" key={unit.id}>
+                    <input
+                      checked={selectedEvidenceNumbers.has(unit.number)}
+                      onChange={(event) =>
+                        updateEvidenceSelection(unit.number, event.target.checked)
+                      }
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>
+                        MU {unit.number} · {unit.speaker || "Speaker unknown"}
+                      </strong>
+                      <small>
+                        {buildRelationshipEvidenceOptionText(unit)}
+                      </small>
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+          ))}
+        </details>
+      </section>
       <label className="label">
         Researcher note
         <textarea

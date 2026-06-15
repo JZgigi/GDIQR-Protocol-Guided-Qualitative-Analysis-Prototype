@@ -925,6 +925,74 @@ button {
   padding: 10px;
 }
 
+.relationship-evidence-selector {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 12px;
+  background: #f7fbf9;
+  padding: 12px;
+}
+
+.selected-evidence-list,
+.relationship-evidence-picker {
+  display: grid;
+  gap: 8px;
+}
+
+.evidence-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.evidence-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--accent-strong);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.evidence-chip span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.relationship-evidence-picker summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.relationship-evidence-group {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.relationship-evidence-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px;
+}
+
+.relationship-evidence-option small {
+  display: block;
+  color: var(--muted);
+  line-height: 1.45;
+  margin-top: 3px;
+}
+
 .relationship-flow-list {
   display: grid;
   gap: 10px;
