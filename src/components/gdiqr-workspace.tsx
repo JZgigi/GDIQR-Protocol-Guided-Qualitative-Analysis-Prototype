@@ -2248,13 +2248,21 @@ export function GdiqrWorkspace({
     if (!category) {
       return;
     }
-    if (!category.name.trim() || category.includedUnitIds.length === 0) {
+    const categoryTitle = getCategoryTitleInputValue(category).trim();
+    const categoryDefinition = getCategoryDescriptionValue(category).trim();
+    if (!categoryTitle || category.includedUnitIds.length === 0) {
       setApiStatus(
-        "A category needs a title and at least one included MU before it can be confirmed."
+        "An evidence cluster needs a researcher category name and at least one included MU before it can be confirmed."
       );
       return;
     }
-    if (hasSensitivePlaceholder(category.name)) {
+    if (!categoryDefinition) {
+      setApiStatus(
+        "Add a shared-meaning definition before confirming this evidence cluster as a provisional category."
+      );
+      return;
+    }
+    if (hasSensitivePlaceholder(categoryTitle)) {
       setApiStatus(
         "Category title contains a sensitive placeholder. Rename it before confirming."
       );
@@ -4184,7 +4192,7 @@ export function GdiqrWorkspace({
                                 .filter((category) =>
                                   category.includedUnitIds.includes(unit.number)
                                 )
-                                .map((category) => category.name)
+                                .map((category) => getCategoryDisplayTitle(category))
                                 .join(", ") || "Unassigned"}
                             </p>
                           </article>
@@ -4199,8 +4207,8 @@ export function GdiqrWorkspace({
                     />
                   </section>
                   <section className="analysis-panel">
-                    <span className="label">Provisional Categories</span>
-                    <h3>Group, name, and revise</h3>
+                    <span className="label">Evidence Clusters</span>
+                    <h3>Compare, group, then name</h3>
                     <p className="small">
                       Category work is iterative. Rename, merge, split, move
                       meaning units, and reject weak categories as the analysis
@@ -4216,7 +4224,7 @@ export function GdiqrWorkspace({
                         type="button"
                       >
                         <Play size={18} />
-                        Optional assistant suggestion: provisional categories
+                        Optional assistant support: suggest possible grouping
                       </button>
                       <button
                         className="button"
@@ -4229,7 +4237,7 @@ export function GdiqrWorkspace({
                         type="button"
                       >
                         <RefreshCcw size={18} />
-                        Refine category grouping
+                        Optional assistant support: compare similarities
                       </button>
                     </div>
                     {isRunningCategories && (
@@ -4272,7 +4280,7 @@ export function GdiqrWorkspace({
                     )}
                     {displayCategories.length === 0 ? (
                       <div className="empty-with-example">
-                        <EmptyState text="No provisional categories yet. Review meaning-unit summaries, then create your first category or request assistant suggestions." />
+                        <EmptyState text="Start by selecting accepted meaning units that appear to share a common meaning, or request optional assistant support for possible groupings." />
                         <details className="workbook-details category-structure-help">
                           <summary>What is a category?</summary>
                           <p className="small">
@@ -6711,7 +6719,12 @@ function getCategoryAssistantStatusItems(category: CategoryNode) {
 }
 
 function isAutomaticCategoryTitle(name: string) {
-  return /^draft category\s+\d+\s*:/i.test(name.trim());
+  const trimmed = name.trim();
+  return (
+    /^draft category\s+\d+\s*:/i.test(trimmed) ||
+    /^untitled provisional category$/i.test(trimmed) ||
+    /^new draft category$/i.test(trimmed)
+  );
 }
 
 function isSystemGeneratedCategoryDescription(description: string) {
@@ -6762,10 +6775,16 @@ function CategoryBlock({
   const includedUnits = units.filter((unit) =>
     category.includedUnitIds.includes(unit.number)
   );
-  const groupingLabel = getCategoryDisplayTitle(category);
+  const isConfirmedCategory = category.status === "confirmed";
+  const clusterStatusLabel = isConfirmedCategory
+    ? "Provisional category"
+    : "Unconfirmed evidence cluster";
   const titleValue = getCategoryTitleInputValue(category);
   const descriptionValue = getCategoryDescriptionValue(category);
   const memoValue = getCategoryMemoValue(category);
+  const [similarityNote, setSimilarityNote] = useState("");
+  const [differenceNote, setDifferenceNote] = useState("");
+  const [clusterDecision, setClusterDecision] = useState("partly");
   return (
     <article
       className={`category ${isFallback ? "temporary-draft" : ""}`}
@@ -6773,68 +6792,26 @@ function CategoryBlock({
     >
       <div className="category-header">
         <div>
-          <label className="label" htmlFor={`${category.id}-name`}>
-            Category Title
-          </label>
-          <input
-            className="field category-title-input"
-            id={`${category.id}-name`}
-            onChange={(event) =>
-              onUpdate(category.id, { name: event.target.value })
-            }
-            placeholder="Enter a category name after reviewing the assigned meaning units"
-            value={titleValue}
-          />
+          <span className="label">Evidence Cluster</span>
+          <h3 className="category-title">
+            {isConfirmedCategory && titleValue
+              ? titleValue
+              : "Accepted meaning units in this cluster"}
+          </h3>
         </div>
         <div className="button-row">
-          <span className="badge blue">{groupingLabel}</span>
+          <span className="badge blue">{clusterStatusLabel}</span>
           <span className="badge">
             Units {includedUnits.map((unit) => unit.number).join(", ") || "None"}
           </span>
         </div>
       </div>
-      <label className="label" htmlFor={`${category.id}-definition`}>
-        Shared Meaning / Category Definition
-      </label>
-      <textarea
-        className="textarea compact-textarea"
-        id={`${category.id}-definition`}
-        onChange={(event) =>
-          onUpdate(category.id, { definition: event.target.value })
-        }
-        placeholder="What common meaning is represented across these assigned meaning units?"
-        value={descriptionValue}
-      />
-      <label className="label" htmlFor={`${category.id}-memo`}>
-        Researcher Memo
-      </label>
-      <textarea
-        className="textarea compact-textarea"
-        id={`${category.id}-memo`}
-        onChange={(event) =>
-          onUpdate(category.id, { rationale: event.target.value })
-        }
-        placeholder="Optional note about why these meaning units belong together, possible alternatives, or decisions to revisit."
-        value={memoValue}
-      />
-      <div className="assigned-mu-list">
-        <span className="label">Assigned Meaning Units</span>
-        {includedUnits.length === 0 ? (
-          <p className="small">No meaning units assigned yet.</p>
-        ) : (
-          <div className="assigned-mu-chips">
-            {includedUnits.map((unit) => (
-              <span className="assigned-mu-chip" key={unit.id}>
-                MU {unit.number}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
       <details className="evidence-panel" open>
-        <summary>Review assigned meaning-unit evidence ({includedUnits.length} MU)</summary>
+        <summary>
+          Accepted Meaning Units in this Cluster ({includedUnits.length} MU)
+        </summary>
         {includedUnits.length === 0 ? (
-          <EmptyState text="No meaning units assigned. Assign at least one MU before confirming this category." />
+          <EmptyState text="No meaning units assigned. Add accepted MUs before developing a provisional category." />
         ) : (
           <div className="evidence-list">
             {includedUnits.map((unit) => (
@@ -6888,6 +6865,81 @@ function CategoryBlock({
           </div>
         )}
       </details>
+      <section className="comparison-reflection-panel">
+        <span className="label">Compare Similarities and Differences</span>
+        <label className="label" htmlFor={`${category.id}-similarities`}>
+          What appears similar across these meaning units?
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          id={`${category.id}-similarities`}
+          onChange={(event) => setSimilarityNote(event.target.value)}
+          placeholder="Note repeated meanings, shared concerns, or common ways of describing experience."
+          value={similarityNote}
+        />
+        <label className="label" htmlFor={`${category.id}-differences`}>
+          Are there important differences or tensions?
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          id={`${category.id}-differences`}
+          onChange={(event) => setDifferenceNote(event.target.value)}
+          placeholder="Note contrasts, exceptions, uncertainties, or reasons this grouping may need revision."
+          value={differenceNote}
+        />
+        <label className="label" htmlFor={`${category.id}-decision`}>
+          Do these meaning units seem to belong together?
+        </label>
+        <select
+          className="select"
+          id={`${category.id}-decision`}
+          onChange={(event) => setClusterDecision(event.target.value)}
+          value={clusterDecision}
+        >
+          <option value="yes">Yes, develop as a provisional category</option>
+          <option value="partly">Partly / needs revision</option>
+          <option value="no">No, split or reassign these meaning units</option>
+        </select>
+      </section>
+      <section className="emerging-category-panel">
+        <span className="label">Emerging Category</span>
+        <label className="label" htmlFor={`${category.id}-name`}>
+          Category name
+        </label>
+        <input
+          className="field category-title-input"
+          id={`${category.id}-name`}
+          onChange={(event) =>
+            onUpdate(category.id, { name: event.target.value })
+          }
+          placeholder="Name this category after reviewing the meaning units"
+          value={titleValue}
+        />
+        <label className="label" htmlFor={`${category.id}-definition`}>
+          Category definition / shared meaning
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          id={`${category.id}-definition`}
+          onChange={(event) =>
+            onUpdate(category.id, { definition: event.target.value })
+          }
+          placeholder="Describe the shared meaning represented by these meaning units"
+          value={descriptionValue}
+        />
+        <label className="label" htmlFor={`${category.id}-memo`}>
+          Researcher memo
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          id={`${category.id}-memo`}
+          onChange={(event) =>
+            onUpdate(category.id, { rationale: event.target.value })
+          }
+          placeholder="Note naming decisions, alternatives, doubts, or reasons to revisit this category"
+          value={memoValue}
+        />
+      </section>
       <details className="assistant-status-panel">
         <summary>Assistant Generation Status</summary>
         <ul className="assistant-status-list">
@@ -6908,16 +6960,19 @@ function CategoryBlock({
           onClick={() => onConfirm(category.id)}
           type="button"
         >
-          Confirm category
+          Confirm as provisional category
+        </button>
+        <button className="button" onClick={() => setClusterDecision("partly")} type="button">
+          Revise grouping
         </button>
         <button className="button" onClick={() => onMerge(category)} type="button">
-          Merge category
+          Merge with another cluster
         </button>
         <button className="button" onClick={() => onSplit(category)} type="button">
-          Split category
+          Split cluster
         </button>
         <button className="button" onClick={() => onReject(category)} type="button">
-          Reject category
+          Reject grouping
         </button>
         <button
           className="button danger"
