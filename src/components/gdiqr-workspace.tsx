@@ -2206,6 +2206,43 @@ export function GdiqrWorkspace({
     setCategoryDraftNotice("Categories merged. Review the merged title, definition, and evidence.");
   }
 
+  function splitCategoryDraft(category: CategoryNode) {
+    if (category.includedUnitIds.length < 2) {
+      setApiStatus("Add at least two meaning units before splitting this category.");
+      return;
+    }
+    const splitIndex = Math.ceil(category.includedUnitIds.length / 2);
+    const remainingUnitIds = category.includedUnitIds.slice(0, splitIndex);
+    const splitUnitIds = category.includedUnitIds.slice(splitIndex);
+    const splitCategory: CategoryNode = {
+      definition: "",
+      id: `cat_split_${Date.now()}`,
+      includedUnitIds: splitUnitIds,
+      name: "Untitled provisional category",
+      source: "researcher_confirmed",
+      status: "edited"
+    };
+
+    setDisplayCategories((current) => [
+      ...current.map((item) =>
+        item.id === category.id
+          ? {
+              ...item,
+              includedUnitIds: remainingUnitIds,
+              status:
+                item.status === "confirmed"
+                  ? ("confirmed" as const)
+                  : ("edited" as const)
+            }
+          : item
+      ),
+      splitCategory
+    ]);
+    setCategoryDraftNotice(
+      "Category split into two editable provisional categories. Rename and review both against their assigned meaning units."
+    );
+  }
+
   function confirmCategoryDraft(categoryId: string) {
     const category = displayCategories.find((item) => item.id === categoryId);
     if (!category) {
@@ -4115,9 +4152,7 @@ export function GdiqrWorkspace({
                       </span>
                     )}
                     {hasFallbackCategoryLabels && (
-                      <span className="badge warning">
-                        Temporary draft requires review
-                      </span>
+                      <span className="badge blue">Assistant status available</span>
                     )}
                   </div>
                 </div>
@@ -4203,16 +4238,8 @@ export function GdiqrWorkspace({
                       </span>
                     )}
                     {categoryDraftNotice && (
-                      <div
-                        className={`mini-card ${
-                          hasTemporaryFallbackCategories ? "warning-card" : "soft"
-                        }`}
-                      >
-                        <span className="label">
-                          {hasTemporaryFallbackCategories
-                            ? "Temporary fallback draft"
-                            : "Category note"}
-                        </span>
+                      <details className="assistant-status-panel category-generation-status">
+                        <summary>Assistant Generation Status</summary>
                         <p className="small">{categoryDraftNotice}</p>
                         {hasTemporaryFallbackCategories && (
                           <div className="button-row">
@@ -4241,7 +4268,7 @@ export function GdiqrWorkspace({
                             </button>
                           </div>
                         )}
-                      </div>
+                      </details>
                     )}
                     {displayCategories.length === 0 ? (
                       <div className="empty-with-example">
@@ -4278,6 +4305,7 @@ export function GdiqrWorkspace({
                             onMerge={mergeCategoryDraft}
                             onReject={rejectCategoryDraft}
                             onRemoveUnit={removeMeaningUnitFromCategory}
+                            onSplit={splitCategoryDraft}
                             onUpdate={updateCategoryDraft}
                             units={confirmedMeaningUnits}
                           />
@@ -6637,6 +6665,74 @@ function reviewerGroupLabel(issueType: string) {
   return "Potential issues for review";
 }
 
+function getCategoryDisplayTitle(category: CategoryNode) {
+  if (isAutomaticCategoryTitle(category.name)) {
+    return "Untitled Provisional Category";
+  }
+  return category.name.trim() || "Untitled Provisional Category";
+}
+
+function getCategoryTitleInputValue(category: CategoryNode) {
+  return isAutomaticCategoryTitle(category.name) ? "" : category.name;
+}
+
+function getCategoryDescriptionValue(category: CategoryNode) {
+  if (isSystemGeneratedCategoryDescription(category.definition)) {
+    return "";
+  }
+  return category.definition;
+}
+
+function getCategoryMemoValue(category: CategoryNode) {
+  if (category.status === "ai_draft" || category.status === "fallback_draft") {
+    return "";
+  }
+  return category.rationale ?? "";
+}
+
+function getCategoryAssistantStatusItems(category: CategoryNode) {
+  if (isFallbackCategory(category)) {
+    return [
+      "Assistant suggestion unavailable",
+      "Fallback grouping used",
+      "Redraft available"
+    ];
+  }
+  if (category.status === "confirmed") {
+    return ["Researcher-confirmed category"];
+  }
+  if (category.status === "edited") {
+    return ["Researcher edits present", "Assistant suggestion remains provisional"];
+  }
+  if (category.status === "rejected") {
+    return ["Category rejected by researcher"];
+  }
+  return ["Assistant suggestion generated", "Researcher review required"];
+}
+
+function isAutomaticCategoryTitle(name: string) {
+  return /^draft category\s+\d+\s*:/i.test(name.trim());
+}
+
+function isSystemGeneratedCategoryDescription(description: string) {
+  const normalized = description.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.includes("assistant could not generate") ||
+    normalized.includes("assistant returned empty") ||
+    normalized.includes("ai returned empty") ||
+    normalized.includes("returned empty output") ||
+    normalized.includes("fallback grouping") ||
+    normalized.includes("temporary fallback") ||
+    normalized.includes("fallback draft") ||
+    normalized.includes("could not draft") ||
+    normalized.includes("created as a temporary draft") ||
+    normalized.includes("researcher-created draft category")
+  );
+}
+
 function CategoryBlock({
   categories,
   category,
@@ -6646,6 +6742,7 @@ function CategoryBlock({
   onMerge,
   onReject,
   onRemoveUnit,
+  onSplit,
   onUpdate,
   units
 }: {
@@ -6657,6 +6754,7 @@ function CategoryBlock({
   onMerge: (category: CategoryNode) => void;
   onReject: (category: CategoryNode) => void;
   onRemoveUnit: (categoryId: string, unitNumber: number) => void;
+  onSplit: (category: CategoryNode) => void;
   onUpdate: (categoryId: string, updates: Partial<CategoryNode>) => void;
   units: MeaningUnit[];
 }) {
@@ -6664,11 +6762,10 @@ function CategoryBlock({
   const includedUnits = units.filter((unit) =>
     category.includedUnitIds.includes(unit.number)
   );
-  const statusLabel = category.status
-    ? formatCategoryStatus(category.status)
-    : isFallback
-      ? "Fallback draft"
-      : "Suggested draft";
+  const groupingLabel = getCategoryDisplayTitle(category);
+  const titleValue = getCategoryTitleInputValue(category);
+  const descriptionValue = getCategoryDescriptionValue(category);
+  const memoValue = getCategoryMemoValue(category);
   return (
     <article
       className={`category ${isFallback ? "temporary-draft" : ""}`}
@@ -6677,7 +6774,7 @@ function CategoryBlock({
       <div className="category-header">
         <div>
           <label className="label" htmlFor={`${category.id}-name`}>
-            Category title
+            Category Title
           </label>
           <input
             className="field category-title-input"
@@ -6685,17 +6782,41 @@ function CategoryBlock({
             onChange={(event) =>
               onUpdate(category.id, { name: event.target.value })
             }
-            value={category.name}
+            placeholder="Enter a category name after reviewing the assigned meaning units"
+            value={titleValue}
           />
         </div>
         <div className="button-row">
-          <StatusBadge label={statusLabel} />
-          {isFallback && <span className="badge warning">Please review</span>}
+          <span className="badge blue">{groupingLabel}</span>
           <span className="badge">
             Units {includedUnits.map((unit) => unit.number).join(", ") || "None"}
           </span>
         </div>
       </div>
+      <label className="label" htmlFor={`${category.id}-definition`}>
+        Shared Meaning / Category Definition
+      </label>
+      <textarea
+        className="textarea compact-textarea"
+        id={`${category.id}-definition`}
+        onChange={(event) =>
+          onUpdate(category.id, { definition: event.target.value })
+        }
+        placeholder="What common meaning is represented across these assigned meaning units?"
+        value={descriptionValue}
+      />
+      <label className="label" htmlFor={`${category.id}-memo`}>
+        Researcher Memo
+      </label>
+      <textarea
+        className="textarea compact-textarea"
+        id={`${category.id}-memo`}
+        onChange={(event) =>
+          onUpdate(category.id, { rationale: event.target.value })
+        }
+        placeholder="Optional note about why these meaning units belong together, possible alternatives, or decisions to revisit."
+        value={memoValue}
+      />
       <div className="assigned-mu-list">
         <span className="label">Assigned Meaning Units</span>
         {includedUnits.length === 0 ? (
@@ -6710,28 +6831,6 @@ function CategoryBlock({
           </div>
         )}
       </div>
-      <label className="label" htmlFor={`${category.id}-definition`}>
-        Category description
-      </label>
-      <textarea
-        className="textarea compact-textarea"
-        id={`${category.id}-definition`}
-        onChange={(event) =>
-          onUpdate(category.id, { definition: event.target.value })
-        }
-        value={category.definition}
-      />
-      {category.rationale && (
-        <p className="small">
-          <strong>Draft rationale:</strong> {category.rationale}
-        </p>
-      )}
-      {isFallback && (
-        <p className="small">
-          This category was created as a temporary fallback when the assistant
-          could not draft a response. Please review and rename it before use.
-        </p>
-      )}
       <details className="evidence-panel" open>
         <summary>Review assigned meaning-unit evidence ({includedUnits.length} MU)</summary>
         {includedUnits.length === 0 ? (
@@ -6741,10 +6840,21 @@ function CategoryBlock({
             {includedUnits.map((unit) => (
               <div className="evidence-item" key={unit.id}>
                 <div>
-                  <strong>MU #{unit.number}</strong>{" "}
-                  <span className="badge blue">{unit.segmentId}</span>
-                  <p className="small">{unit.humanSummary || unit.aiSummary}</p>
-                  <p className="small">Evidence: {unit.excerpt}</p>
+                  <div className="evidence-item-header">
+                    <strong>MU {unit.number}</strong>
+                    <span className="badge blue">{unit.speaker}</span>
+                  </div>
+                  <p>{unit.excerpt}</p>
+                  <p className="small">
+                    <strong>Researcher summary:</strong>{" "}
+                    {unit.humanSummary || "No researcher summary yet."}
+                  </p>
+                  <details className="source-reference-details">
+                    <summary>Source reference</summary>
+                    <p className="small">
+                      {unit.caseId} · {unit.segmentId}
+                    </p>
+                  </details>
                 </div>
                 <div className="button-row">
                   <button
@@ -6768,7 +6878,7 @@ function CategoryBlock({
                       .filter((item) => item.id !== category.id)
                       .map((item) => (
                         <option key={item.id} value={item.id}>
-                          {item.name}
+                          {getCategoryDisplayTitle(item)}
                         </option>
                       ))}
                   </select>
@@ -6776,6 +6886,20 @@ function CategoryBlock({
               </div>
             ))}
           </div>
+        )}
+      </details>
+      <details className="assistant-status-panel">
+        <summary>Assistant Generation Status</summary>
+        <ul className="assistant-status-list">
+          {getCategoryAssistantStatusItems(category).map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+        {category.rationale && (category.status === "ai_draft" || isFallback) && (
+          <p className="small">
+            Assistant rationale available for review; keep analytic wording in
+            the category title, definition, and researcher memo.
+          </p>
         )}
       </details>
       <div className="button-row">
@@ -6789,8 +6913,11 @@ function CategoryBlock({
         <button className="button" onClick={() => onMerge(category)} type="button">
           Merge category
         </button>
+        <button className="button" onClick={() => onSplit(category)} type="button">
+          Split category
+        </button>
         <button className="button" onClick={() => onReject(category)} type="button">
-          Reject
+          Reject category
         </button>
         <button
           className="button danger"
