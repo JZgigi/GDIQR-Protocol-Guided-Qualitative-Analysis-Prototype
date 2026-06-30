@@ -3,11 +3,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
-  Ban,
-  Bot,
   Check,
   ChevronRight,
-  Database,
   Download,
   FileAudio,
   FileText,
@@ -38,8 +35,12 @@ import type {
 } from "@/lib/types";
 import type { WorkspaceData } from "@/lib/gdiqr-repository";
 import type { RunLog } from "@/lib/run-logs";
-import type { AutoSegmentMode } from "@/lib/auto-segmenter";
+import { autoSplitTranscript, type AutoSegmentMode } from "@/lib/auto-segmenter";
 import type { StorageMode } from "@/lib/storage-mode";
+import {
+  cleanTranscriptSourceForAnalysis,
+  containsNonTranscriptMaterial
+} from "@/lib/transcript-source-cleaner";
 
 const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
@@ -63,17 +64,42 @@ interface SensitiveReviewItem {
   explanation: string;
 }
 
+interface MeaningUnitValidationFlag {
+  label: string;
+  tone?: "blue" | "danger" | "warning";
+}
+
+interface ReviewerIssueContext {
+  label: string;
+  text: string;
+}
+
+interface IntegrationRelationship {
+  evidenceUnitNumbers: number[];
+  id: string;
+  rationale: string;
+  researcherNote: string;
+  sourceCategoryId: string;
+  targetCategoryId: string;
+  type: string;
+}
+
+interface IntegrationMapGroup {
+  categories: CategoryNode[];
+  description: string;
+  label: string;
+}
+
 const steps: Array<{
   id: WorkflowStep;
   label: string;
   icon: typeof FolderKanban;
 }> = [
-  { id: "setup", label: "Project Setup", icon: Settings2 },
-  { id: "upload", label: "Upload", icon: Upload },
-  { id: "transcript", label: "Transcript", icon: FileText },
-  { id: "segments", label: "Segments", icon: GitBranch },
-  { id: "meaning-units", label: "Meaning Units", icon: Layers3 },
-  { id: "categories", label: "Categories", icon: FolderKanban },
+  { id: "pre-analysis", label: "Pre-analysis", icon: Settings2 },
+  { id: "understanding", label: "Understanding & Translating", icon: Layers3 },
+  { id: "categorizing", label: "Categorizing", icon: FolderKanban },
+  { id: "integrating", label: "Integrating", icon: GitBranch },
+  { id: "integrity", label: "Methodological Integrity", icon: ShieldCheck },
   { id: "export", label: "Export", icon: Download }
 ];
 
@@ -110,15 +136,21 @@ export function GdiqrWorkspace({
   storageMode = "local",
   supabaseConfigured = false
 }: GdiqrWorkspaceProps) {
-  const [activeStep, setActiveStep] = useState<WorkflowStep>("setup");
+  const [activeStep, setActiveStep] = useState<WorkflowStep>("pre-analysis");
   const [currentProject, setCurrentProject] = useState(project);
   const [projectTitle, setProjectTitle] = useState(project.title);
   const [researchQuestion, setResearchQuestion] = useState(
     project.researchQuestion
   );
   const [studyDescription, setStudyDescription] = useState(
-    project.studyDescription
+    normaliseResearcherFacingText(project.studyDescription)
   );
+  const [researcherExpectations, setResearcherExpectations] = useState("");
+  const [researcherNotes, setResearcherNotes] = useState("");
+  const [researcherReflexivityNotes, setResearcherReflexivityNotes] =
+    useState("");
+  const [relevanceGuideline, setRelevanceGuideline] = useState("");
+  const [theoreticalFramework, setTheoreticalFramework] = useState("");
   const [projectLanguage, setProjectLanguage] =
     useState<Project["language"]>(project.language);
   const [mode, setMode] = useState<CategoryMode>("A");
@@ -155,6 +187,15 @@ export function GdiqrWorkspace({
   const [narrative, setNarrative] = useState(integratedNarrative);
   const [integrationReviewed, setIntegrationReviewed] = useState(false);
   const [integrationNote, setIntegrationNote] = useState("");
+  const [integrationRelationships, setIntegrationRelationships] = useState<
+    IntegrationRelationship[]
+  >([]);
+  const [integrationStructureExplanation, setIntegrationStructureExplanation] =
+    useState("");
+  const [integrationStructureNotice, setIntegrationStructureNotice] =
+    useState("");
+  const [integrationStructureTitle, setIntegrationStructureTitle] =
+    useState("");
   const [categoryDraftNotice, setCategoryDraftNotice] = useState("");
   const [categoryDraftIsFallback, setCategoryDraftIsFallback] = useState(false);
   const [allSegmentsProcessedForModeC, setAllSegmentsProcessedForModeC] =
@@ -187,6 +228,8 @@ export function GdiqrWorkspace({
     label?: string;
     total: number;
   } | null>(null);
+  const [meaningUnitGenerationStage, setMeaningUnitGenerationStage] =
+    useState("");
   const [isRunningCategories, setIsRunningCategories] = useState(false);
   const [isRunningReviewer, setIsRunningReviewer] = useState(false);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
@@ -195,10 +238,13 @@ export function GdiqrWorkspace({
     "Imported transcript"
   );
   const [isImportingTranscript, setIsImportingTranscript] = useState(false);
+  const [transcriptPreparationStage, setTranscriptPreparationStage] =
+    useState("");
   const [isConfirmingTranscript, setIsConfirmingTranscript] = useState(false);
   const [activeMeaningUnitRunId, setActiveMeaningUnitRunId] = useState("");
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
   const [muReviewOpen, setMuReviewOpen] = useState(true);
+  const [muIntegrityReviewRan, setMuIntegrityReviewRan] = useState(false);
   const [categoryReviewOpen, setCategoryReviewOpen] = useState(true);
   const [expandedReviewIssueIds, setExpandedReviewIssueIds] = useState<
     string[]
@@ -319,34 +365,38 @@ export function GdiqrWorkspace({
 
   const completedSteps = useMemo(
     () => {
-      const completed = new Set<WorkflowStep>(["setup"]);
-      if (displayAudioFiles.length > 0) {
-        completed.add("upload");
-      }
-      if (editableTranscript.trim()) {
-        completed.add("transcript");
-      }
-      if (displaySegments.length > 0) {
-        completed.add("segments");
-      }
+      const completed = new Set<WorkflowStep>(["pre-analysis"]);
       if (units.length > 0) {
-        completed.add("meaning-units");
+        completed.add("understanding");
       }
       if (displayCategories.length > 0) {
-        completed.add("categories");
+        completed.add("categorizing");
+      }
+      if (integrationReviewed || narrative.trim()) {
+        completed.add("integrating");
+      }
+      if (reviewerOutputs.length > 0) {
+        completed.add("integrity");
       }
       return completed;
     },
     [
-      displayAudioFiles.length,
       displayCategories.length,
-      displaySegments.length,
       editableTranscript,
+      integrationReviewed,
+      narrative,
+      reviewerOutputs.length,
       units.length
     ]
   );
 
   const selectedTitle = steps.find((step) => step.id === activeStep)?.label;
+  const guidedSteps = steps.filter((step) => step.id !== "export");
+  const currentStepIndex = Math.max(
+    0,
+    steps.findIndex((step) => step.id === activeStep)
+  );
+  const nextStep = steps[(currentStepIndex + 1) % steps.length];
   const latestAudioFile = displayAudioFiles[0];
   const latestTranscriptionJob = displayTranscriptionJobs[0];
   const pendingHighRiskItems = useMemo(
@@ -391,23 +441,45 @@ export function GdiqrWorkspace({
     [displaySegments, meaningUnitSegmentId]
   );
   const canGenerateMeaningUnits = Boolean(
-    transcriptConfirmed &&
-      (meaningUnitGenerationScope === "all"
-        ? readySegments.length > 0
-        : selectedMeaningUnitSegment &&
-          canRunMeaningUnitsForSegment(selectedMeaningUnitSegment))
+    transcriptConfirmed && editableTranscript.trim()
   );
+  const currentMeaningUnits = useMemo(
+    () => normalizeMeaningUnitNumbersForSegments(units, displaySegments),
+    [displaySegments, units]
+  );
+  const segmentMeaningUnitCounts = useMemo(() => {
+    const counts = new Map<
+      string,
+      { accepted: number; excluded: number; total: number }
+    >();
+    currentMeaningUnits.forEach((unit) => {
+      const current = counts.get(unit.segmentId) ?? {
+        accepted: 0,
+        excluded: 0,
+        total: 0
+      };
+      current.total += 1;
+      if (unit.analysisExcluded) {
+        current.excluded += 1;
+      }
+      if (unit.humanStatus === "Accepted" && !unit.analysisExcluded) {
+        current.accepted += 1;
+      }
+      counts.set(unit.segmentId, current);
+    });
+    return counts;
+  }, [currentMeaningUnits]);
   const confirmedMeaningUnits = useMemo(
-    () => units.filter((unit) => isConfirmedMeaningUnit(unit)),
-    [units]
+    () => currentMeaningUnits.filter((unit) => isConfirmedMeaningUnit(unit)),
+    [currentMeaningUnits]
   );
   const unconfirmedMeaningUnits = useMemo(
-    () => units.filter((unit) => !isConfirmedMeaningUnit(unit)),
-    [units]
+    () => currentMeaningUnits.filter((unit) => !isConfirmedMeaningUnit(unit)),
+    [currentMeaningUnits]
   );
   const excludedMeaningUnits = useMemo(
-    () => units.filter((unit) => unit.analysisExcluded),
-    [units]
+    () => currentMeaningUnits.filter((unit) => unit.analysisExcluded),
+    [currentMeaningUnits]
   );
   const hasFallbackCategoryLabels = displayCategories.some(isFallbackCategory);
   const hasTemporaryFallbackCategories = categoryDraftIsFallback;
@@ -430,6 +502,30 @@ export function GdiqrWorkspace({
   const confirmedCategoryCount = displayCategories.filter(
     (category) => category.status === "confirmed"
   ).length;
+  const acceptedMeaningUnitNumbers = useMemo(
+    () => new Set(confirmedMeaningUnits.map((unit) => unit.number)),
+    [confirmedMeaningUnits]
+  );
+  const reviewedIntegrationCategories = useMemo(
+    () =>
+      displayCategories.filter(
+        (category) =>
+          category.status !== "rejected" &&
+          category.includedUnitIds.some((unitNumber) =>
+            acceptedMeaningUnitNumbers.has(unitNumber)
+          )
+      ),
+    [acceptedMeaningUnitNumbers, displayCategories]
+  );
+  const integrationMapGroups = useMemo(
+    () => buildIntegrationMapGroups(reviewedIntegrationCategories),
+    [reviewedIntegrationCategories]
+  );
+  const canGenerateIntegrationStructure =
+    allSegmentsProcessedForModeC &&
+    confirmedMeaningUnits.length > 0 &&
+    reviewedIntegrationCategories.length >= 2 &&
+    !hasTemporaryFallbackCategories;
   const canRunCategories =
     confirmedMeaningUnits.length > 0 &&
     (mode === "A" ||
@@ -438,10 +534,18 @@ export function GdiqrWorkspace({
         displayCategories.length > 0 &&
         !hasTemporaryFallbackCategories &&
         allSegmentsProcessedForModeC));
-  const canRunReviewer = units.length > 0;
+  const canRunReviewer = currentMeaningUnits.length > 0;
   const meaningUnitReviewIssues = useMemo(
     () => reviewerOutputs.filter((comment) => comment.workspace === "meaning-units"),
     [reviewerOutputs]
+  );
+  const meaningUnitIssueContextById = useMemo(
+    () =>
+      buildMeaningUnitIssueContextById(
+        meaningUnitReviewIssues,
+        currentMeaningUnits
+      ),
+    [currentMeaningUnits, meaningUnitReviewIssues]
   );
   const categoryReviewIssues = useMemo(
     () => reviewerOutputs.filter((comment) => comment.workspace === "categories"),
@@ -453,55 +557,50 @@ export function GdiqrWorkspace({
       displayCategories.length ||
       reviewerOutputs.length
   );
-  const unresolvedPrivacyMarkerCount =
-    countUnresolvedPrivacyMarkers(editableTranscript);
-  const dataSafetyItems = [
-    {
-      label: "Storage mode",
-      value: isLocalOnlyMode ? "Local-only" : "Supabase-backed"
-    },
-    {
-      label: "Cloud database writes",
-      value: isLocalOnlyMode ? "Off for this session" : "Enabled"
-    },
-    {
-      label: "Raw transcript retained",
-      value: "No by default"
-    },
-    {
-      label: "AI processing",
-      value:
-        aiProvider === "ollama"
-          ? "Server-side local Ollama"
-          : `Server-side ${aiProvider}`
-    },
-    {
-      label: "Unresolved privacy markers",
-      value: String(unresolvedPrivacyMarkerCount)
-    },
-    {
-      label: "Transcript status",
-      value: transcriptConfirmed ? "Confirmed for analysis" : transcriptStorageStatus
-    }
-  ];
   const generationTargetLabel =
-    meaningUnitGenerationScope === "all"
-      ? "all ready segments"
-      : selectedMeaningUnitSegment?.segmentId ?? "Selected Segment";
+    "the confirmed transcript";
   const selectedSegmentAlreadyHasUnits = Boolean(
     selectedMeaningUnitSegment &&
-      units.some((unit) => unit.segmentId === selectedMeaningUnitSegment.segmentId)
+      currentMeaningUnits.some(
+        (unit) => unit.segmentId === selectedMeaningUnitSegment.segmentId
+      )
   );
   const generationButtonLabel =
-    meaningUnitGenerationScope === "all"
-      ? "Generate MUs for all ready segments"
-      : `${selectedSegmentAlreadyHasUnits ? "Regenerate" : "Generate"} MUs for ${selectedMeaningUnitSegment?.segmentId ?? "selected segment"}`;
+    currentMeaningUnits.length > 0
+      ? "Assistant support: redelineate draft meaning units"
+      : "Assistant support: draft meaning units";
+  const acceptedMeaningUnitNumberKey = confirmedMeaningUnits
+    .map((unit) => unit.number)
+    .join(",");
+
+  useEffect(() => {
+    const acceptedNumbers = new Set(
+      acceptedMeaningUnitNumberKey
+        .split(",")
+        .map((value) => Number(value))
+        .filter(Number.isFinite)
+    );
+    setDisplayCategories((current) => {
+      let changed = false;
+      const next = current.map((category) => {
+        const includedUnitIds = category.includedUnitIds.filter((number) =>
+          acceptedNumbers.has(number)
+        );
+        if (includedUnitIds.length !== category.includedUnitIds.length) {
+          changed = true;
+          return { ...category, includedUnitIds };
+        }
+        return category;
+      });
+      return changed ? next : current;
+    });
+  }, [acceptedMeaningUnitNumberKey]);
 
   function applyWorkspace(workspace: WorkspaceData) {
     setCurrentProject(workspace.project);
     setProjectTitle(workspace.project.title);
     setResearchQuestion(workspace.project.researchQuestion);
-    setStudyDescription(workspace.project.studyDescription);
+    setStudyDescription(normaliseResearcherFacingText(workspace.project.studyDescription));
     setProjectLanguage(workspace.project.language);
     setLightInterpretation(workspace.project.lightInterpretation);
     setUploadLanguage(workspace.project.language);
@@ -701,6 +800,7 @@ export function GdiqrWorkspace({
 
       setTranscriptImportText(result.transcript);
       setTranscriptImportName(result.filename ?? file.name);
+      setTranscriptPreparationStage("");
       setApiStatus(`Transcript loaded from ${result.filename ?? file.name}. Review it before importing.`);
     } catch (error) {
       setApiStatus(
@@ -711,29 +811,45 @@ export function GdiqrWorkspace({
     }
   }
 
-  async function importTranscript() {
+  async function importTranscript(forceRuleBased = false) {
     if (!transcriptImportText.trim()) {
       setApiStatus("Paste text or choose a transcript file before importing.");
       return;
     }
 
     setIsImportingTranscript(true);
+    setTranscriptPreparationStage(
+      forceRuleBased
+        ? "Using quick local transcript preparation. Please review speaker labels and sensitive details carefully."
+        : "Preparing transcript with local AI first. If it is slow, the app will switch to quick local preparation automatically."
+    );
+    const slowNoticeTimer = window.setTimeout(() => {
+      setTranscriptPreparationStage(
+        "Still preparing. Local AI can be slow; the app will use quick local preparation if needed."
+      );
+    }, 30000);
     setApiStatus(
-      "Preparing transcript. The app will label speakers and flag possible private details for your review."
+      forceRuleBased
+        ? "Preparing transcript with quick local rules..."
+        : "Preparing transcript. The app will label speakers and flag possible private details for your review."
     );
 
     try {
       const response = await fetchWithTimeout("/api/transcripts/prepare", {
         body: JSON.stringify({
+          forceRuleBased,
           language: uploadLanguage,
+          timeoutMs: 45000,
           transcript: transcriptImportText
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 600000
+        timeoutMs: 75000
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
+        fallbackUsed?: boolean;
+        model?: string;
         prepared?: boolean;
         privacyFindings?: string[];
         speakerNotes?: string[];
@@ -757,8 +873,13 @@ export function GdiqrWorkspace({
       );
 
       setTranscriptImportText("");
+      setTranscriptPreparationStage(
+        result.fallbackUsed || forceRuleBased
+          ? "Quick local preparation completed. Please review speaker labels and sensitive-information items before confirming."
+          : "AI-assisted transcript preparation completed. Please review before confirming."
+      );
       setApiStatus(
-        `Transcript prepared locally and not saved yet. Please review speaker labels, sensitive-information items, and wording before saving or confirming${
+        `${result.fallbackUsed || forceRuleBased ? "Transcript prepared with quick local rules" : "Transcript prepared locally"} and not saved yet. Please review speaker labels, sensitive-information items, and wording before saving or confirming${
           result.privacyFindings?.length
             ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
             : ""
@@ -769,6 +890,7 @@ export function GdiqrWorkspace({
         error instanceof Error ? error.message : "Transcript import failed"
       );
     } finally {
+      window.clearTimeout(slowNoticeTimer);
       setIsImportingTranscript(false);
     }
   }
@@ -804,7 +926,18 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    const transcriptForStorage = prepareTranscriptForStorage(editableTranscript);
+    const preparedTranscript = prepareTranscriptForStorage(editableTranscript);
+    const cleanedSource = cleanTranscriptSourceForAnalysis(
+      preparedTranscript,
+      currentProject
+    );
+    const transcriptForStorage = cleanedSource.transcript;
+    if (!transcriptForStorage.trim()) {
+      setApiStatus(
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before confirming for analysis."
+      );
+      return;
+    }
     if (isLocalOnlyMode) {
       setEditableTranscript(transcriptForStorage);
       setTranscriptConfirmed(false);
@@ -867,7 +1000,18 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    const transcriptForStorage = prepareTranscriptForStorage(editableTranscript);
+    const preparedTranscript = prepareTranscriptForStorage(editableTranscript);
+    const cleanedSource = cleanTranscriptSourceForAnalysis(
+      preparedTranscript,
+      currentProject
+    );
+    const transcriptForStorage = cleanedSource.transcript;
+    if (!transcriptForStorage.trim()) {
+      setApiStatus(
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before confirming for analysis."
+      );
+      return;
+    }
     if (isLocalOnlyMode) {
       const now = new Date().toISOString();
       setEditableTranscript(transcriptForStorage);
@@ -878,14 +1022,44 @@ export function GdiqrWorkspace({
         status: "Transcript confirmed for local analysis",
         updatedAt: now
       }));
-      const localSegment = buildLocalTranscriptSegment({
-        caseId: "CASE-001",
-        segmentNumber: 1,
-        text: transcriptForStorage
+      const splitResult = autoSplitTranscript(transcriptForStorage, {
+        mode: segmentSplitMode,
+        researchQuestion,
+        sourceTranscriptId: "active-transcript"
       });
-      setDisplaySegments([localSegment]);
-      setSelectedSegmentId(localSegment.id);
-      setMeaningUnitSegmentId(localSegment.id);
+      const splitStartedAt = Date.now();
+      const localSegments =
+        splitResult.segments.length > 0
+          ? splitResult.segments.map(
+              (segment, index): TranscriptSegment => ({
+                caseId: "CASE-001",
+                createdBy: "auto",
+                endTimestamp: "00:00",
+                endTurnIndex: segment.endTurnIndex,
+                id: `local-seg-${splitStartedAt}-${index + 1}`,
+                segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
+                segmentNumber: index + 1,
+                sourceTranscriptId: segment.sourceTranscriptId,
+                speakerInfo: segment.title,
+                splittingMode: segment.splittingMode,
+                startingMuNumber: index * 100 + 1,
+                startTimestamp: "00:00",
+                startTurnIndex: segment.startTurnIndex,
+                status: "Needs Review",
+                text: segment.text,
+                topicLabel: segment.title || `Segment ${index + 1}`
+              })
+            )
+          : [
+              buildLocalTranscriptSegment({
+                caseId: "CASE-001",
+                segmentNumber: 1,
+                text: transcriptForStorage
+              })
+            ];
+      setDisplaySegments(localSegments);
+      setSelectedSegmentId(localSegments[0]?.id ?? "");
+      setMeaningUnitSegmentId(localSegments[0]?.id ?? "");
       setUnits([]);
       setDisplayCategories([]);
       setReviewerOutputs([]);
@@ -900,7 +1074,11 @@ export function GdiqrWorkspace({
         },
         ...current
       ]);
-      setApiStatus("Reviewed transcript confirmed locally. You can now review or split segments.");
+      setApiStatus(
+        cleanedSource.removedLineCount > 0
+          ? `Reviewed transcript confirmed locally. Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before analysis.`
+          : "Reviewed transcript confirmed locally. Internal source chunks are ready; generate draft meaning units when you are ready to review them."
+      );
       return;
     }
     setIsConfirmingTranscript(true);
@@ -938,7 +1116,9 @@ export function GdiqrWorkspace({
       setEditableTranscript(transcriptForStorage);
       setTranscriptStorageStatus("Anonymised version saved");
       setApiStatus(
-        "Transcript confirmed. You can now generate meaning units from the reviewed text."
+        cleanedSource.removedLineCount > 0
+          ? `Transcript confirmed. Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before analysis.`
+          : "Transcript confirmed. You can now generate meaning units from the reviewed text."
       );
     } catch (error) {
       setApiStatus(
@@ -951,7 +1131,7 @@ export function GdiqrWorkspace({
 
   async function clearTranscriptAndDerivedOutputs() {
     const confirmed = window.confirm(
-      "Delete the current transcript, uploaded audio records, and all derived segments, meaning units, categories, reviewer comments, and review-trail records for this project? This cannot be undone."
+      "Delete the current transcript, uploaded audio records, and all derived meaning units, categories, methodological integrity issues, and audit records for this project? This cannot be undone."
     );
     if (!confirmed) {
       return;
@@ -1035,16 +1215,23 @@ export function GdiqrWorkspace({
       setDisplayCategories([]);
       setReviewerOutputs([]);
       setNarrative("");
+      recordLocalAuditEvent({
+        action:
+          status === "Ready for MU Analysis"
+            ? `Marked ${updatedSegment.segmentId} ready for MU analysis`
+            : `Edited ${updatedSegment.segmentId} boundary/excerpt text`,
+        target: updatedSegment.segmentId
+      });
       setApiStatus(
         status === "Ready for MU Analysis"
-          ? "Segment marked ready locally. You can now run meaning-unit analysis for this segment."
-          : "Segment saved locally. Existing MUs for this segment were cleared so regenerated analysis uses the edited text."
+          ? "Meaning unit marked ready locally. You can now generate its summary."
+          : "Meaning unit saved locally. Existing summaries for this unit were cleared so regenerated analysis uses the edited text."
       );
       return;
     }
 
     setIsSavingSegment(true);
-    setApiStatus("Saving segment changes...");
+    setApiStatus("Saving meaning unit changes...");
 
     try {
       const response = await fetch(`/api/segments/${selectedSegment.id}`, {
@@ -1063,7 +1250,7 @@ export function GdiqrWorkspace({
         segment?: TranscriptSegment;
       };
       if (!response.ok || !result.saved || !result.segment) {
-        setApiStatus(result.error ?? "Segment save failed.");
+        setApiStatus(result.error ?? "Meaning unit save failed.");
         return;
       }
       setDisplaySegments((current) =>
@@ -1074,11 +1261,11 @@ export function GdiqrWorkspace({
       setSelectedSegmentId(result.segment.id);
       setApiStatus(
         status === "Ready for MU Analysis"
-          ? "Segment marked ready. You can now run meaning-unit analysis for this segment."
-          : "Segment saved."
+          ? "Meaning unit marked ready. You can now generate its summary."
+          : "Meaning unit saved."
       );
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Segment save failed.");
+      setApiStatus(error instanceof Error ? error.message : "Meaning unit save failed.");
     } finally {
       setIsSavingSegment(false);
     }
@@ -1089,7 +1276,7 @@ export function GdiqrWorkspace({
     direction?: "previous" | "next" | "up" | "down"
   ) {
     if (!selectedSegment) {
-      setApiStatus("Select a segment first.");
+      setApiStatus("Select a meaning unit first.");
       return;
     }
 
@@ -1103,7 +1290,7 @@ export function GdiqrWorkspace({
       beforeText = segmentDraftText.slice(0, splitIndex).trim();
       afterText = segmentDraftText.slice(splitIndex).trim();
       if (!beforeText || !afterText) {
-        setApiStatus("Place the cursor where this segment should split, then try again.");
+        setApiStatus("Place the cursor where this meaning unit should split, then try again.");
         return;
       }
     }
@@ -1111,10 +1298,10 @@ export function GdiqrWorkspace({
     setIsSavingSegment(true);
     setApiStatus(
       action === "split"
-        ? "Splitting segment..."
+        ? "Splitting meaning unit..."
         : action === "merge"
-          ? "Merging segments..."
-          : "Reordering segment..."
+          ? "Merging meaning units..."
+          : "Reordering meaning unit..."
     );
 
     try {
@@ -1142,7 +1329,7 @@ export function GdiqrWorkspace({
               : selectedSegmentIndex + 1;
           const target = nextSegments[targetIndex];
           if (!target) {
-            setApiStatus("No adjacent segment is available to merge.");
+            setApiStatus("No adjacent meaning unit is available to merge.");
             return;
           }
           const merged: TranscriptSegment = {
@@ -1163,7 +1350,7 @@ export function GdiqrWorkspace({
               ? selectedSegmentIndex - 1
               : selectedSegmentIndex + 1;
           if (targetIndex < 0 || targetIndex >= nextSegments.length) {
-            setApiStatus("Segment cannot move further in that direction.");
+            setApiStatus("Meaning unit cannot move further in that direction.");
             return;
           }
           const [moving] = nextSegments.splice(selectedSegmentIndex, 1);
@@ -1176,7 +1363,16 @@ export function GdiqrWorkspace({
         setDisplayCategories([]);
         setReviewerOutputs([]);
         setNarrative("");
-        setApiStatus("Segment list updated locally. Review boundaries before running meaning-unit analysis.");
+        recordLocalAuditEvent({
+          action:
+            action === "split"
+              ? `Split ${selectedSegment.segmentId}`
+              : action === "merge"
+                ? `Merged ${selectedSegment.segmentId} ${direction ?? ""}`.trim()
+                : `Reordered ${selectedSegment.segmentId}`,
+          target: selectedSegment.segmentId
+        });
+        setApiStatus("Meaning unit list updated locally. Review boundaries before generating summaries.");
         return;
       }
 
@@ -1198,7 +1394,7 @@ export function GdiqrWorkspace({
         segments?: TranscriptSegment[];
       };
       if (!response.ok || !result.saved || !result.segments) {
-        setApiStatus(result.error ?? result.reason ?? "Segment action failed.");
+        setApiStatus(result.error ?? result.reason ?? "Meaning unit action failed.");
         return;
       }
       setDisplaySegments(result.segments);
@@ -1206,9 +1402,9 @@ export function GdiqrWorkspace({
         result.segments.find((segment) => segment.id === selectedSegment.id) ??
         result.segments[Math.max(0, selectedSegmentIndex)];
       setSelectedSegmentId(selected?.id ?? "");
-      setApiStatus("Segment list updated. Review boundaries before running meaning-unit analysis.");
+      setApiStatus("Meaning unit list updated. Review boundaries before generating summaries.");
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Segment action failed.");
+      setApiStatus(error instanceof Error ? error.message : "Meaning unit action failed.");
     } finally {
       setIsSavingSegment(false);
     }
@@ -1216,7 +1412,7 @@ export function GdiqrWorkspace({
 
   function createSegmentFromSelection() {
     if (!selectedSegment) {
-      setApiStatus("Select a segment first.");
+      setApiStatus("Select a meaning unit first.");
       return;
     }
 
@@ -1225,7 +1421,7 @@ export function GdiqrWorkspace({
     const selectionEnd = textarea?.selectionEnd ?? 0;
     if (selectionEnd <= selectionStart) {
       setApiStatus(
-        "Select the text that should become its own segment, then click Create new segment from selection."
+        "Select the text that should become its own meaning unit, then click Create new meaning unit from selection."
       );
       return;
     }
@@ -1236,14 +1432,14 @@ export function GdiqrWorkspace({
     const remainingText = [beforeText, afterText].filter(Boolean).join("\n\n");
     if (!selectedText || !remainingText) {
       setApiStatus(
-        "Selection split needs both selected text and remaining text in the current segment."
+        "Selection split needs both selected text and remaining text in the current meaning unit."
       );
       return;
     }
 
     const newTitle =
-      window.prompt("Title for the new segment:", "New selected segment")?.trim() ||
-      "New selected segment";
+      window.prompt("Title for the new meaning unit:", "New selected meaning unit")?.trim() ||
+      "New selected meaning unit";
     const selectedSegmentDraft = buildLocalTranscriptSegment({
       caseId: selectedSegment.caseId,
       createdBy: "manual",
@@ -1273,19 +1469,23 @@ export function GdiqrWorkspace({
     setDisplayCategories([]);
     setReviewerOutputs([]);
     setNarrative("");
+    recordLocalAuditEvent({
+      action: `Created ${selectedSegmentDraft.segmentId} from selected transcript text`,
+      target: selectedSegmentDraft.segmentId
+    });
     setApiStatus(
-      "Created a new segment from the selected text. Review both segment boundaries before meaning-unit analysis."
+      "Created a new meaning unit from the selected text. Review both boundaries before generating summaries."
     );
   }
 
   async function deleteSelectedSegment() {
     if (!selectedSegment) {
-      setApiStatus("Select a segment first.");
+      setApiStatus("Select a meaning unit first.");
       return;
     }
 
     setIsSavingSegment(true);
-    setApiStatus("Deleting segment...");
+    setApiStatus("Deleting meaning unit...");
 
     try {
       if (isLocalOnlyMode) {
@@ -1301,7 +1501,7 @@ export function GdiqrWorkspace({
         setDisplayCategories([]);
         setReviewerOutputs([]);
         setNarrative("");
-        setApiStatus("Segment deleted locally. Related meaning units and categories were cleared.");
+        setApiStatus("Meaning unit deleted locally. Related summaries and categories were cleared.");
         return;
       }
 
@@ -1315,14 +1515,14 @@ export function GdiqrWorkspace({
         segments?: TranscriptSegment[];
       };
       if (!response.ok || !result.saved || !result.segments) {
-        setApiStatus(result.error ?? "Segment delete failed.");
+        setApiStatus(result.error ?? "Meaning unit delete failed.");
         return;
       }
       setDisplaySegments(result.segments);
       setSelectedSegmentId(result.segments[0]?.id ?? "");
-      setApiStatus("Segment deleted.");
+      setApiStatus("Meaning unit deleted.");
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Segment delete failed.");
+      setApiStatus(error instanceof Error ? error.message : "Meaning unit delete failed.");
     } finally {
       setIsSavingSegment(false);
     }
@@ -1331,39 +1531,49 @@ export function GdiqrWorkspace({
   async function autoSplitTranscriptSegments() {
     if (!editableTranscript.trim()) {
       setApiStatus(
-        "No transcript text found. Please confirm or edit the transcript before auto-splitting."
+        "No transcript text found. Please confirm or edit the transcript before auto-delineation."
       );
       return;
     }
     if (!transcriptConfirmed) {
-      setApiStatus("Confirm the transcript before auto-splitting segments.");
+      setApiStatus("Confirm the transcript before auto-delineating meaning units.");
       return;
     }
     if (hasUnresolvedPrivacyMarkers(editableTranscript)) {
       setApiStatus(
-        "Unresolved privacy review markers remain. Review or anonymise them before splitting and analysis."
+        "Unresolved privacy review markers remain. Review or anonymise them before delineation and analysis."
       );
       return;
     }
 
     const confirmed = window.confirm(
-      "Auto-splitting will replace the current segment list. Existing meaning units linked to these segments may need to be regenerated. Continue?"
+      "Auto-delineation will replace the current meaning unit list. Existing summaries linked to these units may need to be regenerated. Continue?"
     );
     if (!confirmed) {
       return;
     }
 
     setIsAutoSplittingTranscript(true);
-    setApiStatus("Auto-splitting transcript into draft segments...");
+    setApiStatus("Auto-delineating transcript into draft meaning units...");
 
     try {
+      const cleanedSource = cleanTranscriptSourceForAnalysis(
+        editableTranscript,
+        currentProject
+      );
+      if (!cleanedSource.transcript.trim()) {
+        setApiStatus(
+          "Only project setup or metadata was detected. Add the interview transcript / participant account before auto-delineation."
+        );
+        return;
+      }
       const response = await fetch("/api/segments/auto-split", {
         body: JSON.stringify({
           caseId: selectedSegment?.caseId ?? "CASE-001",
           projectId: currentProject.id,
           researchQuestion: currentProject.researchQuestion,
           splittingMode: segmentSplitMode,
-          transcript: editableTranscript
+          transcript: cleanedSource.transcript
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST"
@@ -1377,7 +1587,7 @@ export function GdiqrWorkspace({
       };
       if (!response.ok || !result.saved || !result.segments) {
         setApiStatus(
-          result.error ?? result.reason ?? "Auto-split transcript failed."
+          result.error ?? result.reason ?? "Auto-delineation failed."
         );
         return;
       }
@@ -1390,35 +1600,45 @@ export function GdiqrWorkspace({
       setNarrative("");
       setApiStatus(
         result.notice ??
-          `Created ${result.segments.length} draft segment${result.segments.length === 1 ? "" : "s"}. Auto-generated segments must be reviewed before analysis.`
+          `Created ${result.segments.length} draft meaning unit${result.segments.length === 1 ? "" : "s"}. Please review the suggested boundaries before analysis.`
       );
     } catch (error) {
       setApiStatus(
-        error instanceof Error ? error.message : "Auto-split transcript failed."
+        error instanceof Error ? error.message : "Auto-delineation failed."
       );
     } finally {
       setIsAutoSplittingTranscript(false);
     }
   }
 
-  async function generateMeaningUnitsForSegment(
-    segment: TranscriptSegment,
+  async function generateMeaningUnitsFromTranscript(
+    forceRuleBased: boolean,
     signal: AbortSignal
   ) {
+    const cleanedSource = cleanTranscriptSourceForAnalysis(
+      editableTranscript,
+      currentProject
+    );
+    if (!cleanedSource.transcript.trim()) {
+      throw new Error(
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before generating meaning units."
+      );
+    }
     const response = await fetchWithTimeout("/api/ai/meaning-units", {
       body: JSON.stringify({
         background: false,
-        caseId: segment.caseId,
+        caseId: displaySegments[0]?.caseId ?? "CASE-001",
+        forceRuleBased,
         lightInterpretation,
         projectId: currentProject.id,
-        segmentId: segment.segmentId,
-        startingNumber: segment.startingMuNumber,
-        transcript: segment.text
+        startingNumber: 1,
+        timeoutMs: 45000,
+        transcript: cleanedSource.transcript
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
       signal,
-      timeoutMs: 900000
+      timeoutMs: 75000
     });
 
     if (!response.ok) {
@@ -1430,52 +1650,52 @@ export function GdiqrWorkspace({
 
     const result = (await response.json()) as {
       meaningUnits?: MeaningUnit[];
+      fallbackUsed?: boolean;
+      model?: string;
       persisted?: boolean;
       provider?: string;
     };
 
     const newUnits = result.meaningUnits;
     if (newUnits) {
-      setUnits((current) =>
-        [
-          ...current.filter((unit) => unit.segmentId !== segment.segmentId),
-          ...newUnits
-        ].sort((left, right) => left.number - right.number)
-      );
+      const draftUnits: MeaningUnit[] = newUnits.map((unit): MeaningUnit => ({
+        ...unit,
+        aiExcerpt: unit.aiExcerpt ?? unit.excerpt,
+        humanStatus:
+          unit.analysisExcluded || unit.humanStatus === "Excluded"
+            ? "Excluded"
+            : "Draft"
+      }));
+      setUnits(draftUnits.sort((left, right) => left.number - right.number));
       setDisplaySegments((current) =>
-        current.map((item) =>
-          item.id === segment.id ? { ...item, status: "Analysed" } : item
-        )
+        current.map((item) => ({ ...item, status: "Analysed" }))
+      );
+      recordLocalAuditEvent({
+        actor: "AI",
+        action: `${forceRuleBased || result.fallbackUsed ? "Generated rule-based" : "Generated AI-assisted"} ${draftUnits.length} draft meaning unit${draftUnits.length === 1 ? "" : "s"} from the confirmed transcript`,
+        target: "Step 2 Meaning Units"
+      });
+      setMeaningUnitGenerationStage(
+        forceRuleBased || result.fallbackUsed
+          ? "Rule-based draft MUs generated. Review carefully before accepting."
+          : "AI-assisted draft MUs generated. Review carefully before accepting."
       );
     }
 
     return result;
   }
 
-  async function generateMeaningUnits(segmentOverride?: TranscriptSegment | null) {
-    if (displaySegments.length === 0) {
-      setApiStatus("Create and review segments before generating meaning units.");
+  async function generateMeaningUnits(
+    segmentOverride?: TranscriptSegment | null,
+    forceRuleBased = false
+  ) {
+    if (!editableTranscript.trim()) {
+      setApiStatus("Prepare and confirm a transcript before generating meaning units.");
       return;
     }
     if (!transcriptConfirmed) {
       setApiStatus(
         "Review and confirm the transcript before generating meaning units."
-      );
-      return;
-    }
-    const requestedSegments = segmentOverride
-      ? [segmentOverride]
-      : meaningUnitGenerationScope === "all"
-        ? readySegments
-        : selectedMeaningUnitSegment
-          ? [selectedMeaningUnitSegment]
-          : [];
-
-    if (requestedSegments.length === 0) {
-      setApiStatus(
-        meaningUnitGenerationScope === "all"
-          ? "No segments are ready. Mark at least one segment as Ready for MU Analysis first."
-          : "Choose a segment and mark it as Ready for MU Analysis before generating meaning units."
       );
       return;
     }
@@ -1485,61 +1705,48 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    const segmentsWithExistingUnits = requestedSegments.filter((segment) =>
-      units.some((unit) => unit.segmentId === segment.segmentId)
-    );
-    if (segmentsWithExistingUnits.length > 0) {
+    if (currentMeaningUnits.length > 0) {
       const confirmed = window.confirm(
-        `Meaning units already exist for ${segmentsWithExistingUnits
-          .map((segment) => segment.segmentId)
-          .join(", ")}. Regenerating will replace only those segment-level draft MUs. Continue?`
+        "Draft meaning units already exist. Redelineating will replace draft MU boundaries and clear later category/review outputs. Accepted/excluded decisions should be exported first if you need to preserve them. Continue?"
       );
       if (!confirmed) {
         return;
       }
-    }
-
-    const notReadySegment = requestedSegments.find(
-      (item) => !canRunMeaningUnitsForSegment(item)
-    );
-    if (notReadySegment) {
-      setApiStatus(
-        `${notReadySegment.segmentId} is not ready. Mark it as Ready for MU Analysis before running local AI.`
-      );
-      return;
+      setDisplayCategories([]);
+      setReviewerOutputs([]);
+      setNarrative("");
     }
 
     const controller = new AbortController();
+    const slowNoticeTimer = window.setTimeout(() => {
+      setMeaningUnitGenerationStage(
+        "Still working. If local AI is slow, the system will switch to rule-based draft MUs automatically."
+      );
+    }, 30000);
     meaningUnitAbortControllerRef.current = controller;
     setIsGeneratingMeaningUnits(true);
-    setGenerationProgress(
-      requestedSegments.length > 1
-        ? { current: 0, total: requestedSegments.length }
-        : { current: 1, label: requestedSegments[0].segmentId, total: 1 }
+    setGenerationProgress({ current: 1, label: "Confirmed transcript", total: 1 });
+    setMeaningUnitGenerationStage(
+      forceRuleBased
+        ? "Generating rule-based draft MUs from speaker turns and meaning-preserving boundaries."
+        : "Generation started. Trying local AI first; rule-based fallback will be used if it takes too long. This may take a moment."
     );
 
     try {
-      for (const [index, segment] of requestedSegments.entries()) {
-        if (controller.signal.aborted) {
-          break;
-        }
-        setGenerationProgress({
-          current: index + 1,
-          label: segment.segmentId,
-          total: requestedSegments.length
-        });
-        setApiStatus(
-          requestedSegments.length > 1
-            ? `Generating meaning units for all segments... ${segment.segmentId} (${index + 1} of ${requestedSegments.length})`
-            : `Generating meaning units for ${segment.segmentId}...`
-        );
-        await generateMeaningUnitsForSegment(segment, controller.signal);
-      }
+      setApiStatus(
+        forceRuleBased
+          ? "Generating rule-based draft meaning units..."
+          : "Delineating draft meaning units from the confirmed transcript..."
+      );
+      const result = await generateMeaningUnitsFromTranscript(
+        forceRuleBased,
+        controller.signal
+      );
       if (!controller.signal.aborted) {
         setApiStatus(
-          requestedSegments.length > 1
-            ? `Meaning-unit generation completed for ${requestedSegments.length} segment${requestedSegments.length === 1 ? "" : "s"}.`
-            : `Meaning-unit generation completed for ${requestedSegments[0].segmentId}.`
+          result.fallbackUsed || forceRuleBased
+            ? "Rule-based draft meaning units generated. Review, edit, accept, or exclude each MU before categorizing."
+            : "Draft meaning units generated. Review, edit, accept, or exclude each MU before categorizing."
         );
       }
     } catch (error) {
@@ -1551,6 +1758,7 @@ export function GdiqrWorkspace({
         error instanceof Error ? error.message : "Meaning-unit API failed"
       );
     } finally {
+      window.clearTimeout(slowNoticeTimer);
       meaningUnitAbortControllerRef.current = null;
       setIsGeneratingMeaningUnits(false);
       setGenerationProgress(null);
@@ -1562,50 +1770,58 @@ export function GdiqrWorkspace({
     meaningUnitAbortControllerRef.current = null;
     setIsGeneratingMeaningUnits(false);
     setGenerationProgress(null);
+    setMeaningUnitGenerationStage("Generation stopped by user.");
     setApiStatus("Generation stopped by user.");
   }
 
-  async function runCategories(options: { allowFallbackRegenerate?: boolean } = {}) {
+  async function runCategories(
+    options: {
+      allowFallbackRegenerate?: boolean;
+      modeOverride?: CategoryMode;
+    } = {}
+  ) {
+    const requestedMode = options.modeOverride ?? mode;
     if (confirmedMeaningUnits.length === 0) {
       setApiStatus(
-        "Accept or edit meaning-unit summaries before creating categories. Categories only use confirmed summaries."
+        "Accept meaning units before creating categories. Categories only use researcher-accepted, non-excluded meaning units."
       );
       return;
     }
-    if (mode === "B" && displayCategories.length === 0) {
-      setApiStatus("Run Mode A first. Mode B refines an existing category system.");
+    if (requestedMode === "B" && displayCategories.length === 0) {
+      setApiStatus("Construct provisional categories before refining them.");
       return;
     }
     if (
-      (mode === "B" || mode === "C") &&
+      (requestedMode === "B" || requestedMode === "C") &&
       hasTemporaryFallbackCategories &&
       !options.allowFallbackRegenerate
     ) {
       setApiStatus(
-        "This category set is a fallback draft. Regenerate it or use it as an editable starting point before running Mode B/C."
+        "This category set is a fallback draft. Regenerate it or use it as an editable starting point before continuing."
       );
       return;
     }
-    if (mode === "C") {
+    if (requestedMode === "C") {
       if (displayCategories.length === 0) {
-        setApiStatus("Run Mode A and Mode B before final Mode C integration.");
+        setApiStatus("Construct and review categories before integrating findings.");
         return;
       }
       if (!allSegmentsProcessedForModeC) {
         setApiStatus(
-          "Confirm that all segments in this transcript have been processed and reviewed before running Mode C."
+          "Confirm that all meaning units in this transcript have been processed and reviewed before integrating findings."
         );
         return;
       }
     }
 
+    setMode(requestedMode);
     setIsRunningCategories(true);
-    setApiStatus(`Running category construction Mode ${mode}. This may take a few minutes.`);
+    setApiStatus(getCategoryRunLabel(requestedMode, true));
 
     try {
       const response = await fetchWithTimeout("/api/ai/categories", {
         body: JSON.stringify({
-          mode,
+          mode: requestedMode,
           projectId: currentProject.id,
           allBatchesProcessed: allSegmentsProcessedForModeC,
           categories: displayCategories,
@@ -1621,7 +1837,9 @@ export function GdiqrWorkspace({
         const errorResult = (await response.json().catch(() => ({}))) as {
           error?: string;
         };
-        setApiStatus(errorResult.error ?? `Category API Mode ${mode} failed`);
+        setApiStatus(
+          errorResult.error ?? `${getCategoryRunLabel(requestedMode)} failed`
+        );
         return;
       }
       const result = (await response.json()) as {
@@ -1642,17 +1860,19 @@ export function GdiqrWorkspace({
         result.uncertainties?.[0] ?? result.categoryRevisions?.[0] ?? "";
       setCategoryDraftNotice(
       result.isFallbackDraft
-          ? "AI returned empty output. A fallback draft was created only to keep the workflow testable. Regenerate it or use it as an editable starting point; do not treat it as final analysis."
+          ? "The assistant returned an empty response, so a temporary draft was created to keep the workflow testable. You can redraft it or use it as an editable starting point; please do not treat it as final analysis."
           : warning
       );
       setApiStatus(
-        `${warning ? `${warning} ` : ""}Category API Mode ${mode} applied from ${result.provider ?? aiProvider}${
+        `${warning ? `${warning} ` : ""}${getCategoryRunLabel(requestedMode)} completed using ${result.provider ?? aiProvider}${
           result.persisted ? " and saved to Supabase" : ""
         }`
       );
     } catch (error) {
       setApiStatus(
-        error instanceof Error ? error.message : `Category API Mode ${mode} failed`
+        error instanceof Error
+          ? error.message
+          : `${getCategoryRunLabel(requestedMode)} failed`
       );
     } finally {
       setIsRunningCategories(false);
@@ -1728,9 +1948,149 @@ export function GdiqrWorkspace({
     }
   }
 
+  function generateIntegrationStructureDraft() {
+    if (hasTemporaryFallbackCategories) {
+      setApiStatus(
+        "This category set is still a fallback draft. Review or regenerate categories before integrating."
+      );
+      return;
+    }
+    if (confirmedMeaningUnits.length === 0 || reviewedIntegrationCategories.length < 2) {
+      setApiStatus(
+        "Not enough reviewed categories to generate an integration structure. Please return to Step 3 and accept or revise categories first."
+      );
+      return;
+    }
+    if (!allSegmentsProcessedForModeC) {
+      setApiStatus(
+        "Confirm that all meaning units in this transcript have been processed and reviewed before generating an integration draft."
+      );
+      return;
+    }
+
+    const draft = buildIntegrationStructureDraft({
+      categories: reviewedIntegrationCategories,
+      researchQuestion: currentProject.researchQuestion,
+      units: confirmedMeaningUnits
+    });
+    setIntegrationStructureTitle(draft.title);
+    setIntegrationStructureExplanation(draft.explanation);
+    setIntegrationRelationships(draft.relationships);
+    setIntegrationStructureNotice(
+      "Provisional relationship structure generated from reviewed categories. Researcher review needed; edit before treating it as an analytic finding."
+    );
+    setNarrative(draft.narrative);
+    setIntegrationReviewed(false);
+    setApiStatus(
+      "Provisional relationship structure, draft category map, and editable narrative created from reviewed categories."
+    );
+  }
+
+  function addIntegrationRelationship() {
+    if (reviewedIntegrationCategories.length < 2) {
+      setApiStatus(
+        "Add at least two reviewed categories before creating a relationship."
+      );
+      return;
+    }
+    const [source, target] = reviewedIntegrationCategories;
+    const nextRelationship: IntegrationRelationship = {
+      evidenceUnitNumbers: Array.from(
+        new Set([
+          ...source.includedUnitIds.filter((unitNumber) =>
+            acceptedMeaningUnitNumbers.has(unitNumber)
+          ),
+          ...target.includedUnitIds.filter((unitNumber) =>
+            acceptedMeaningUnitNumbers.has(unitNumber)
+          )
+        ])
+      ).slice(0, 4),
+      id: `rel_manual_${Date.now()}`,
+      rationale:
+        "Researcher-created provisional relationship. Edit the rationale and evidence references before use.",
+      researcherNote: "",
+      sourceCategoryId: source.id,
+      targetCategoryId: target.id,
+      type: "co-occurs with"
+    };
+    setIntegrationRelationships((current) => [...current, nextRelationship]);
+    setIntegrationStructureNotice(
+      "Relationship added as an editable researcher draft."
+    );
+  }
+
+  function updateIntegrationRelationship(
+    relationshipId: string,
+    updates: Partial<IntegrationRelationship>
+  ) {
+    const existingRelationship = integrationRelationships.find(
+      (relationship) => relationship.id === relationshipId
+    );
+    setIntegrationRelationships((current) =>
+      current.map((relationship) =>
+        relationship.id === relationshipId
+          ? { ...relationship, ...updates }
+          : relationship
+      )
+    );
+    if (existingRelationship) {
+      const auditActions: string[] = [];
+      if (
+        updates.evidenceUnitNumbers &&
+        updates.evidenceUnitNumbers.join(",") !==
+          existingRelationship.evidenceUnitNumbers.join(",")
+      ) {
+        const previous = new Set(existingRelationship.evidenceUnitNumbers);
+        const next = new Set(updates.evidenceUnitNumbers);
+        const added = updates.evidenceUnitNumbers.filter(
+          (unitNumber) => !previous.has(unitNumber)
+        );
+        const removed = existingRelationship.evidenceUnitNumbers.filter(
+          (unitNumber) => !next.has(unitNumber)
+        );
+        if (added.length > 0) {
+          auditActions.push(`Added MU evidence ${added.join(", ")} to relationship`);
+        }
+        if (removed.length > 0) {
+          auditActions.push(`Removed MU evidence ${removed.join(", ")} from relationship`);
+        }
+      }
+      if (
+        typeof updates.rationale === "string" &&
+        updates.rationale !== existingRelationship.rationale
+      ) {
+        auditActions.push("Edited relationship rationale");
+      }
+      if (updates.type && updates.type !== existingRelationship.type) {
+        auditActions.push(`Changed relationship type to ${updates.type}`);
+      }
+      auditActions.forEach((action) =>
+        recordLocalAuditEvent({
+          action,
+          target: `Step 4 relationship ${relationshipId}`
+        })
+      );
+    }
+    setIntegrationReviewed(false);
+  }
+
+  function removeIntegrationRelationship(relationshipId: string) {
+    setIntegrationRelationships((current) =>
+      current.filter((relationship) => relationship.id !== relationshipId)
+    );
+    setIntegrationStructureNotice(
+      "Relationship removed from the provisional structure."
+    );
+    setIntegrationReviewed(false);
+  }
+
   async function runReviewer(reviewerWorkspace: ReviewerWorkspace) {
     if (units.length === 0) {
-      setApiStatus("Generate meaning units before running reviewer checks.");
+      setApiStatus("Generate meaning units before running methodological integrity checks.");
+      return;
+    }
+    if (reviewerWorkspace === "meaning-units") {
+      runMeaningUnitIntegrityReview();
       return;
     }
     if (reviewerWorkspace === "categories" && displayCategories.length === 0) {
@@ -1741,8 +2101,8 @@ export function GdiqrWorkspace({
     setIsRunningReviewer(true);
     setApiStatus(
       reviewerWorkspace === "categories"
-        ? "Running category reviewer check..."
-        : "Running meaning-unit reviewer check..."
+        ? "Running category methodological integrity check..."
+        : "Running meaning-unit methodological integrity check..."
     );
 
     try {
@@ -1764,7 +2124,7 @@ export function GdiqrWorkspace({
         const errorResult = (await response.json().catch(() => ({}))) as {
           error?: string;
         };
-        setApiStatus(errorResult.error ?? "Reviewer API failed");
+        setApiStatus(errorResult.error ?? "Methodological integrity check failed");
         return;
       }
       const result = (await response.json()) as {
@@ -1777,15 +2137,38 @@ export function GdiqrWorkspace({
         ...(result.comments ?? [])
       ]);
       setApiStatus(
-        `Reviewer check applied from ${result.provider ?? aiProvider}${
+        `Methodological integrity check applied from ${result.provider ?? aiProvider}${
           result.persisted ? " and saved to Supabase" : ""
         }`
       );
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Reviewer API failed");
+      setApiStatus(error instanceof Error ? error.message : "Methodological integrity check failed");
     } finally {
       setIsRunningReviewer(false);
     }
+  }
+
+  function runMeaningUnitIntegrityReview() {
+    setIsRunningReviewer(true);
+    setApiStatus("Running Meaning Unit Integrity Support...");
+
+    const comments = buildMeaningUnitIntegrityIssues(currentMeaningUnits);
+    setReviewerOutputs((current) => [
+      ...current.filter((comment) => comment.workspace !== "meaning-units"),
+      ...comments
+    ]);
+    setMuIntegrityReviewRan(true);
+    recordLocalAuditEvent({
+      actor: "Reviewer",
+      action: `Ran Step 2 MU integrity support (${comments.length} issue${comments.length === 1 ? "" : "s"})`,
+      target: "Meaning Unit Integrity Support"
+    });
+    setApiStatus(
+      comments.length === 0
+        ? "No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
+        : `Meaning Unit Integrity Support found ${comments.length} point${comments.length === 1 ? "" : "s"} for researcher review.`
+    );
+    setIsRunningReviewer(false);
   }
 
   function updateCategoryDraft(
@@ -1913,18 +2296,63 @@ export function GdiqrWorkspace({
     setCategoryDraftNotice("Categories merged. Review the merged title, definition, and evidence.");
   }
 
+  function splitCategoryDraft(category: CategoryNode) {
+    if (category.includedUnitIds.length < 2) {
+      setApiStatus("Add at least two meaning units before splitting this category.");
+      return;
+    }
+    const splitIndex = Math.ceil(category.includedUnitIds.length / 2);
+    const remainingUnitIds = category.includedUnitIds.slice(0, splitIndex);
+    const splitUnitIds = category.includedUnitIds.slice(splitIndex);
+    const splitCategory: CategoryNode = {
+      definition: "",
+      id: `cat_split_${Date.now()}`,
+      includedUnitIds: splitUnitIds,
+      name: "Untitled provisional category",
+      source: "researcher_confirmed",
+      status: "edited"
+    };
+
+    setDisplayCategories((current) => [
+      ...current.map((item) =>
+        item.id === category.id
+          ? {
+              ...item,
+              includedUnitIds: remainingUnitIds,
+              status:
+                item.status === "confirmed"
+                  ? ("confirmed" as const)
+                  : ("edited" as const)
+            }
+          : item
+      ),
+      splitCategory
+    ]);
+    setCategoryDraftNotice(
+      "Category split into two editable provisional categories. Rename and review both against their assigned meaning units."
+    );
+  }
+
   function confirmCategoryDraft(categoryId: string) {
     const category = displayCategories.find((item) => item.id === categoryId);
     if (!category) {
       return;
     }
-    if (!category.name.trim() || category.includedUnitIds.length === 0) {
+    const categoryTitle = getCategoryTitleInputValue(category).trim();
+    const categoryDefinition = getCategoryDescriptionValue(category).trim();
+    if (!categoryTitle || category.includedUnitIds.length === 0) {
       setApiStatus(
-        "A category needs a title and at least one included MU before it can be confirmed."
+        "An evidence cluster needs a researcher category name and at least one included MU before it can be confirmed."
       );
       return;
     }
-    if (hasSensitivePlaceholder(category.name)) {
+    if (!categoryDefinition) {
+      setApiStatus(
+        "Add a shared-meaning definition before confirming this evidence cluster as a provisional category."
+      );
+      return;
+    }
+    if (hasSensitivePlaceholder(categoryTitle)) {
       setApiStatus(
         "Category title contains a sensitive placeholder. Rename it before confirming."
       );
@@ -1952,7 +2380,8 @@ export function GdiqrWorkspace({
     commentId: string,
     updates: { memo?: string; status?: ReviewerComment["status"] }
   ) {
-    if (isLocalOnlyMode) {
+    const isSessionOnlyIssue = commentId.startsWith("mu_integrity_");
+    if (isLocalOnlyMode || isSessionOnlyIssue) {
       setReviewerOutputs((current) =>
         current.map((comment) =>
           comment.id === commentId
@@ -1971,7 +2400,13 @@ export function GdiqrWorkspace({
             : comment
         )
       );
-      setApiStatus("Reviewer issue updated locally.");
+      recordLocalAuditEvent({
+        action: updates.status
+          ? `${updates.status === "resolved" ? "Resolved" : "Dismissed"} MU integrity issue`
+          : "Updated memo on MU integrity issue",
+        target: commentId
+      });
+      setApiStatus("Meaning Unit Integrity Support item updated for this session.");
       return;
     }
 
@@ -1989,7 +2424,7 @@ export function GdiqrWorkspace({
       saved?: boolean;
     };
     if (!response.ok || !result.saved || !result.comment) {
-      setApiStatus(result.error ?? "Reviewer issue update failed.");
+      setApiStatus(result.error ?? "Integrity issue update failed.");
       return;
     }
     setReviewerOutputs((current) =>
@@ -1997,18 +2432,28 @@ export function GdiqrWorkspace({
         comment.id === result.comment?.id ? result.comment : comment
       )
     );
-    setApiStatus("Reviewer issue updated.");
+    setApiStatus("Integrity issue updated.");
   }
 
   function viewReviewerTarget(comment: ReviewerComment) {
+    if (comment.workspace === "meaning-units") {
+      recordLocalAuditEvent({
+        action: "Opened MU from integrity issue",
+        target: comment.target
+      });
+    }
     const targetId =
       comment.targetType === "category" || comment.targetType === "subcategory"
         ? `category-${comment.targetId}`
         : comment.targetType === "integrated_narrative"
           ? "integrated-narrative"
           : comment.targetId.replace(/^MU/i, "mu-");
-    const step =
-      comment.workspace === "categories" ? "categories" : "meaning-units";
+    const step: WorkflowStep =
+      comment.targetType === "integrated_narrative"
+        ? "integrating"
+        : comment.workspace === "categories"
+          ? "categorizing"
+          : "understanding";
     setActiveStep(step);
     window.setTimeout(() => {
       document.getElementById(targetId)?.scrollIntoView({
@@ -2023,6 +2468,105 @@ export function GdiqrWorkspace({
     }, 80);
   }
 
+  function clearDerivedAnalysisAfterMeaningUnitChange() {
+    setDisplayCategories([]);
+    setNarrative("");
+    setCategoryDraftNotice("");
+    setCategoryDraftIsFallback(false);
+  }
+
+  function recordLocalAuditEvent({
+    action,
+    actor = "Researcher",
+    target = "Step 2 meaning-unit pipeline"
+  }: {
+    action: string;
+    actor?: AuditEvent["actor"];
+    target?: string;
+  }) {
+    if (!isLocalOnlyMode) {
+      return;
+    }
+    const now = new Date().toISOString();
+    setDisplayAuditEvents((current) => [
+      {
+        actor,
+        action,
+        id: `audit_local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        target,
+        timestamp: now
+      },
+      ...current
+    ]);
+  }
+
+  function updateMeaningUnitExcerpt(unitId: string, value: string) {
+    setUnits((current) =>
+      current.map((unit) =>
+        unit.id === unitId
+          ? {
+              ...unit,
+              aiExcerpt: unit.aiExcerpt ?? unit.excerpt,
+              excerpt: value,
+              humanStatus:
+                unit.humanStatus === "Accepted" || unit.humanStatus === "Excluded"
+                  ? "Needs review"
+                  : "Edited"
+            }
+          : unit
+      )
+    );
+    clearDerivedAnalysisAfterMeaningUnitChange();
+  }
+
+  async function saveMeaningUnitExcerpt(unitId: string) {
+    const unit = currentMeaningUnits.find((item) => item.id === unitId);
+    if (!unit) {
+      return;
+    }
+
+    if (!unit.excerpt.trim()) {
+      setApiStatus("Meaning-unit excerpt cannot be empty.");
+      return;
+    }
+
+    if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Edited MU #${unit.number} excerpt`,
+        target: unit.id
+      });
+      setApiStatus("Meaning-unit excerpt edit saved locally.");
+      return;
+    }
+
+    const response = await fetch(`/api/meaning-units/${unitId}`, {
+      body: JSON.stringify({
+        excerpt: unit.excerpt,
+        humanStatus: unit.humanStatus === "Accepted" ? "Needs review" : unit.humanStatus
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH"
+    });
+    if (!response.ok) {
+      setApiStatus("Meaning-unit excerpt edit could not be saved. Try again.");
+      return;
+    }
+    setApiStatus("Meaning-unit excerpt edit saved.");
+  }
+
+  function updateExclusionReason(unitId: string, value: string) {
+    setUnits((current) =>
+      current.map((unit) =>
+        unit.id === unitId
+          ? {
+              ...unit,
+              exclusionReason: value
+            }
+          : unit
+      )
+    );
+  }
+
   function updateHumanSummary(unitId: string, value: string) {
     setUnits((current) =>
       current.map((unit) =>
@@ -2031,15 +2575,20 @@ export function GdiqrWorkspace({
           : unit
       )
     );
+    clearDerivedAnalysisAfterMeaningUnitChange();
   }
 
   async function saveMeaningUnitHumanSummary(unitId: string) {
-    const unit = units.find((item) => item.id === unitId);
+    const unit = currentMeaningUnits.find((item) => item.id === unitId);
     if (!unit) {
       return;
     }
 
     if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Edited MU #${unit.number} summary`,
+        target: unit.id
+      });
       setApiStatus("Meaning-unit summary edit saved locally.");
       return;
     }
@@ -2060,11 +2609,44 @@ export function GdiqrWorkspace({
   }
 
   async function acceptAllReviewedMeaningUnits() {
-    const includableUnits = units.filter((unit) => !unit.analysisExcluded);
+    const includableUnits = currentMeaningUnits.filter(
+      (unit) => !unit.analysisExcluded
+    );
     if (includableUnits.length === 0) {
       setApiStatus("Generate meaning units before accepting summaries.");
       return;
     }
+    const incompleteUnit = includableUnits.find(
+      (unit) => !unit.excerpt.trim() || !(unit.humanSummary || unit.aiSummary).trim()
+    );
+    if (incompleteUnit) {
+      setApiStatus(
+        `Review MU #${incompleteUnit.number} before accepting all summaries. Each MU needs an excerpt and researcher summary.`
+      );
+      return;
+    }
+    const nonTranscriptUnit = includableUnits.find(
+      (unit) =>
+        containsNonTranscriptMaterial(unit.excerpt) &&
+        !unit.exclusionReason?.trim()
+    );
+    if (nonTranscriptUnit) {
+      setApiStatus(
+        `MU #${nonTranscriptUnit.number} may contain project setup or other non-transcript material. Add a researcher memo or exclude it before accepting all.`
+      );
+      return;
+    }
+    const confirmed = window.confirm(
+      "Accept all visible, non-excluded meaning units? This records the current researcher-reviewed excerpts and summaries as accepted analytic material."
+    );
+    if (!confirmed) {
+      return;
+    }
+    const acceptedDraftSummaryWithoutEditCount = includableUnits.filter(
+      (unit) =>
+        (unit.humanSummary || unit.aiSummary).trim() ===
+        (unit.aiSummary || "").trim()
+    ).length;
 
     setIsAcceptingMeaningUnits(true);
     setApiStatus("Saving accepted meaning-unit summaries...");
@@ -2077,13 +2659,21 @@ export function GdiqrWorkspace({
               ? unit
               : {
                   ...unit,
+                  excerpt: unit.excerpt.trim(),
                   humanStatus: "Accepted",
-                  humanSummary: unit.humanSummary || unit.aiSummary
-                }
+                  humanSummary: (unit.humanSummary || unit.aiSummary).trim()
+              }
           )
         );
+        recordLocalAuditEvent({
+          action:
+            acceptedDraftSummaryWithoutEditCount > 0
+              ? `Accepted ${includableUnits.length} reviewed meaning unit${includableUnits.length === 1 ? "" : "s"} in bulk (${acceptedDraftSummaryWithoutEditCount} draft summar${acceptedDraftSummaryWithoutEditCount === 1 ? "y" : "ies"} accepted without edit)`
+              : `Accepted ${includableUnits.length} reviewed meaning unit${includableUnits.length === 1 ? "" : "s"} in bulk`,
+          target: "Step 2 meaning-unit review"
+        });
         setApiStatus(
-          "Meaning-unit summaries accepted locally. You can now run category Mode A/B/C."
+          "Meaning-unit summaries accepted locally. You can now create and refine provisional categories."
         );
         return;
       }
@@ -2092,8 +2682,9 @@ export function GdiqrWorkspace({
         includableUnits.map(async (unit) => {
           const response = await fetch(`/api/meaning-units/${unit.id}`, {
             body: JSON.stringify({
+              excerpt: unit.excerpt.trim(),
               humanStatus: "Accepted",
-              humanSummary: unit.humanSummary || unit.aiSummary
+              humanSummary: (unit.humanSummary || unit.aiSummary).trim()
             }),
             headers: { "Content-Type": "application/json" },
             method: "PATCH"
@@ -2120,7 +2711,7 @@ export function GdiqrWorkspace({
         )
       );
       setApiStatus(
-        "Meaning-unit summaries accepted. You can now run category Mode A/B/C."
+        "Meaning-unit summaries accepted. You can now create and refine provisional categories."
       );
     } catch (error) {
       setApiStatus(
@@ -2162,16 +2753,12 @@ export function GdiqrWorkspace({
     setApiStatus("Speaker correction saved for this meaning unit.");
   }
 
-  async function setMeaningUnitExcluded(unit: MeaningUnit, excluded: boolean) {
-    const reason = excluded
-      ? window.prompt(
-          "Why should this MU be excluded from analysis?",
-          unit.speaker === "Interviewer"
-            ? "Interviewer opening/question, not participant experience"
-            : "Not relevant for this GDI-QR-informed workflow"
-        )
-      : null;
-    if (excluded && reason === null) {
+  async function excludeMeaningUnit(unit: MeaningUnit) {
+    const reason = (unit.exclusionReason ?? "").trim();
+    if (!reason) {
+      setApiStatus(
+        `Add a short reason before excluding MU #${unit.number}. This keeps the researcher decision audit-visible.`
+      );
       return;
     }
 
@@ -2180,9 +2767,9 @@ export function GdiqrWorkspace({
         item.id === unit.id
           ? {
               ...item,
-              analysisExcluded: excluded,
-              exclusionReason: excluded ? reason || "Excluded from analysis" : undefined,
-              humanStatus: excluded ? "Excluded" : "Needs review"
+              analysisExcluded: true,
+              exclusionReason: reason,
+              humanStatus: "Excluded"
             }
           : item
       )
@@ -2191,21 +2778,23 @@ export function GdiqrWorkspace({
     setNarrative("");
     setCategoryDraftNotice("");
     setCategoryDraftIsFallback(false);
-    setApiStatus(excluded ? "Excluding meaning unit..." : "Restoring meaning unit...");
+    setApiStatus("Excluding meaning unit...");
 
     if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Excluded MU #${unit.number}: ${reason}`,
+        target: unit.id
+      });
       setApiStatus(
-        excluded
-          ? "Meaning unit excluded locally. Existing categories were cleared; rerun categories when ready."
-          : "Meaning unit restored locally. Review and accept it before categories."
+        "Meaning unit excluded locally. Existing categories were cleared; rerun categories when ready."
       );
       return;
     }
 
     const response = await fetch(`/api/meaning-units/${unit.id}`, {
       body: JSON.stringify({
-        analysisExcluded: excluded,
-        exclusionReason: excluded ? reason || "Excluded from analysis" : null
+        analysisExcluded: true,
+        exclusionReason: reason
       }),
       headers: { "Content-Type": "application/json" },
       method: "PATCH"
@@ -2227,9 +2816,62 @@ export function GdiqrWorkspace({
       );
     }
     setApiStatus(
-      excluded
-        ? "Meaning unit excluded from category analysis. Existing categories were cleared; rerun categories when ready."
-        : "Meaning unit restored for analysis. Review and accept it before categories."
+      "Meaning unit excluded from category analysis. Existing categories were cleared; rerun categories when ready."
+    );
+  }
+
+  async function restoreMeaningUnit(unit: MeaningUnit) {
+    setUnits((current) =>
+      current.map((item) =>
+        item.id === unit.id
+          ? {
+              ...item,
+              analysisExcluded: false,
+              humanStatus: "Needs review"
+            }
+          : item
+      )
+    );
+    clearDerivedAnalysisAfterMeaningUnitChange();
+    setApiStatus("Restoring meaning unit...");
+
+    if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Restored MU #${unit.number} for review`,
+        target: unit.id
+      });
+      setApiStatus(
+        "Meaning unit restored locally. Review and accept it before categories."
+      );
+      return;
+    }
+
+    const response = await fetch(`/api/meaning-units/${unit.id}`, {
+      body: JSON.stringify({
+        analysisExcluded: false,
+        exclusionReason: null
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH"
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      meaningUnit?: MeaningUnit;
+      saved?: boolean;
+    };
+    if (!response.ok || !result.saved) {
+      setApiStatus(result.error ?? "Meaning-unit restore could not be saved.");
+      return;
+    }
+    if (result.meaningUnit) {
+      setUnits((current) =>
+        current.map((item) =>
+          item.id === result.meaningUnit?.id ? result.meaningUnit : item
+        )
+      );
+    }
+    setApiStatus(
+      "Meaning unit restored for analysis. Review and accept it before categories."
     );
   }
 
@@ -2276,7 +2918,7 @@ export function GdiqrWorkspace({
   }
 
   function returnToTranscriptForUnit(unit: MeaningUnit) {
-    setActiveStep("transcript");
+    setActiveStep("pre-analysis");
     setTranscriptConfirmed(false);
     setApiStatus(
       `Check the transcript around MU #${unit.number}. After editing, save/confirm the transcript and regenerate meaning units.`
@@ -2284,23 +2926,32 @@ export function GdiqrWorkspace({
   }
 
   function cleanTranscript() {
-    const cleaned = editableTranscript
+    const spacingCleaned = editableTranscript
       .split("\n")
       .map((line) => line.trim())
       .join("\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
+    const sourceCleaned = cleanTranscriptSourceForAnalysis(
+      spacingCleaned,
+      currentProject
+    );
+    const cleaned = sourceCleaned.transcript;
     setEditableTranscript(cleaned);
     setTranscriptConfirmed(false);
     setAiPrivacyFindings(extractPrivacyReviewMarkers(cleaned));
     setPrivacyOverrideAccepted(false);
     setTranscriptStorageStatus("Not saved yet — local draft only");
-    setApiStatus("Transcript spacing cleaned. Review the text, save a reviewed transcript, then confirm before analysis.");
+    setApiStatus(
+      sourceCleaned.removedLineCount > 0
+        ? `Transcript cleaned. Removed ${sourceCleaned.removedLineCount} non-transcript setup/metadata line${sourceCleaned.removedLineCount === 1 ? "" : "s"}. Review, save, then confirm before analysis.`
+        : "Transcript spacing cleaned. Review the text, save a reviewed transcript, then confirm before analysis."
+    );
   }
 
   function focusSensitiveItem(item: SensitiveReviewItem) {
     setActiveSensitiveItemId(item.id);
-    setActiveStep("transcript");
+    setActiveStep("pre-analysis");
     window.setTimeout(() => {
       const textarea = transcriptTextAreaRef.current;
       if (!textarea || typeof item.startOffset !== "number") {
@@ -2440,7 +3091,7 @@ export function GdiqrWorkspace({
     if (format === "csv") {
       downloadFile(
         `gdi-qr-meaning-units-${timestamp}.csv`,
-        buildMeaningUnitCsv(units),
+        buildMeaningUnitCsv(currentMeaningUnits),
         "text/csv"
       );
       setApiStatus("CSV export downloaded");
@@ -2458,16 +3109,23 @@ export function GdiqrWorkspace({
   function buildExportPayload() {
     return {
       exportNote:
-        "This export may contain AI-drafted material. Review all outputs against transcript evidence before use.",
+        "This export may contain draft assistant-supported material. Review all outputs against transcript evidence before use.",
       project: currentProject,
       transcript: editableTranscript,
       segments: displaySegments,
       audioFiles: displayAudioFiles,
       transcriptionJobs: displayTranscriptionJobs,
-      meaningUnits: units,
+      meaningUnits: currentMeaningUnits,
       categories: displayCategories,
+      methodologicalIntegrityIssues: reviewerOutputs,
       reviewerComments: reviewerOutputs,
       integratedNarrative: narrative,
+      integrationStructure: {
+        title: integrationStructureTitle,
+        explanation: integrationStructureExplanation,
+        relationships: integrationRelationships,
+        note: integrationStructureNotice
+      },
       auditEvents: displayAuditEvents
     };
   }
@@ -2489,7 +3147,7 @@ export function GdiqrWorkspace({
       "",
       `Research question: ${currentProject.researchQuestion || "Not set"}`,
       `Methodological frame: ${METHODOLOGICAL_FRAME}`,
-      "Note: AI-drafted outputs require researcher review against transcript evidence before use.",
+      "Note: assistant-supported drafts need researcher review against transcript evidence before use.",
       `Language: ${currentProject.language}`,
       "",
       "Transcript",
@@ -2508,32 +3166,68 @@ export function GdiqrWorkspace({
       "Categories",
       categoryText || "No categories yet.",
       "",
-      "Reviewer Comments",
-      reviewerText || "No reviewer comments yet.",
+      "Methodological Integrity Checklist and Issues",
+      reviewerText || "No methodological integrity issues yet.",
       "",
-      "Integration Draft",
-      narrative || "No integration draft yet."
+      "Summary Narrative",
+      narrative || "No summary narrative yet."
     ].join("\n");
   }
 
   async function markAccepted(unitId: string) {
-    const unit = units.find((item) => item.id === unitId);
+    const unit = currentMeaningUnits.find((item) => item.id === unitId);
+    if (!unit) {
+      return;
+    }
+    const reviewedExcerpt = unit.excerpt.trim();
+    const reviewedSummary = (unit.humanSummary || unit.aiSummary).trim();
+    const acceptedDraftSummaryWithoutEdit =
+      reviewedSummary === (unit.aiSummary || "").trim();
+    if (!reviewedExcerpt || !reviewedSummary) {
+      setApiStatus(
+        `Review the excerpt and summary before accepting MU #${unit.number}.`
+      );
+      return;
+    }
+    if (
+      containsNonTranscriptMaterial(reviewedExcerpt) &&
+      !unit.exclusionReason?.trim()
+    ) {
+      setApiStatus(
+        `MU #${unit.number} may contain project setup or other non-transcript material. Add a researcher memo explaining why it belongs in analysis, or exclude it.`
+      );
+      return;
+    }
     setUnits((current) =>
       current.map((unit) =>
-        unit.id === unitId ? { ...unit, humanStatus: "Accepted" } : unit
+        unit.id === unitId
+          ? {
+              ...unit,
+              excerpt: reviewedExcerpt,
+              humanSummary: reviewedSummary,
+              humanStatus: "Accepted"
+            }
+          : unit
       )
     );
     setApiStatus("Saving meaning-unit decision...");
 
     if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: acceptedDraftSummaryWithoutEdit
+          ? `Accepted MU #${unit.number} draft summary without edit`
+          : `Accepted MU #${unit.number}`,
+        target: unit.id
+      });
       setApiStatus("Meaning-unit decision saved locally.");
       return;
     }
 
     const response = await fetch(`/api/meaning-units/${unitId}`, {
       body: JSON.stringify({
+        excerpt: reviewedExcerpt,
         humanStatus: "Accepted",
-        humanSummary: unit?.humanSummary
+        humanSummary: reviewedSummary
       }),
       headers: { "Content-Type": "application/json" },
       method: "PATCH"
@@ -2561,158 +3255,100 @@ export function GdiqrWorkspace({
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell workbook-shell">
       <header className="topbar">
         <div className="brand" aria-label={PRODUCT_TITLE}>
-          <div className="brand-mark">G</div>
+          <div className="brand-mark">GDI-QR</div>
           <div>
-            <h1 className="brand-title">{PRODUCT_SHORT_TITLE}</h1>
+            <h1 className="brand-title">
+              GDI-QR Guided Qualitative Analysis
+            </h1>
             <p className="brand-subtitle">
-              Researcher-led qualitative analysis support
+              A step-by-step workspace based on A Generic Approach to Descriptive-Interpretive Qualitative Research
             </p>
           </div>
-        </div>
-        <div className="topbar-actions">
-          <span className="badge blue">AI provider: {aiProvider}</span>
-          <span className="badge">
-            Data:{" "}
-            {isLocalOnlyMode
-              ? "Local-only"
-              : apiDataSource === "supabase"
-                ? "Supabase"
-                : "Not configured"}
-          </span>
-          <button
-            className="button soft"
-            onClick={refreshWorkspace}
-            type="button"
-            title="Reload workspace data"
-          >
-            <RefreshCcw size={18} />
-            Refresh API
-          </button>
-          <button
-            className="button soft"
-            disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
-            onClick={() => void generateMeaningUnits()}
-            type="button"
-            title={
-              transcriptConfirmed
-                ? `Create AI-drafted outputs for ${generationTargetLabel}`
-                : "Confirm the transcript before requesting AI draft support"
-            }
-          >
-            <Bot size={18} />
-            {isGeneratingMeaningUnits
-              ? "Drafting..."
-              : transcriptConfirmed
-                ? "Run draft support"
-                : "Confirm transcript first"}
-          </button>
-          <button
-            className="button primary"
-            disabled={!canExport}
-            onClick={() => exportWorkspace("json")}
-            type="button"
-            title="Download JSON export"
-          >
-            <Download size={18} />
-            Export JSON
-          </button>
         </div>
       </header>
 
       <div className="layout">
-        <aside className="sidebar" aria-label="Workflow navigation">
-          <div className="progress-strip" aria-label="Workflow progress">
-            {steps.map((step) => (
-              <span
-                className={`progress-cell ${
-                  completedSteps.has(step.id) ? "complete" : ""
-                }`}
-                key={step.id}
-              />
-            ))}
-          </div>
-          <div style={{ height: 12 }} />
-          {steps.map((step) => {
-            const Icon = step.icon;
-            return (
+        <main className="main">
+          <div className="top-stepper" aria-label="GDI-QR workflow progress">
+            {guidedSteps.map((step, index) => (
               <button
-                className={`nav-button ${
+                className={`top-step ${
                   activeStep === step.id ? "active" : ""
                 } ${completedSteps.has(step.id) ? "complete" : ""}`}
                 key={step.id}
                 onClick={() => setActiveStep(step.id)}
                 type="button"
               >
-                <Icon size={18} />
-                <span className="nav-label">{step.label}</span>
-                <span className="nav-status" />
+                <span className="top-step-number">{index + 1}</span>
+                <span>{step.label}</span>
               </button>
-            );
-          })}
-        </aside>
-
-        <main className="main">
-          {isLocalOnlyMode && (
-            <div className="local-mode-banner">
-              <div>
-                <strong>Local-only prototype mode</strong>
-                <p className="small">
-                  Transcript drafts, segments, meaning units, categories, and
-                  reviewer notes stay in this browser session unless you export
-                  JSON. Supabase writes and audio upload storage are disabled in
-                  this mode.
-                </p>
-              </div>
-              <span className="badge blue">Raw transcript retained: No</span>
-            </div>
-          )}
-          <section className="section">
+            ))}
+          </div>
+          <section className={`section step-${activeStep}`}>
             <div className="section-header">
               <div>
-                <span className="badge">Current view</span>
-                <h2 className="section-title">{selectedTitle}</h2>
-                <p className="section-copy">
-                  {getStepCopy(activeStep)}
-                </p>
-                <p className="small">{apiStatus}</p>
+                <span className="badge">Current step</span>
+                <h2 className="section-title">
+                  {currentStepIndex + 1}. {selectedTitle}
+                </h2>
+                <p className="section-copy">{getStepCopy(activeStep)}</p>
               </div>
-              <button
-                className="button"
-                onClick={() => {
-                  const currentIndex = steps.findIndex(
-                    (step) => step.id === activeStep
-                  );
-                  setActiveStep(steps[(currentIndex + 1) % steps.length].id);
-                }}
-                type="button"
-                title="Go to next workflow step"
-              >
-                <ChevronRight size={18} />
-                Next
-              </button>
             </div>
+            <StepGuidance step={activeStep} />
+            <div className="workbook-task-heading">
+              <span className="label">What you’ll work on</span>
+              <p>
+                {activeStep === "pre-analysis"
+                  ? "You can move back and forth between domains, data preparation, and relevance judgement as your understanding develops."
+                  : "Use the workspace below to review, revise, and record your analytic decisions for this step."}
+              </p>
+            </div>
+            {activeStep === "pre-analysis" && (
+              <div className="overlap-strip" aria-label="Pre-analysis activities overlap">
+                <span>Domains of Investigation</span>
+                <span>Data Preparation</span>
+                <span>Judgement of Relevance</span>
+                <strong>overlapping and iterative</strong>
+              </div>
+            )}
 
-            {activeStep === "setup" && (
-              <div className="section-body grid">
-                <div className="grid">
+            {activeStep === "pre-analysis" && (
+              <div className="section-body grid pre-analysis-card domain-card">
+                <div className="substep-heading">
+                  <span>1</span>
                   <div>
-                    <label className="label" htmlFor="project-title">
-                      Project title
-                    </label>
-                    <input
-                      className="field"
-                      id="project-title"
-                      onChange={(event) => setProjectTitle(event.target.value)}
-                      value={projectTitle}
-                    />
+                    <h3>Organising Data into Domains of Investigation</h3>
+                    <p>
+                      Organise data according to areas of investigation related
+                      to the research question. Domains are not findings.
+                    </p>
                   </div>
+                </div>
+                <div className="mini-card soft">
+                  <span className="label">Purpose</span>
+                  <p className="small">
+                    Domains are broad areas of inquiry that help structure the
+                    analysis. They remain provisional and may change as you work
+                    with the data.
+                  </p>
+                  <p className="small">
+                    Keep domains broad at this stage. They help you organise
+                    attention; they are not the final analytic categories.
+                  </p>
+                  <span className="label">Examples</span>
+                  <ul className="compact-list">
+                    <li>Self-confidence</li>
+                    <li>Therapeutic relationship</li>
+                    <li>Emotional expression</li>
+                    <li>Changes over time</li>
+                  </ul>
                 </div>
                 <div>
                   <label className="label" htmlFor="research-question">
-                    Research question
+                    Research Question
                   </label>
                   <textarea
                     className="textarea"
@@ -2723,83 +3359,109 @@ export function GdiqrWorkspace({
                 </div>
                 <div>
                   <label className="label" htmlFor="study-description">
-                    Study description
+                    Domains of Investigation
                   </label>
                   <textarea
                     className="textarea"
                     id="study-description"
                     onChange={(event) => setStudyDescription(event.target.value)}
+                    placeholder="Initial areas that organise the data in relation to the research question. These are not findings or categories."
                     value={studyDescription}
                   />
                 </div>
-                <div className="grid three">
-                  <div className="mini-card soft">
-                    <label className="label" htmlFor="project-language">
-                      Interview language
-                    </label>
-                    <select
-                      className="select"
-                      id="project-language"
-                      onChange={(event) =>
-                        setProjectLanguage(
-                          event.target.value === "Chinese"
-                            ? "Chinese"
-                            : "English"
-                        )
-                      }
-                      value={projectLanguage}
-                    >
-                      <option value="English">English</option>
-                      <option value="Chinese">Chinese</option>
-                    </select>
+                <details className="workbook-details">
+                  <summary>Optional researcher notes</summary>
+                  <div className="grid">
+                    <div>
+                      <label className="label" htmlFor="researcher-expectations">
+                        Researcher Expectations / Preunderstandings
+                      </label>
+                      <textarea
+                        className="textarea compact-textarea"
+                        id="researcher-expectations"
+                        onChange={(event) =>
+                          setResearcherExpectations(event.target.value)
+                        }
+                        placeholder="Record assumptions, expectations, and prior understandings before detailed analysis."
+                        value={researcherExpectations}
+                      />
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="researcher-notes">
+                        Researcher Notes
+                      </label>
+                      <textarea
+                        className="textarea compact-textarea"
+                        id="researcher-notes"
+                        onChange={(event) => setResearcherNotes(event.target.value)}
+                        placeholder="Add early decisions, questions, and methodological notes."
+                        value={researcherNotes}
+                      />
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="researcher-reflexivity">
+                        Researcher Reflexivity Notes
+                      </label>
+                      <textarea
+                        className="textarea compact-textarea"
+                        id="researcher-reflexivity"
+                        onChange={(event) =>
+                          setResearcherReflexivityNotes(event.target.value)
+                        }
+                        placeholder="What assumptions, experiences, expectations, or theoretical perspectives might influence your analysis?"
+                        value={researcherReflexivityNotes}
+                      />
+                    </div>
                   </div>
-                  <div className="mini-card soft">
-                    <span className="label">Methodological frame</span>
-                    <strong>{METHODOLOGICAL_FRAME}</strong>
-                    <p className="small">
-                      AI outputs are draft material for researcher review, not
-                      final analysis.
-                    </p>
-                  </div>
-                  <div className="mini-card soft">
-                    <span className="label">Light interpretation</span>
-                    <button
-                      className={`button ${
-                        lightInterpretation ? "primary" : ""
-                      }`}
-                      onClick={() => toggleLightInterpretation()}
-                      type="button"
-                    >
-                      <Pencil size={16} />
-                      {lightInterpretation ? "On" : "Off"}
-                    </button>
-                  </div>
-                  <div className="mini-card soft">
-                    <span className="label">Setup action</span>
-                    <button
-                      className="button primary"
-                      disabled={isSavingProject}
-                      onClick={saveProjectSetup}
-                      type="button"
-                    >
-                      <Archive size={16} />
-                      {isSavingProject ? "Saving..." : "Save setup"}
-                    </button>
-                    {projectSetupSavedAt && (
-                      <p className="small">
-                        {isLocalOnlyMode ? "Saved locally" : "Saved"} at{" "}
-                        {new Date(projectSetupSavedAt).toLocaleTimeString()}.
-                      </p>
-                    )}
-                  </div>
-                </div>
+                </details>
               </div>
             )}
 
-            {activeStep === "upload" && (
-              <div className="section-body grid">
+            {activeStep === "pre-analysis" && (
+              <div className="section-body grid pre-analysis-card preparation-card">
+                <div className="substep-heading">
+                  <span>2</span>
+                  <div>
+                    <h3>Data Preparation</h3>
+                    <p>
+                      Prepare transcripts and source materials for analysis.
+                    </p>
+                  </div>
+                </div>
                 <div className="mini-card soft">
-                  <span className="label">Before you upload</span>
+                  <span className="label">Purpose</span>
+                  <p className="small">
+                    I can help with preparation, and you remain in charge of
+                    ensuring the material is readable,
+                    anonymised, and appropriate for analysis.
+                  </p>
+                  <p className="small">
+                    This is the practical checkpoint: get the transcript into a
+                    readable form, then review anonymisation before saving it
+                    for analysis.
+                  </p>
+                  <span className="label">Preparation Checklist</span>
+                  <div className="preparation-checklist">
+                    <StatusLine
+                      label="Transcript available"
+                      status={editableTranscript.trim() ? "Passed" : "Not addressed"}
+                    />
+                    <StatusLine
+                      label="Readable format"
+                      status={transcriptImportText.trim() || editableTranscript.trim() ? "Passed" : "Not addressed"}
+                    />
+                    <StatusLine
+                      label="Anonymisation completed"
+                      status={unresolvedHighRiskCount === 0 ? "Passed" : "Needs review"}
+                    />
+                    <StatusLine
+                      label="Ready for analysis"
+                      status={transcriptConfirmed ? "Passed" : "Needs review"}
+                    />
+                  </div>
+                </div>
+                <div className="mini-card soft">
+                  <span className="label">Before preparing data</span>
                   <p className="small">
                     Use anonymised or synthetic data for testing. Do not upload
                     identifiable, sensitive, or confidential counselling,
@@ -2812,20 +3474,22 @@ export function GdiqrWorkspace({
                   <p className="small">
                     Transcript file/paste imports are prepared as a local draft
                     first and are not saved until you review and confirm them.
-                    In local-only sharing mode, audio upload is disabled; use a
-                    short anonymised transcript or test text.
+                    For shared demonstrations, use a short anonymised
+                    transcript or test text.
                   </p>
                   {/* TODO: Consider an enforced ethics acknowledgement for non-demo deployments. */}
                 </div>
-                <div className="upload-panel">
+                <details className="workbook-details">
+                  <summary>Optional: transcribe interview audio</summary>
+                  <div className="upload-panel">
                   <div className="upload-dropzone">
                     <FileAudio size={32} />
                     <h3>Upload interview audio</h3>
                     <p className="small">
                       Supported audio: MP3, M4A, WAV, MP4, WebM, OGG, AAC.
                       {isLocalOnlyMode
-                        ? " Audio upload is disabled in local-only sharing mode because raw audio should not be stored before review."
-                        : " Your file is stored privately, transcribed locally, then shown for researcher review before any AI-drafted outputs are created."}
+                        ? " For shared demos, please use transcript import instead."
+                        : " The transcript will be shown for researcher review before any analysis begins."}
                     </p>
                     <div className="upload-controls">
                       <div>
@@ -2883,7 +3547,7 @@ export function GdiqrWorkspace({
                       >
                         <Upload size={18} />
                         {isLocalOnlyMode
-                          ? "Audio disabled in local-only mode"
+                          ? "Use transcript import for this demo"
                           : isUploadingAudio
                           ? "Uploading and transcribing..."
                           : "Upload and transcribe"}
@@ -2899,194 +3563,142 @@ export function GdiqrWorkspace({
                       </button>
                     </div>
                   </div>
-                  <div className="mini-card upload-summary">
-                    <Database size={28} />
-                    <h3>Storage target</h3>
-                    <p className="small">
-                      Each new audio upload or transcript import becomes the
-                      active working transcript. Review and confirm it before
-                      generating meaning units.
-                    </p>
-                    <span className="badge blue">
-                      {isLocalOnlyMode
-                        ? "Local-only session"
-                        : apiDataSource === "supabase"
-                        ? "Supabase connected"
-                        : "Supabase not connected"}
-                    </span>
-                    <div className="data-safety-grid">
-                      {dataSafetyItems.map((item) => (
-                        <div className="data-safety-item" key={item.label}>
-                          <span className="label">{item.label}</span>
-                          <strong>{item.value}</strong>
-                        </div>
-                      ))}
+                  </div>
+                </details>
+                <details className="workbook-details transcript-import-details">
+                  <summary>Import or paste transcript</summary>
+                  <div className="transcript-import-panel">
+                    <div>
+                      <FileText size={28} />
+                      <h3>Import existing transcript</h3>
+                      <p className="small">
+                        Supported transcript files: TXT, MD, VTT, SRT, DOCX, and
+                        PDF. You can also paste text below. The app will prepare
+                        the text, then ask you to review it before any draft
+                        outputs are created.
+                        For shared-link demos, use a short anonymised transcript
+                        or test text only. Files over 5 MB are not accepted.
+                      </p>
                     </div>
-                    {latestAudioFile && (
-                      <div className="upload-status">
-                        <span className="label">Latest audio</span>
-                        <strong>{latestAudioFile.originalFilename}</strong>
-                        <p className="small">
-                          {latestAudioFile.language} ·{" "}
-                          {formatBytes(latestAudioFile.sizeBytes)}
-                        </p>
+                    <div className="upload-controls">
+                      <div>
+                        <label className="label" htmlFor="transcript-language">
+                          Transcript language
+                        </label>
+                        <select
+                          className="select"
+                          id="transcript-language"
+                          onChange={(event) =>
+                            setUploadLanguage(
+                              event.target.value === "Chinese"
+                                ? "Chinese"
+                                : "English"
+                            )
+                          }
+                          value={uploadLanguage}
+                        >
+                          <option value="English">English</option>
+                          <option value="Chinese">Chinese</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="transcript-file">
+                          Transcript file
+                        </label>
+                        <input
+                          accept=".txt,.md,.vtt,.srt,.docx,.pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
+                          className="field"
+                          id="transcript-file"
+                          onChange={(event) =>
+                            void loadTranscriptFile(event.target.files?.[0] ?? null)
+                          }
+                          type="file"
+                        />
+                      </div>
+                    </div>
+                    <label className="label" htmlFor="transcript-import-text">
+                      Paste transcript
+                    </label>
+                    <textarea
+                      className="textarea transcript-import"
+                      id="transcript-import-text"
+                      onChange={(event) =>
+                        setTranscriptImportText(event.target.value)
+                      }
+                      placeholder="Paste transcript text here. Speaker labels can already be included; otherwise the app will infer Interviewer and Participant turns for your review."
+                      value={transcriptImportText}
+                    />
+                    <button
+                      className="button primary"
+                      disabled={isImportingTranscript || !transcriptImportText.trim()}
+                      onClick={() => void importTranscript(false)}
+                      type="button"
+                    >
+                      <Upload size={18} />
+                      {isImportingTranscript
+                        ? "Preparing transcript..."
+                        : "Prepare transcript"}
+                    </button>
+                    <button
+                      className="button"
+                      disabled={isImportingTranscript || !transcriptImportText.trim()}
+                      onClick={() => void importTranscript(true)}
+                      type="button"
+                    >
+                      Use quick local preparation
+                    </button>
+                    {transcriptPreparationStage && (
+                      <div className="mini-card warning-card">
+                        <strong>Transcript preparation status</strong>
+                        <p className="small">{transcriptPreparationStage}</p>
                       </div>
                     )}
-                    {latestTranscriptionJob && (
-                      <div className="upload-status">
-                        <span className="label">Latest transcription job</span>
-                        <StatusBadge label={latestTranscriptionJob.status} />
-                        {latestTranscriptionJob.errorMessage && (
-                          <p className="small">
-                            {latestTranscriptionJob.errorMessage}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                    {audioPreviewUrl && (
-                      <audio
-                        className="audio-player"
-                        controls
-                        src={audioPreviewUrl}
-                      />
-                    )}
-                    {!latestAudioFile && (
-                      <EmptyState text="No audio uploaded yet. Choose a file to start your first real test." />
-                    )}
                   </div>
-                </div>
-                <div className="transcript-import-panel">
-                  <div>
-                    <FileText size={28} />
-                    <h3>Import existing transcript</h3>
-                    <p className="small">
-                      Supported transcript files: TXT, MD, VTT, SRT, DOCX, and
-                      PDF. You can also paste text below. The app will prepare
-                      the text, then ask you to review it before any AI-drafted
-                      outputs are created.
-                      For shared-link demos, use a short anonymised transcript
-                      or test text only. Files over 5 MB are not accepted.
-                    </p>
-                  </div>
-                  <div className="upload-controls">
-                    <div>
-                      <label className="label" htmlFor="transcript-language">
-                        Transcript language
-                      </label>
-                      <select
-                        className="select"
-                        id="transcript-language"
-                        onChange={(event) =>
-                          setUploadLanguage(
-                            event.target.value === "Chinese"
-                              ? "Chinese"
-                              : "English"
-                          )
-                        }
-                        value={uploadLanguage}
-                      >
-                        <option value="English">English</option>
-                        <option value="Chinese">Chinese</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="label" htmlFor="transcript-file">
-                        Transcript file
-                      </label>
-                      <input
-                        accept=".txt,.md,.vtt,.srt,.docx,.pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
-                        className="field"
-                        id="transcript-file"
-                        onChange={(event) =>
-                          void loadTranscriptFile(event.target.files?.[0] ?? null)
-                        }
-                        type="file"
-                      />
-                    </div>
-                  </div>
-                  <label className="label" htmlFor="transcript-import-text">
-                    Paste transcript
-                  </label>
-                  <textarea
-                    className="textarea transcript-import"
-                    id="transcript-import-text"
-                    onChange={(event) =>
-                      setTranscriptImportText(event.target.value)
-                    }
-                    placeholder="Paste transcript text here. Speaker labels can already be included; otherwise the app will infer Interviewer and Participant turns for your review."
-                    value={transcriptImportText}
-                  />
-                  <button
-                    className="button primary"
-                    disabled={isImportingTranscript || !transcriptImportText.trim()}
-                    onClick={importTranscript}
-                    type="button"
-                  >
-                    <Upload size={18} />
-                    {isImportingTranscript
-                      ? "Preparing transcript..."
-                      : "Prepare transcript"}
-                  </button>
-                </div>
-                <div className="mini-card">
-                  <span className="label">Project interviews/documents</span>
-                  <h3>Current project data</h3>
-                  <p className="small">
-                    This prototype keeps one active working transcript at a
-                    time. The Supabase hierarchy migration prepares the app for
-                    preserving multiple interview analyses in one project.
-                  </p>
-                  <div className="grid three">
-                    <p className="small">
-                      <strong>Stored uploads:</strong>{" "}
-                      {displayAudioFiles.length}
-                    </p>
-                    <p className="small">
-                      <strong>Segments:</strong> {displaySegments.length} total,{" "}
-                      {
-                        displaySegments.filter(
-                          (segment) =>
-                            segment.status === "Analysed" ||
-                            segment.status === "Completed"
-                        ).length
-                      }{" "}
-                      analysed
-                    </p>
-                    <p className="small">
-                      <strong>Confirmed MUs:</strong>{" "}
-                      {confirmedMeaningUnits.length}
-                    </p>
-                  </div>
-                  {displayAudioFiles.length === 0 ? (
-                    <EmptyState text="No interview uploads yet. Audio uploads and transcript imports will appear in the workflow once they become the active transcript." />
-                  ) : (
-                    <div className="table-wrap">
-                      <table className="table compact-table">
-                        <thead>
-                          <tr>
-                            <th>File</th>
-                            <th>Language</th>
-                            <th>Size</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {displayAudioFiles.map((file) => (
-                            <tr key={file.id}>
-                              <td>{file.originalFilename}</td>
-                              <td>{file.language}</td>
-                              <td>{formatBytes(file.sizeBytes)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
+                </details>
               </div>
             )}
 
-            {activeStep === "transcript" && (
-              <div className="section-body grid">
+            {activeStep === "pre-analysis" && (
+              <div className="section-body grid pre-analysis-card relevance-card">
+                <div className="substep-heading">
+                  <span>3</span>
+                  <div>
+                    <h3>Judgement of Relevance</h3>
+                    <p>
+                      Determine what data are relevant to the study. The
+                      researcher is the final decision-maker.
+                    </p>
+                  </div>
+                </div>
+                <div className="mini-card soft">
+                  <span className="label">Purpose</span>
+                  <p className="small">
+                    GDI-QR emphasises researcher judgement rather than automated
+                    exclusion. I can help flag sections that may be relevant,
+                    but you decide what becomes part of your study data.
+                  </p>
+                  <p className="small">
+                    Use this as a visible decision rule for the demo: the system
+                    may suggest, but it does not remove material automatically.
+                  </p>
+                  <label className="label" htmlFor="relevance-guideline">
+                    Relevance Decision Guideline
+                  </label>
+                  <textarea
+                    className="textarea compact-textarea"
+                    id="relevance-guideline"
+                    onChange={(event) => setRelevanceGuideline(event.target.value)}
+                    placeholder="Example: Include participant accounts that address the research question; mark unclear passages as possibly relevant for later review."
+                    value={relevanceGuideline}
+                  />
+                  <p className="small">
+                    Use this guideline while reviewing the transcript. The
+                    system can assist, but the decision about relevance remains
+                    yours.
+                  </p>
+                </div>
+                <details className="workbook-details review-workbook-details">
+                  <summary>Review prepared transcript and anonymisation</summary>
                 <div
                   className={`mini-card ${
                     transcriptConfirmed ? "soft" : "review-required"
@@ -3101,13 +3713,13 @@ export function GdiqrWorkspace({
                           : "Review transcript before analysis"}
                       </h3>
                       <p className="small">
-                        Before continuing, confirm that every turn is assigned
-                        to the correct speaker. Questions and prompts should be
-                        labelled Interviewer; interviewee experiences should be
+                        Before continuing, check that every turn is assigned to
+                        the correct speaker. Questions and prompts can be
+                        labelled Interviewer; interviewee experiences can be
                         labelled Participant. Also correct any missing words,
-                        recognition errors, or privacy markers such as
-                        {" [[PRIVACY_REVIEW:PERSON:Sam]]"}. Mistakes here will
-                        carry into the meaning units and category drafts.
+                        recognition errors, or anonymisation issues. Mistakes
+                        here will carry into the meaning units and category
+                        drafts.
                       </p>
                       <p className="small">
                         Please ensure that all personal identifiers and
@@ -3122,10 +3734,6 @@ export function GdiqrWorkspace({
                       label={transcriptConfirmed ? "Confirmed" : "Needs review"}
                     />
                   </div>
-                  <div className="button-row">
-                    <span className="badge blue">{transcriptStorageStatus}</span>
-                    <span className="badge">Raw transcript retained: No</span>
-                  </div>
                   {sensitiveReviewItems.length > 0 && (
                     <div className="privacy-review-list">
                       <div className="category-header">
@@ -3133,8 +3741,8 @@ export function GdiqrWorkspace({
                           <span className="label">Sensitive information review</span>
                           <p className="small">
                             Review each detected placeholder before analysis.
-                            High-risk items must be confirmed, edited, or marked
-                            as false positives unless you explicitly override.
+                            Please confirm, edit, or mark high-risk items as
+                            false positives before moving ahead.
                           </p>
                         </div>
                         <button
@@ -3346,595 +3954,292 @@ export function GdiqrWorkspace({
                     Delete transcript + outputs
                   </button>
                 </div>
-                <label className="label" htmlFor="transcript-editor">
-                  Editable transcript
-                </label>
-                <textarea
-                  className="textarea transcript"
-                  id="transcript-editor"
-                  onChange={(event) => {
-                    const nextTranscript = event.target.value;
-                    setEditableTranscript(nextTranscript);
-                    setTranscriptConfirmed(false);
-                    setTranscriptStorageStatus("Not saved yet — local draft only");
-                    setPrivacyOverrideAccepted(false);
-                    setAiPrivacyFindings(
-                      extractPrivacyReviewMarkers(nextTranscript)
-                    );
-                  }}
-                  placeholder="Your uploaded audio transcript will appear here after local transcription."
-                  ref={transcriptTextAreaRef}
-                  value={editableTranscript}
-                />
+                <details className="workbook-details">
+                  <summary>Open editable transcript</summary>
+                  <label className="label" htmlFor="transcript-editor">
+                    Editable transcript
+                  </label>
+                  <textarea
+                    className="textarea transcript"
+                    id="transcript-editor"
+                    onChange={(event) => {
+                      const nextTranscript = event.target.value;
+                      setEditableTranscript(nextTranscript);
+                      setTranscriptConfirmed(false);
+                      setTranscriptStorageStatus("Not saved yet — local draft only");
+                      setPrivacyOverrideAccepted(false);
+                      setAiPrivacyFindings(
+                        extractPrivacyReviewMarkers(nextTranscript)
+                      );
+                    }}
+                    placeholder="Your uploaded audio transcript will appear here after local transcription."
+                    ref={transcriptTextAreaRef}
+                    value={editableTranscript}
+                  />
+                </details>
                 {audioPreviewUrl && (
                   <audio className="audio-player" controls src={audioPreviewUrl} />
                 )}
+                </details>
               </div>
             )}
 
-            {activeStep === "segments" && (
+            {activeStep === "understanding" && (
               <div className="section-body grid">
-                <div className="mini-card soft">
-                  <span className="label">Segment Manager</span>
-                  <p className="small">
-                    Auto-generated segments are draft processing chunks, not
-                    meaning units. Review and adjust boundaries before analysis.
-                    Only segments marked "Ready for MU Analysis" can be used for
-                    meaning unit generation. You can generate meaning units from
-                    one selected segment, or batch-generate them for all ready
-                    segments later.
-                  </p>
-                  <p className="small">
-                    Ready segments are processed one by one, even when using
-                    "Generate MUs for all ready segments", to keep outputs
-                    traceable to transcript evidence.
-                  </p>
-                  <div className="upload-controls">
-                    <label className="label" htmlFor="segment-split-mode">
-                      Segmentation mode
-                    </label>
-                    <select
-                      className="field"
-                      disabled={isAutoSplittingTranscript}
-                      id="segment-split-mode"
-                      onChange={(event) =>
-                        setSegmentSplitMode(event.target.value as AutoSegmentMode)
-                      }
-                      value={segmentSplitMode}
-                    >
-                      <option value="conservative">
-                        Conservative — fewer, larger segments
-                      </option>
-                      <option value="balanced">
-                        Balanced — topic-based, recommended
-                      </option>
-                      <option value="detailed">
-                        Detailed — more granular topic/question shifts
-                      </option>
-                    </select>
-                  </div>
-                  <p className="small">
-                    If the auto-split result is too broad, use Split segment
-                    here, Create new segment from selection, or rerun with
-                    Detailed mode.
-                  </p>
-                  <div className="button-row">
-                    <button
-                      className="button primary"
-                      disabled={
-                        isAutoSplittingTranscript ||
-                        !editableTranscript.trim() ||
-                        !transcriptConfirmed
-                      }
-                      onClick={() => void autoSplitTranscriptSegments()}
-                      title={
-                        transcriptConfirmed
-                          ? "Create draft segments from the confirmed transcript"
-                          : "Confirm the transcript before auto-splitting"
-                      }
-                      type="button"
-                    >
-                      <GitBranch size={18} />
-                      {isAutoSplittingTranscript
-                        ? "Auto-splitting..."
-                        : "Auto-split transcript"}
-                    </button>
-                    <span className="badge warning">
-                      Auto-generated segments must be reviewed before analysis.
-                    </span>
-                  </div>
+                <div className="analysis-flow-story" aria-label="Understanding and translating flow">
+                  <span>Participant Account</span>
+                  <em>optional assistant support</em>
+                  <span>Meaning Unit</span>
+                  <em>optional assistant support</em>
+                  <span>Analytic Summary</span>
                 </div>
-                {displaySegments.length === 0 && (
-                  <EmptyState text="No segments yet. Upload and transcribe audio first; the app will create the first working segment from the transcript." />
-                )}
-                {selectedSegment && (
-                  <div className="segment-manager">
-                    <aside className="segment-list">
-                      {displaySegments.map((segment) => (
+                <div className="analysis-workspace understanding-workspace">
+                  <section className="analysis-panel">
+                    <span className="flow-step">1 · Raw account</span>
+                    <span className="label">Transcript</span>
+                    <h3>Participant account</h3>
+                    <p className="small">
+                      Work from the participant's words. Use this panel to keep
+                      the source account visible while delineating meaning units
+                      and reviewing summaries.
+                    </p>
+                    <p className="small panel-note">
+                      The transcript remains the reference point. If a later
+                      meaning unit looks wrong, return here and correct the
+                      source text first.
+                    </p>
+                    <textarea
+                      className="textarea transcript comparison-textarea"
+                      onChange={(event) => {
+                        const nextTranscript = event.target.value;
+                        setEditableTranscript(nextTranscript);
+                        setTranscriptConfirmed(false);
+                        setTranscriptStorageStatus("Not saved yet — local draft only");
+                        setPrivacyOverrideAccepted(false);
+                        setAiPrivacyFindings(
+                          extractPrivacyReviewMarkers(nextTranscript)
+                        );
+                      }}
+                      placeholder="Prepare and confirm a transcript in Step 1."
+                      value={editableTranscript}
+                    />
+                    <div className="button-row">
+                      <button
+                        className="button"
+                        onClick={() => setActiveStep("pre-analysis")}
+                        type="button"
+                      >
+                        Review transcript
+                      </button>
+                      <StatusBadge
+                        label={transcriptConfirmed ? "Confirmed" : "Needs review"}
+                      />
+                    </div>
+                  </section>
+
+                  <section className="analysis-panel">
+                    <span className="flow-step">2 · Meaning unit delineation</span>
+                    <span className="label">Meaning Units</span>
+                    <h3>Delineate meaning shifts</h3>
+                    <p className="small">
+                      A meaning unit should be large enough to communicate a
+                      clear message but small enough to remain analytically
+                      manageable.
+                    </p>
+                    <p className="small panel-note">
+                      Treat these boundaries as reviewable working decisions,
+                      not automatic truth.
+                    </p>
+                    <div className="button-row">
+                      <button
+                        className="button"
+                        disabled={
+                          isGeneratingMeaningUnits ||
+                          !editableTranscript.trim() ||
+                          !transcriptConfirmed
+                        }
+                        onClick={() => void generateMeaningUnits()}
+                        title={
+                          transcriptConfirmed
+                            ? "Optional assistant support for draft meaning-unit delineation"
+                            : "Confirm the transcript before meaning-unit delineation"
+                        }
+                        type="button"
+                      >
+                        <Play size={18} />
+                        {isGeneratingMeaningUnits
+                          ? "Delineating draft MUs..."
+                          : generationButtonLabel}
+                      </button>
+                      {isGeneratingMeaningUnits && (
                         <button
-                          className={`segment-list-item ${
-                            segment.id === selectedSegment.id ? "active" : ""
-                          }`}
-                          key={segment.id}
-                          onClick={() => setSelectedSegmentId(segment.id)}
+                          className="button danger"
+                          onClick={stopMeaningUnitGeneration}
                           type="button"
                         >
-                          <div>
-                            <strong>
-                              {segment.segmentId}: {segment.topicLabel}
-                            </strong>
-                            <p className="small">
-                              {segment.text.slice(0, 120)}
-                              {segment.text.length > 120 ? "..." : ""}
-                            </p>
-                            <p className="small">
-                              {approximateWordCount(segment.text)} words
-                            </p>
-                          </div>
-                          <StatusBadge label={segment.status} />
+                          Stop
                         </button>
-                      ))}
-                    </aside>
-                    <div className="segment-detail">
-                      <div className="grid two">
-                        <div className="mini-card soft">
-                          <span className="label">Context</span>
-                          <ContextPreview
-                            current={selectedSegment}
-                            next={nextSegment}
-                            previous={previousSegment}
-                          />
-                        </div>
-                        <div className="mini-card">
-                          <div className="category-header">
-                            <div>
-                              <span className="badge">{selectedSegment.caseId}</span>
-                              <h3>{selectedSegment.segmentId}</h3>
-                            </div>
-                            <StatusBadge label={selectedSegment.status} />
-                          </div>
-                          <div className="grid two">
-                            <label className="label">
-                              Segment title
-                              <input
-                                className="field"
-                                onChange={(event) =>
-                                  setSegmentDraftTitle(event.target.value)
-                                }
-                                value={segmentDraftTitle}
-                              />
-                            </label>
-                            <label className="label">
-                              Status
-                              <select
-                                className="field"
-                                onChange={(event) =>
-                                  void saveSelectedSegment(
-                                    event.target.value as SegmentStatus
-                                  )
-                                }
-                                value={selectedSegment.status}
-                              >
-                                {segmentStatuses.map((status) => (
-                                  <option key={status} value={status}>
-                                    {status}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                          </div>
-                          <p className="small">
-                            Starting MU #{selectedSegment.startingMuNumber} ·{" "}
-                            {selectedSegment.startTimestamp} to{" "}
-                            {selectedSegment.endTimestamp} ·{" "}
-                            {approximateWordCount(selectedSegment.text)} words
-                          </p>
-                          <label className="label" htmlFor="segment-editor">
-                            Editable segment text
-                          </label>
-                          <textarea
-                            className="textarea segment-textarea"
-                            id="segment-editor"
-                            onChange={(event) =>
-                              setSegmentDraftText(event.target.value)
-                            }
-                            ref={segmentTextAreaRef}
-                            value={segmentDraftText}
-                          />
-                          <div className="button-row">
-                            <button
-                              className="button primary"
-                              disabled={isSavingSegment}
-                              onClick={() => void saveSelectedSegment()}
-                              type="button"
-                            >
-                              Save segment
-                            </button>
-                            <button
-                              className="button"
-                              disabled={isSavingSegment}
-                              onClick={() =>
-                                void saveSelectedSegment("Ready for MU Analysis")
-                              }
-                              type="button"
-                            >
-                              Mark ready
-                            </button>
-                            <button
-                              className="button"
-                              disabled={
-                                isGeneratingMeaningUnits ||
-                                !canRunMeaningUnitsForSegment(selectedSegment)
-                              }
-                              onClick={() => void generateMeaningUnits(selectedSegment)}
-                              type="button"
-                              title="Create draft meaning units for this ready segment only"
-                            >
-                              <Bot size={18} />
-                              Generate MUs for this segment
-                            </button>
-                          </div>
-                          <div className="button-row">
-                            <button
-                              className="button"
-                              disabled={isSavingSegment}
-                              onClick={() => void runSegmentAction("split")}
-                              type="button"
-                            >
-                              Split segment here
-                            </button>
-                            <button
-                              className="button"
-                              disabled={isSavingSegment}
-                              onClick={createSegmentFromSelection}
-                              type="button"
-                              title="Select text in the segment editor first"
-                            >
-                              Create new segment from selection
-                            </button>
-                            <button
-                              className="button"
-                              disabled={isSavingSegment || !previousSegment}
-                              onClick={() =>
-                                void runSegmentAction("merge", "previous")
-                              }
-                              type="button"
-                            >
-                              Merge previous
-                            </button>
-                            <button
-                              className="button"
-                              disabled={isSavingSegment || !nextSegment}
-                              onClick={() => void runSegmentAction("merge", "next")}
-                              type="button"
-                            >
-                              Merge next
-                            </button>
-                            <button
-                              className="button"
-                              disabled={isSavingSegment || !previousSegment}
-                              onClick={() => void runSegmentAction("move", "up")}
-                              type="button"
-                            >
-                              Move up
-                            </button>
-                            <button
-                              className="button"
-                              disabled={isSavingSegment || !nextSegment}
-                              onClick={() => void runSegmentAction("move", "down")}
-                              type="button"
-                            >
-                              Move down
-                            </button>
-                            <button
-                              className="button danger"
-                              disabled={isSavingSegment}
-                              onClick={() => void deleteSelectedSegment()}
-                              type="button"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      </div>
+                      )}
+                      <button
+                        className="button"
+                        disabled={
+                          isGeneratingMeaningUnits ||
+                          !editableTranscript.trim() ||
+                          !transcriptConfirmed
+                        }
+                        onClick={() => void generateMeaningUnits(null, true)}
+                        type="button"
+                      >
+                        Use rule-based draft MUs
+                      </button>
                     </div>
-                  </div>
-                )}
-              </div>
-            )}
+                    {(generationProgress || meaningUnitGenerationStage) && (
+                      <div className="mini-card warning-card">
+                        <strong>
+                          {isGeneratingMeaningUnits
+                            ? "Meaning-unit generation in progress"
+                            : "Meaning-unit generation status"}
+                        </strong>
+                        <p className="small">
+                          {meaningUnitGenerationStage ||
+                            "Delineating draft meaning units from the confirmed transcript. This may take a moment."}
+                        </p>
+                      </div>
+                    )}
+                    <div className="mini-card soft">
+                      <span className="label">Current MU review set</span>
+                      <h3>
+                        {currentMeaningUnits.length} draft meaning unit
+                        {currentMeaningUnits.length === 1 ? "" : "s"}
+                      </h3>
+                      <p className="small">
+                        {confirmedMeaningUnits.length} accepted ·{" "}
+                        {excludedMeaningUnits.length} context/excluded ·{" "}
+                        {unconfirmedMeaningUnits.length} awaiting review
+                      </p>
+                      <p className="small panel-note">
+                        Source references are shown on each MU for traceability.
+                        Internal transcript chunks are not analytic units.
+                      </p>
+                    </div>
+                    {currentMeaningUnits.length === 0 && (
+                      <EmptyState text="No draft meaning units yet. Confirm the transcript, then generate draft MUs for researcher review." />
+                    )}
+                  </section>
 
-            {activeStep === "meaning-units" && (
-              <div className="section-body">
-                <div className="review-layout">
-                  <div className="grid">
-                <div className="mini-card soft">
-                  <span className="label">Before categorising</span>
-                  <p className="small">
-                    Check that each excerpt represents the Participant's
-                    experience, not the Interviewer's question. Edit summaries
-                    directly when they are close. If the excerpt or speaker is
-                    wrong, use Fix transcript: correct the transcript,
-                    confirm it again, and regenerate meaning units so later
-                    category work is based on the right text.
-                  </p>
-                </div>
-                <div className="mini-card soft">
-                  <span className="label">Meaning Units Generation Scope</span>
-                  <div className="scope-options">
-                    <label className="scope-option">
-                      <input
-                        checked={meaningUnitGenerationScope === "all"}
-                        disabled={isGeneratingMeaningUnits}
-                        name="mu-generation-scope"
-                        onChange={() => setMeaningUnitGenerationScope("all")}
-                        type="radio"
-                      />
-                      <span>All segments</span>
-                    </label>
-                    <label className="scope-option">
-                      <input
-                        checked={meaningUnitGenerationScope === "selected"}
-                        disabled={isGeneratingMeaningUnits}
-                        name="mu-generation-scope"
-                        onChange={() => setMeaningUnitGenerationScope("selected")}
-                        type="radio"
-                      />
-                      <span>Selected segment only</span>
-                    </label>
-                  </div>
-                  <div className="upload-controls">
-                    <label className="label" htmlFor="mu-segment-select">
-                      Segment
-                    </label>
-                    <select
-                      className="field"
-                      disabled={
-                        isGeneratingMeaningUnits ||
-                        meaningUnitGenerationScope === "all"
-                      }
-                      id="mu-segment-select"
-                      onChange={(event) =>
-                        setMeaningUnitSegmentId(event.target.value)
-                      }
-                      value={meaningUnitSegmentId}
-                    >
-                      {displaySegments.map((segment) => (
-                        <option key={segment.id} value={segment.id}>
-                          {segment.segmentId} — {segment.topicLabel} ({segment.status})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <p className="small">
-                    Generate meaning units from one selected ready segment, or
-                    from all segments marked "Ready for MU Analysis". The system
-                    processes ready segments one at a time to keep outputs
-                    traceable to transcript evidence and reduce
-                    over-interpretation risk.
-                  </p>
-                  {generationProgress && (
+                  <section className="analysis-panel">
+                    <span className="flow-step">3 · Researcher MU review</span>
+                    <span className="label">Draft Meaning Units</span>
+                    <h3>Review excerpts and summaries</h3>
                     <p className="small">
-                      {generationProgress.total > 1
-                        ? `Generating meaning units for all segments... ${generationProgress.label ?? ""} (${generationProgress.current} of ${generationProgress.total})`
-                        : `Generating meaning units for ${generationProgress.label ?? generationTargetLabel}...`}
+                      Each MU is provisional until you edit, accept, or exclude
+                      it. Interviewer questions are retained as context
+                      candidates and excluded by default where detected.
                     </p>
-                  )}
-                </div>
-                <div className="button-row">
-                  <button
-                    className="button primary"
-                    disabled={!canGenerateMeaningUnits || isGeneratingMeaningUnits}
-                    onClick={() => void generateMeaningUnits()}
-                    type="button"
-                    title={
-                      transcriptConfirmed
-                        ? `Generate draft meaning units for ${generationTargetLabel}`
-                        : "Confirm the transcript before generating meaning units"
-                    }
-                  >
-                    <Bot size={18} />
-                    {isGeneratingMeaningUnits
-                      ? "Generating MUs..."
-                      : transcriptConfirmed
-                        ? generationButtonLabel
-                        : "Confirm transcript first"}
-                  </button>
-                  <button
-                    className="button soft"
-                    disabled={units.length === 0 || isAcceptingMeaningUnits}
-                    onClick={() => void acceptAllReviewedMeaningUnits()}
-                    title="After reviewing the generated summaries, accept them so categories can use them."
-                    type="button"
-                  >
-                    <Check size={18} />
-                    {isAcceptingMeaningUnits
-                      ? "Saving accepted MUs..."
-                      : "Accept all reviewed summaries"}
-                  </button>
-                  {isGeneratingMeaningUnits && (
-                    <button
-                      className="button danger"
-                      onClick={stopMeaningUnitGeneration}
-                      type="button"
-                    >
-                      Stop generation
-                    </button>
-                  )}
-                  <button
-                    className="button"
-                    disabled={!canRunReviewer || isRunningReviewer}
-                    onClick={() => void runReviewer("meaning-units")}
-                    type="button"
-                  >
-                    <ShieldCheck size={18} />
-                    Run reviewer check
-                  </button>
-                  <button
-                    className={`button ${lightInterpretation ? "primary" : ""}`}
-                    disabled={isGeneratingMeaningUnits}
-                    onClick={() => toggleLightInterpretation()}
-                    title="Toggle whether new MU drafts may include cautious tentative interpretation"
-                    type="button"
-                  >
-                    <Pencil size={18} />
-                    Light interpretation: {lightInterpretation ? "ON" : "OFF"}
-                  </button>
-                </div>
-                {units.length === 0 ? (
-                  <EmptyState
-                    text={
-                      transcriptConfirmed
-                        ? "No meaning units yet. Generate draft MUs from one ready segment or all ready segments."
-                        : "No meaning units yet. Confirm the transcript, review segment boundaries, mark a segment ready, then generate draft MUs."
-                    }
-                  />
-                ) : (
-                  <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th>MU</th>
-                          <th>Speaker</th>
-                          <th>Excerpt</th>
-                          <th>AI summary</th>
-                          <th>Human summary</th>
-                          <th>Status</th>
-                          <th>Review</th>
-                          <th>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {units.map((unit) => (
-                          <tr
-                            className={unit.analysisExcluded ? "excluded-row" : ""}
-                            id={`mu-${unit.number}`}
-                            key={unit.id}
-                          >
-                            <td className="mono">#{unit.number}</td>
-                            <td>
-                              <select
-                                className="select compact"
-                                disabled={unit.analysisExcluded}
-                                onChange={(event) =>
-                                  void updateMeaningUnitSpeaker(
-                                    unit.id,
-                                    event.target.value
-                                  )
-                                }
-                                value={unit.speaker}
-                              >
-                                <option value="Participant">Participant</option>
-                                <option value="Interviewer">Interviewer</option>
-                                <option value="Unknown">Unknown</option>
-                              </select>
-                            </td>
-                            <td>
-                              {unit.excerpt}
-                              {unit.analysisExcluded && (
-                                <p className="small">
-                                  Excluded:{" "}
-                                  {unit.exclusionReason ||
-                                    "Not used for category analysis"}
-                                </p>
-                              )}
-                            </td>
-                            <td>{unit.aiSummary}</td>
-                            <td>
-                              <textarea
-                                className="field"
-                                disabled={unit.analysisExcluded}
-                                onBlur={() =>
-                                  void saveMeaningUnitHumanSummary(unit.id)
-                                }
-                                onChange={(event) =>
-                                  updateHumanSummary(unit.id, event.target.value)
-                                }
-                                value={unit.humanSummary}
+                    <p className="small panel-note">
+                      Accept only the reviewed summaries that accurately
+                      capture the participant meaning.
+                    </p>
+                    <div className="button-row">
+                      <button
+                        className="button"
+                        disabled={
+                          currentMeaningUnits.length === 0 ||
+                          isAcceptingMeaningUnits
+                        }
+                        onClick={() => void acceptAllReviewedMeaningUnits()}
+                        type="button"
+                      >
+                        <Check size={18} />
+                        {isAcceptingMeaningUnits
+                          ? "Saving accepted summaries..."
+                          : "Accept reviewed summaries"}
+                      </button>
+                    </div>
+                    <div className="summary-list">
+                      {currentMeaningUnits.length === 0 ? (
+                        <EmptyState text="No summaries yet. Delineate meaning units, then ask for optional assistant support or write summaries manually." />
+                      ) : (
+                        <>
+                          {currentMeaningUnits
+                            .filter((unit) => !unit.analysisExcluded)
+                            .map((unit) => (
+                              <MeaningUnitReviewCard
+                                key={unit.id}
+                                onAccept={markAccepted}
+                                onEditExclusionReason={updateExclusionReason}
+                                onEditExcerpt={updateMeaningUnitExcerpt}
+                                onEditSummary={updateHumanSummary}
+                                onExclude={excludeMeaningUnit}
+                                onRestore={restoreMeaningUnit}
+                                onReturnToTranscript={returnToTranscriptForUnit}
+                                onSaveExcerpt={saveMeaningUnitExcerpt}
+                                onSaveSummary={saveMeaningUnitHumanSummary}
+                                unit={unit}
                               />
-                              {unit.uncertainty && (
-                                <p className="small">{unit.uncertainty}</p>
-                              )}
-                            </td>
-                            <td>
-                              <StatusBadge label={unit.humanStatus} />
-                            </td>
-                            <td>
-                              <StatusBadge label={unit.reviewerStatus} />
-                            </td>
-                            <td>
-                              <div className="button-row">
-                                {!unit.analysisExcluded && (
-                                  <button
-                                    className="button icon"
-                                    onClick={() => markAccepted(unit.id)}
-                                    title="Accept meaning unit"
-                                    type="button"
-                                  >
-                                    <Check size={18} />
-                                  </button>
-                                )}
-                                <button
-                                  className="button icon"
-                                  disabled={unit.analysisExcluded}
-                                  onClick={() => returnToTranscriptForUnit(unit)}
-                                  title="Fix source transcript and regenerate"
-                                  type="button"
-                                >
-                                  <Pencil size={18} />
-                                </button>
-                                <button
-                                  className="button icon"
-                                  onClick={() =>
-                                    void setMeaningUnitExcluded(
-                                      unit,
-                                      !unit.analysisExcluded
-                                    )
-                                  }
-                                  title={
-                                    unit.analysisExcluded
-                                      ? "Restore MU to analysis"
-                                      : "Exclude MU from category analysis"
-                                  }
-                                  type="button"
-                                >
-                                  <Ban size={18} />
-                                </button>
-                                <button
-                                  className="button icon danger"
-                                  onClick={() =>
-                                    void deleteMeaningUnitFromWorkspace(unit)
-                                  }
-                                  title="Delete meaning unit"
-                                  type="button"
-                                >
-                                  <Trash2 size={18} />
-                                </button>
+                            ))}
+                          {excludedMeaningUnits.length > 0 && (
+                            <details className="workbook-details">
+                              <summary>
+                                Context/excluded candidates ({excludedMeaningUnits.length})
+                              </summary>
+                              <div className="summary-list">
+                                {excludedMeaningUnits.map((unit) => (
+                                  <MeaningUnitReviewCard
+                                    key={unit.id}
+                                    onAccept={markAccepted}
+                                    onEditExclusionReason={updateExclusionReason}
+                                    onEditExcerpt={updateMeaningUnitExcerpt}
+                                    onEditSummary={updateHumanSummary}
+                                    onExclude={excludeMeaningUnit}
+                                    onRestore={restoreMeaningUnit}
+                                    onReturnToTranscript={returnToTranscriptForUnit}
+                                    onSaveExcerpt={saveMeaningUnitExcerpt}
+                                    onSaveSummary={saveMeaningUnitHumanSummary}
+                                    unit={unit}
+                                  />
+                                ))}
                               </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                  </div>
+                            </details>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </section>
+                </div>
+                <details className="workbook-details">
+                  <summary>Meaning Unit Integrity Support</summary>
                   <ReviewerPanel
+                    dismissActionLabel="Dismiss with memo"
+                    emptyText="Run a lightweight Step 2 review after draft meaning units are available. The assistant will flag possible MU boundary, summary, source, and context issues for researcher judgement."
                     expandedIssueIds={expandedReviewIssueIds}
+                    hasRun={muIntegrityReviewRan}
+                    issueContextById={meaningUnitIssueContextById}
                     isOpen={muReviewOpen}
                     issues={meaningUnitReviewIssues}
                     isRunning={isRunningReviewer}
+                    noActiveText="No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
                     onAddMemo={(issue) => {
                       const memo = window.prompt(
-                        "Researcher memo for this reviewer issue:",
+                        "Researcher note for this integrity issue:",
                         issue.researcherMemo ?? ""
                       );
                       if (memo !== null) {
                         void updateReviewerIssue(issue.id, { memo });
                       }
                     }}
-                    onDismiss={(issue) =>
-                      void updateReviewerIssue(issue.id, { status: "dismissed" })
-                    }
+                    onDismiss={(issue) => {
+                      const memo = window.prompt(
+                        "Dismissal memo: why is this not a Step 2 integrity concern?",
+                        issue.researcherMemo ?? ""
+                      );
+                      if (memo !== null) {
+                        void updateReviewerIssue(issue.id, {
+                          memo,
+                          status: "dismissed"
+                        });
+                      }
+                    }}
                     onResolve={(issue) =>
                       void updateReviewerIssue(issue.id, { status: "resolved" })
                     }
@@ -3948,29 +4253,27 @@ export function GdiqrWorkspace({
                       )
                     }
                     onView={viewReviewerTarget}
-                    title="GDI-QR-informed Review"
+                    panelBadge="Step 2 support"
+                    responsibilityText="The assistant flags possible issues only. The researcher decides what needs revision before accepting meaning units."
+                    runButtonLabel="Review meaning-unit integrity"
+                    showAddMemoAction={false}
+                    title="Meaning Unit Integrity Support"
+                    viewActionLabel="Edit MU"
                   />
-                </div>
+                </details>
               </div>
             )}
 
-            {activeStep === "categories" && (
-              <div className="section-body">
-                <div className="review-layout">
-                  <div className="grid">
+            {activeStep === "categorizing" && (
+              <div className="section-body grid">
                 <div className="mini-card soft">
-                  <span className="label">Category readiness</span>
+                  <span className="label">GDI-QR principle</span>
+                  <h3>Meaning Units ↔ Categories</h3>
                   <p className="small">
-                    Category-level drafts use only accepted or edited
-                    meaning-unit summaries. Review each meaning unit (MU) first
-                    so category drafting is based on researcher-confirmed
-                    participant meaning rather than raw transcript text.
-                  </p>
-                  <p className="small">
-                    Mode B generates provisional analytic groupings that must be
-                    reviewed, renamed, merged, edited, or rejected by the
-                    researcher. Mode C creates an editable integration aid, not
-                    a final report.
+                    Categories emerge from meaning units. Categories are
+                    findings; domains are not findings. Categories may be
+                    renamed, merged, divided, or reorganised throughout
+                    analysis.
                   </p>
                   <div className="button-row">
                     <span
@@ -3978,210 +4281,180 @@ export function GdiqrWorkspace({
                         confirmedMeaningUnits.length > 0 ? "" : "warning"
                       }`}
                     >
-                      Confirmed summaries: {confirmedMeaningUnits.length} /{" "}
-                      {units.length - excludedMeaningUnits.length}
+                      Accepted meaning units: {confirmedMeaningUnits.length} /{" "}
+                      {currentMeaningUnits.length - excludedMeaningUnits.length}
                     </span>
-                    {excludedMeaningUnits.length > 0 && (
-                      <span className="badge warning">
-                        Excluded MUs: {excludedMeaningUnits.length}
-                      </span>
-                    )}
-                    {units.length > 0 && confirmedMeaningUnits.length === 0 && (
-                      <button
-                        className="button soft"
-                        onClick={() => setActiveStep("meaning-units")}
-                        type="button"
-                      >
-                        Review and accept MUs first
-                      </button>
-                    )}
-                    {hasFallbackCategoryLabels && (
-                      <span className="badge warning">
-                        Fallback draft present
-                      </span>
-                    )}
                     {displayCategories.length > 0 && (
                       <span className="badge blue">
-                        Confirmed categories: {confirmedCategoryCount} /{" "}
+                        Researcher-confirmed categories: {confirmedCategoryCount} /{" "}
                         {displayCategories.filter((item) => item.status !== "rejected").length}
                       </span>
                     )}
-                  </div>
-                </div>
-                <div className="mode-selector">
-                  <ModeButton
-                    active={mode === "A"}
-                    description="Initial category-level drafting"
-                    label="Mode A"
-                    onClick={() => setMode("A")}
-                  />
-                  <ModeButton
-                    active={mode === "B"}
-                    description="Researcher-led expansion and refinement"
-                    label="Mode B"
-                    onClick={() => setMode("B")}
-                  />
-                  <ModeButton
-                    active={mode === "C"}
-                    description="Integration draft after confirmation"
-                    label="Mode C"
-                    onClick={() => setMode("C")}
-                  />
-                </div>
-                {mode === "C" && (
-                  <div className="mini-card soft">
-                    <label className="scope-option">
-                      <input
-                        checked={allSegmentsProcessedForModeC}
-                        onChange={(event) =>
-                          setAllSegmentsProcessedForModeC(event.target.checked)
-                        }
-                        type="checkbox"
-                      />
-                      <span>
-                        I confirm all segments in this transcript have been
-                        processed, reviewed, and accepted for final integration.
-                      </span>
-                    </label>
-                    <p className="small">
-                      Mode C should only be used after the single-transcript
-                      batch is complete. It creates an integration draft for
-                      researcher review, not a final report.
-                    </p>
-                  </div>
-                )}
-                {categoryDraftNotice && (
-                  <div
-                    className={`mini-card ${
-                      hasTemporaryFallbackCategories ? "warning-card" : "soft"
-                    }`}
-                  >
-                    <span className="label">
-                      {hasTemporaryFallbackCategories
-                        ? "Temporary fallback draft"
-                        : "Category note"}
-                    </span>
-                    <p className="small">{categoryDraftNotice}</p>
-                    {hasTemporaryFallbackCategories && (
-                      <div className="button-row">
-                        <button
-                          className="button primary"
-                          disabled={isRunningCategories}
-                          onClick={() =>
-                            void runCategories({ allowFallbackRegenerate: true })
-                          }
-                          type="button"
-                        >
-                          <Bot size={18} />
-                          Regenerate Mode {mode}
-                        </button>
-                        <button
-                          className="button"
-                          disabled={isRunningCategories}
-                          onClick={() => void acceptTemporaryCategoryDraft()}
-                          type="button"
-                        >
-                          <Check size={18} />
-                          Use fallback draft as editable starting point
-                        </button>
-                      </div>
+                    {hasFallbackCategoryLabels && (
+                      <span className="badge blue">Assistant status available</span>
                     )}
                   </div>
-                )}
-                <div className="button-row">
-                  <button
-                    className="button primary"
-                    disabled={!canRunCategories || isRunningCategories}
-                    onClick={() => void runCategories()}
-                    title={
-                      canRunCategories
-                        ? `Run Mode ${mode} using confirmed MU summaries`
-                        : getCategoryRunDisabledReason({
-                            allSegmentsProcessedForModeC,
-                            confirmedMeaningUnits: confirmedMeaningUnits.length,
-                            hasTemporaryFallbackCategories,
-                            mode,
-                            categoryCount: displayCategories.length
-                          })
-                    }
-                    type="button"
-                  >
-                    <Bot size={18} />
-                    {isRunningCategories
-                      ? `Running Mode ${mode}...`
-                      : hasTemporaryFallbackCategories
-                        ? `Regenerate Mode ${mode}`
-                        : `Run Mode ${mode}`}
-                  </button>
-                  <button
-                    className="button"
-                    disabled={!displayCategories.length || isRunningReviewer}
-                    onClick={() => void runReviewer("categories")}
-                    type="button"
-                  >
-                    <ShieldCheck size={18} />
-                    Run reviewer check
-                  </button>
-                  {mode === "C" && (
-                    <span className="badge warning">
-                      Confirmation required: transcript batch complete
-                    </span>
-                  )}
                 </div>
-                {displayCategories.length === 0 ? (
-                  <EmptyState text="No category drafts yet. Accept or edit meaning-unit summaries first, then run Mode A/B/C." />
-                ) : (
-                  <div className="grid">
-                    {displayCategories.map((category) => (
-                      <CategoryBlock
-                        categories={displayCategories}
-                        category={category}
-                        key={category.id}
-                        onAssignUnit={assignMeaningUnitToCategory}
-                        onConfirm={confirmCategoryDraft}
-                        onDelete={deleteCategoryDraft}
-                        onMerge={mergeCategoryDraft}
-                        onReject={rejectCategoryDraft}
-                        onRemoveUnit={removeMeaningUnitFromCategory}
-                        onUpdate={updateCategoryDraft}
-                        units={confirmedMeaningUnits}
-                      />
-                    ))}
-                  </div>
-                )}
-                <UnassignedMeaningUnits
-                  categories={displayCategories}
-                  onAssign={assignMeaningUnitToCategory}
-                  onCreateCategory={addCategoryDraft}
-                  units={unassignedMeaningUnits}
-                />
-                {mode === "C" && (
-                  <IntegrationDraftPanel
-                    categories={displayCategories}
-                    integrationNote={integrationNote}
-                    integrationReviewed={integrationReviewed}
-                    narrative={narrative}
-                    onChangeNarrative={(value) => {
-                      setNarrative(value);
-                      setIntegrationReviewed(false);
-                    }}
-                    onConfirm={() => {
-                      if (!narrative.trim()) {
-                        setApiStatus("Generate or write an integration draft before confirming.");
-                        return;
-                      }
-                      if (hasSensitivePlaceholder(narrative)) {
-                        setApiStatus("Integration draft contains sensitive placeholders. Review before confirming.");
-                        return;
-                      }
-                      setIntegrationReviewed(true);
-                      setApiStatus("Integration draft marked as researcher-reviewed provisional synthesis.");
-                    }}
-                    onNoteChange={setIntegrationNote}
-                    units={confirmedMeaningUnits}
-                  />
-                )}
-                  </div>
+                <div className="analysis-workspace categorizing-workspace">
+                  <section className="analysis-panel">
+                    <span className="label">Meaning Units</span>
+                    <h3>Compare participant meanings</h3>
+                    <p className="small">
+                      Use accepted researcher-reviewed summaries as the evidence
+                      base for categorizing. Similar meanings can be grouped,
+                      moved, and compared as categories develop.
+                    </p>
+                    {confirmedMeaningUnits.length === 0 ? (
+                      <EmptyState text="No accepted meaning units yet. Return to Understanding & Translating to accept summaries first." />
+                    ) : (
+                      <div className="summary-list">
+                        {confirmedMeaningUnits.map((unit) => (
+                          <article className="summary-card" key={unit.id}>
+                            <div className="category-header">
+                              <strong>MU #{unit.number}</strong>
+                              <StatusBadge label={unit.humanStatus} />
+                            </div>
+                            <p className="small">
+                              {unit.humanSummary || unit.aiSummary || unit.excerpt}
+                            </p>
+                            <p className="small">
+                              Current categories:{" "}
+                              {displayCategories
+                                .filter((category) =>
+                                  category.includedUnitIds.includes(unit.number)
+                                )
+                                .map((category) => getCategoryDisplayTitle(category))
+                                .join(", ") || "Unassigned"}
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                    <UnassignedMeaningUnits
+                      categories={displayCategories}
+                      onAssign={assignMeaningUnitToCategory}
+                      onCreateCategory={addCategoryDraft}
+                      units={unassignedMeaningUnits}
+                    />
+                  </section>
+                  <section className="analysis-panel">
+                    <span className="label">Evidence Clusters</span>
+                    <h3>Compare, group, then name</h3>
+                    <p className="small">
+                      Category work is iterative. Rename, merge, split, move
+                      meaning units, and reject weak categories as the analysis
+                      becomes clearer.
+                    </p>
+                    <div className="button-row">
+                      <button
+                        className="button"
+                        disabled={
+                          confirmedMeaningUnits.length === 0 || isRunningCategories
+                        }
+                        onClick={() => void runCategories({ modeOverride: "A" })}
+                        type="button"
+                      >
+                        <Play size={18} />
+                        Optional assistant support: suggest possible grouping
+                      </button>
+                      <button
+                        className="button"
+                        disabled={
+                          displayCategories.length === 0 ||
+                          hasTemporaryFallbackCategories ||
+                          isRunningCategories
+                        }
+                        onClick={() => void runCategories({ modeOverride: "B" })}
+                        type="button"
+                      >
+                        <RefreshCcw size={18} />
+                        Optional assistant support: compare similarities
+                      </button>
+                    </div>
+                    {isRunningCategories && (
+                      <span className="badge warning">
+                        Drafting category suggestions...
+                      </span>
+                    )}
+                    {categoryDraftNotice && (
+                      <details className="assistant-status-panel category-generation-status">
+                        <summary>Assistant Generation Status</summary>
+                        <p className="small">{categoryDraftNotice}</p>
+                        {hasTemporaryFallbackCategories && (
+                          <div className="button-row">
+                            <button
+                              className="button"
+                              disabled={isRunningCategories}
+                              onClick={() =>
+                                void runCategories({
+                                  allowFallbackRegenerate: true,
+                                  modeOverride: displayCategories.length ? "B" : "A"
+                                })
+                              }
+                              type="button"
+                            >
+                              <RefreshCcw size={18} />
+                              Redraft category suggestion
+                            </button>
+                            <button
+                              className="button"
+                              disabled={isRunningCategories}
+                              onClick={() => void acceptTemporaryCategoryDraft()}
+                              type="button"
+                            >
+                              <Check size={18} />
+                              Use as editable starting point
+                            </button>
+                          </div>
+                        )}
+                      </details>
+                    )}
+                    {displayCategories.length === 0 ? (
+                      <div className="empty-with-example">
+                        <EmptyState text="Start by selecting accepted meaning units that appear to share a common meaning, or request optional assistant support for possible groupings." />
+                        <details className="workbook-details category-structure-help">
+                          <summary>What is a category?</summary>
+                          <p className="small">
+                            A category groups related meaning units that appear
+                            to share a common meaning.
+                          </p>
+                          <div className="category-structure-diagram" aria-label="Category structure">
+                            <strong>Category</strong>
+                            <span>├─ Meaning Unit 1</span>
+                            <span>├─ Meaning Unit 2</span>
+                            <span>└─ Meaning Unit 3</span>
+                          </div>
+                          <p className="small">
+                            Categories are provisional and may be renamed,
+                            merged, divided, or reorganised as analysis
+                            develops.
+                          </p>
+                        </details>
+                      </div>
+                    ) : (
+                      <div className="grid">
+                        {displayCategories.map((category) => (
+                          <CategoryBlock
+                            categories={displayCategories}
+                            category={category}
+                            key={category.id}
+                            onAssignUnit={assignMeaningUnitToCategory}
+                            onConfirm={confirmCategoryDraft}
+                            onDelete={deleteCategoryDraft}
+                            onMerge={mergeCategoryDraft}
+                            onReject={rejectCategoryDraft}
+                            onRemoveUnit={removeMeaningUnitFromCategory}
+                            onSplit={splitCategoryDraft}
+                            onUpdate={updateCategoryDraft}
+                            units={confirmedMeaningUnits}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </div>
+                <details className="workbook-details">
+                  <summary>Methodological integrity support</summary>
                   <ReviewerPanel
                     expandedIssueIds={expandedReviewIssueIds}
                     isOpen={categoryReviewOpen}
@@ -4189,7 +4462,7 @@ export function GdiqrWorkspace({
                     isRunning={isRunningReviewer}
                     onAddMemo={(issue) => {
                       const memo = window.prompt(
-                        "Researcher memo for this reviewer issue:",
+                        "Researcher note for this integrity issue:",
                         issue.researcherMemo ?? ""
                       );
                       if (memo !== null) {
@@ -4214,16 +4487,322 @@ export function GdiqrWorkspace({
                     onView={viewReviewerTarget}
                     title="Category Review"
                   />
+                </details>
+              </div>
+            )}
+
+            {activeStep === "integrating" && (
+              <div className="section-body grid">
+                <div className="mini-card soft relationship-structure-card">
+                  <span className="flow-step">1 · Relationship Structure</span>
+                  <span className="label">Provisional relationship structure</span>
+                  <h3>
+                    {integrationStructureTitle ||
+                      "Generate or sketch a relationship structure"}
+                  </h3>
+                  <p className="small">
+                    Integration involves identifying how categories relate to one
+                    another and developing a coherent summary structure. Summary
+                    narratives should explain relationships among categories,
+                    not simply list them.
+                  </p>
+                  <p className="small">
+                    The relationship structure is the primary analytic work in
+                    this step. Any assistant suggestion is provisional; review
+                    it against the meaning-unit evidence.
+                  </p>
+                  <label className="scope-option">
+                    <input
+                      checked={allSegmentsProcessedForModeC}
+                      onChange={(event) =>
+                        setAllSegmentsProcessedForModeC(event.target.checked)
+                      }
+                      type="checkbox"
+                    />
+                    <span>
+                      I confirm all meaning units in this transcript have been
+                      processed, reviewed, and accepted for integration.
+                    </span>
+                  </label>
+                  <div className="button-row">
+                    <button
+                      className="button"
+                      disabled={
+                        !canGenerateIntegrationStructure || isRunningCategories
+                      }
+                      onClick={generateIntegrationStructureDraft}
+                      type="button"
+                    >
+                      <GitBranch size={18} />
+                      Optional assistant support: suggest relationship structure
+                    </button>
+                    <button
+                      className="button"
+                      onClick={addIntegrationRelationship}
+                      type="button"
+                    >
+                      Add relationship
+                    </button>
+                  </div>
+                  {integrationStructureNotice && (
+                    <p className="small panel-note">{integrationStructureNotice}</p>
+                  )}
+                  {integrationStructureExplanation && (
+                    <label className="label">
+                      Structure explanation
+                      <textarea
+                        className="textarea compact-textarea"
+                        onChange={(event) => {
+                          setIntegrationStructureExplanation(event.target.value);
+                          setIntegrationReviewed(false);
+                        }}
+                        value={integrationStructureExplanation}
+                      />
+                    </label>
+                  )}
+                  {integrationRelationships.length === 0 ? (
+                    <EmptyState text="No relationships yet. Generate a provisional structure or add a researcher-created relationship." />
+                  ) : (
+                    <div className="relationship-card-list">
+                      {integrationRelationships.map((relationship) => (
+                        <IntegrationRelationshipCard
+                          categories={reviewedIntegrationCategories}
+                          key={relationship.id}
+                          onRemove={removeIntegrationRelationship}
+                          onUpdate={updateIntegrationRelationship}
+                          relationship={relationship}
+                          units={confirmedMeaningUnits}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
+                <div className="mini-card relationship-map-card">
+                  <span className="flow-step">2 · Category Map</span>
+                  <span className="label">Draft category map</span>
+                  <h3>How do the reviewed categories connect?</h3>
+                  {reviewedIntegrationCategories.length < 2 ? (
+                    <div className="relationship-map-placeholder">
+                      <EmptyState text="Not enough reviewed categories to generate an integration structure. Please return to Step 3 and accept or revise categories first." />
+                      <div className="relationship-example-map" aria-hidden="true">
+                        <div className="example-map-node primary">
+                          Reviewed category 1
+                        </div>
+                        <span className="example-map-link">supports</span>
+                        <div className="example-map-node">
+                          Reviewed category 2
+                        </div>
+                        <span className="example-map-link split">while</span>
+                        <div className="example-map-node">
+                          Reviewed category 3
+                        </div>
+                      </div>
+                      <p className="small">
+                        Once categories are reviewed, this area will help you
+                        sketch relationships such as sequence, contrast,
+                        support, tension, or shared context.
+                      </p>
+                    </div>
+                  ) : integrationRelationships.length === 0 ? (
+                    <div className="relationship-map-placeholder">
+                      <EmptyState text="No draft relationships yet. Generate a provisional structure or add a relationship to begin mapping how categories may connect." />
+                      <p className="small">
+                        This map should show possible relationships among
+                        categories. Evidence MUs appear only as secondary
+                        review references under each relationship.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="relationship-map relationship-network">
+                      {integrationRelationships.map((relationship) => (
+                        <RelationshipFlowRow
+                          categories={reviewedIntegrationCategories}
+                          key={relationship.id}
+                          relationship={relationship}
+                          units={confirmedMeaningUnits}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="integration-narrative-area">
+                  <span className="flow-step">3 · Summary Narrative</span>
+                  <IntegrationDraftPanel
+                    categories={reviewedIntegrationCategories}
+                    integrationNote={integrationNote}
+                    integrationReviewed={integrationReviewed}
+                    narrative={narrative}
+                    onChangeNarrative={(value) => {
+                      setNarrative(value);
+                      setIntegrationReviewed(false);
+                    }}
+                    onConfirm={() => {
+                      if (!narrative.trim()) {
+                        setApiStatus("Write or draft a summary narrative before confirming.");
+                        return;
+                      }
+                      if (hasSensitivePlaceholder(narrative)) {
+                        setApiStatus("Summary narrative contains sensitive placeholders. Review before confirming.");
+                        return;
+                      }
+                      setIntegrationReviewed(true);
+                      setApiStatus("Integrated findings marked as researcher-reviewed provisional synthesis.");
+                    }}
+                    onNoteChange={setIntegrationNote}
+                    units={confirmedMeaningUnits}
+                  />
+                </div>
+              </div>
+            )}
+
+            {activeStep === "integrity" && (
+              <div className="section-body grid">
+                <div className="mini-card soft">
+                  <span className="label">Methodological Integrity Review</span>
+                  <p className="small">
+                    Methodological integrity means making the analytic process
+                    transparent, coherent, credible, and respectful of
+                    participants. I can flag places for reflection, and you
+                    decide what needs revision.
+                  </p>
+                  <div className="button-row">
+                    <button
+                      className="button primary"
+                      disabled={!canRunReviewer || isRunningReviewer}
+                      onClick={() => void runReviewer("meaning-units")}
+                      type="button"
+                    >
+                      <ShieldCheck size={18} />
+                      Review meaning-unit integrity
+                    </button>
+                    <button
+                      className="button"
+                      disabled={!displayCategories.length || isRunningReviewer}
+                      onClick={() => void runReviewer("categories")}
+                      type="button"
+                    >
+                      <ShieldCheck size={18} />
+                      Review category and narrative integrity
+                    </button>
+                    <button className="button" onClick={() => exportWorkspace("json")} type="button">
+                      <Download size={18} />
+                      Export audit trail
+                    </button>
+                  </div>
+                </div>
+                <MethodologicalIntegrityChecklist
+                  categoryCount={displayCategories.length}
+                  issueCount={reviewerOutputs.filter((issue) => issue.status !== "dismissed").length}
+                  meaningUnitCount={currentMeaningUnits.length}
+                  narrativeReviewed={integrationReviewed}
+                  transcriptConfirmed={transcriptConfirmed}
+                />
+                <details className="workbook-details reflection-details">
+                  <summary>Open detailed reflection panels</summary>
+                  <div className="review-layout">
+                    <ReviewerPanel
+                      dismissActionLabel="Dismiss with memo"
+                      emptyText="Run a lightweight Step 2 review after draft meaning units are available. The assistant will flag possible MU boundary, summary, source, and context issues for researcher judgement."
+                      expandedIssueIds={expandedReviewIssueIds}
+                      hasRun={muIntegrityReviewRan}
+                      issueContextById={meaningUnitIssueContextById}
+                      isOpen={muReviewOpen}
+                      issues={meaningUnitReviewIssues}
+                      isRunning={isRunningReviewer}
+                      noActiveText="No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
+                      onAddMemo={(issue) => {
+                        const memo = window.prompt(
+                          "Researcher note for this integrity issue:",
+                          issue.researcherMemo ?? ""
+                        );
+                        if (memo !== null) {
+                          void updateReviewerIssue(issue.id, { memo });
+                        }
+                      }}
+                      onDismiss={(issue) => {
+                        const memo = window.prompt(
+                          "Dismissal memo: why is this not a Step 2 integrity concern?",
+                          issue.researcherMemo ?? ""
+                        );
+                        if (memo !== null) {
+                          void updateReviewerIssue(issue.id, {
+                            memo,
+                            status: "dismissed"
+                          });
+                        }
+                      }}
+                      onResolve={(issue) =>
+                        void updateReviewerIssue(issue.id, { status: "resolved" })
+                      }
+                      onRun={() => void runReviewer("meaning-units")}
+                      onToggle={() => setMuReviewOpen((value) => !value)}
+                      onToggleIssue={(issueId) =>
+                        setExpandedReviewIssueIds((current) =>
+                          current.includes(issueId)
+                            ? current.filter((id) => id !== issueId)
+                            : [...current, issueId]
+                        )
+                      }
+                      onView={viewReviewerTarget}
+                      panelBadge="Step 2 support"
+                      responsibilityText="The assistant flags possible issues only. The researcher decides what needs revision before accepting meaning units."
+                      runButtonLabel="Review meaning-unit integrity"
+                      showAddMemoAction={false}
+                      title="Meaning Unit Integrity Support"
+                      viewActionLabel="Edit MU"
+                    />
+                    <ReviewerPanel
+                      expandedIssueIds={expandedReviewIssueIds}
+                      isOpen={categoryReviewOpen}
+                      issues={categoryReviewIssues}
+                      isRunning={isRunningReviewer}
+                      onAddMemo={(issue) => {
+                        const memo = window.prompt(
+                          "Researcher note for this integrity issue:",
+                          issue.researcherMemo ?? ""
+                        );
+                        if (memo !== null) {
+                          void updateReviewerIssue(issue.id, { memo });
+                        }
+                      }}
+                      onDismiss={(issue) =>
+                        void updateReviewerIssue(issue.id, { status: "dismissed" })
+                      }
+                      onResolve={(issue) =>
+                        void updateReviewerIssue(issue.id, { status: "resolved" })
+                      }
+                      onRun={() => void runReviewer("categories")}
+                      onToggle={() => setCategoryReviewOpen((value) => !value)}
+                      onToggleIssue={(issueId) =>
+                        setExpandedReviewIssueIds((current) =>
+                          current.includes(issueId)
+                            ? current.filter((id) => id !== issueId)
+                            : [...current, issueId]
+                        )
+                      }
+                      onView={viewReviewerTarget}
+                      title="Category and Narrative Integrity Check"
+                    />
+                  </div>
+                </details>
               </div>
             )}
 
             {activeStep === "export" && (
               <div className="section-body grid">
+                <div className="mini-card soft">
+                  <span className="label">GDI-QR Analysis Record</span>
+                  <p className="small">
+                    Future exports should read as a qualitative analysis record:
+                    research question, domains of investigation, meaning units,
+                    analytic summaries, categories, integration structure,
+                    researcher notes, and methodological integrity notes.
+                  </p>
+                </div>
                 <div className="grid three">
                   {[
                     {
-                      description: "Full workspace data for backup or audit.",
+                      description: "Current analysis record data for backup or audit.",
                       format: "json" as const,
                       label: "JSON"
                     },
@@ -4233,9 +4812,19 @@ export function GdiqrWorkspace({
                       label: "CSV"
                     },
                     {
-                      description: "Readable transcript and draft-output report.",
+                      description: "Readable analysis record for supervision.",
                       format: "txt" as const,
-                      label: "TXT"
+                      label: "DOCX-style text"
+                    },
+                    {
+                      description: "Formatted document export placeholder.",
+                      format: "docx" as const,
+                      label: "DOCX"
+                    },
+                    {
+                      description: "PDF export placeholder for later version.",
+                      format: "pdf" as const,
+                      label: "PDF"
                     }
                   ].map((item) => (
                     <div className="mini-card" key={item.format}>
@@ -4244,12 +4833,24 @@ export function GdiqrWorkspace({
                       <p className="small">{item.description}</p>
                       <button
                         className="button"
-                        disabled={!canExport}
-                        onClick={() => exportWorkspace(item.format)}
+                        disabled={
+                          !canExport ||
+                          item.format === "docx" ||
+                          item.format === "pdf"
+                        }
+                        onClick={() =>
+                          item.format === "json" ||
+                          item.format === "csv" ||
+                          item.format === "txt"
+                            ? exportWorkspace(item.format)
+                            : undefined
+                        }
                         type="button"
                       >
                         <Download size={18} />
-                        Download {item.label}
+                        {item.format === "docx" || item.format === "pdf"
+                          ? "Coming next"
+                          : `Download ${item.label}`}
                       </button>
                     </div>
                   ))}
@@ -4257,12 +4858,12 @@ export function GdiqrWorkspace({
                 <div className="mini-card soft">
                   <span className="label">Review trail</span>
                   <p className="small">
-                    Exports may contain AI-drafted material. Review all outputs
+                    Exports may contain assistant-supported draft material. Review all outputs
                     against transcript evidence before using them in reports,
                     publications, supervision, or teaching materials.
                   </p>
                   {displayAuditEvents.length === 0 ? (
-                    <EmptyState text="No review-trail records yet. Upload, save, or request AI draft support to start the trail." />
+                    <EmptyState text="No review-trail records yet. Upload, save, or ask for optional assistant support to start the trail." />
                   ) : (
                     <div className="timeline">
                       {displayAuditEvents.map((event) => (
@@ -4281,6 +4882,28 @@ export function GdiqrWorkspace({
                 </div>
               </div>
             )}
+            <GdiqrTips step={activeStep} />
+            <div className="workbook-footer">
+              <button
+                className="button"
+                disabled={!canExport}
+                onClick={() => exportWorkspace("json")}
+                type="button"
+              >
+                <Archive size={18} />
+                Save progress
+              </button>
+              <button
+                className="button primary continue-button"
+                onClick={() => setActiveStep(nextStep.id)}
+                type="button"
+              >
+                {nextStep.id === "export"
+                  ? "Review export options"
+                  : `I’ve reviewed this step · Continue to Step ${Math.min(currentStepIndex + 2, guidedSteps.length)}`}
+                <ChevronRight size={18} />
+              </button>
+            </div>
           </section>
           <RunLogPanel logs={runLogs} onClear={clearFinishedRunLogs} />
         </main>
@@ -4304,6 +4927,215 @@ function StatusBadge({ label }: { label: string }) {
         ? "badge"
         : "badge blue";
   return <span className={className}>{label}</span>;
+}
+
+function getSegmentDisplayStatus(
+  segment: TranscriptSegment,
+  counts?: { accepted: number; excluded: number; total: number }
+) {
+  const total = counts?.total ?? 0;
+  const accepted = counts?.accepted ?? 0;
+  const excluded = counts?.excluded ?? 0;
+
+  if (total === 0) {
+    return "Ready for delineation";
+  }
+
+  if (excluded === total) {
+    return "Context only";
+  }
+
+  if (accepted + excluded === total) {
+    return "Reviewed";
+  }
+
+  if (accepted > 0 || excluded > 0) {
+    return "Partially reviewed";
+  }
+
+  return segment.status;
+}
+
+function formatSegmentMeaningUnitCounts({
+  accepted,
+  excluded,
+  total
+}: {
+  accepted: number;
+  excluded: number;
+  total: number;
+}) {
+  if (total === 0) {
+    return "0 meaning units · Ready for delineation";
+  }
+  return `${total} meaning unit${total === 1 ? "" : "s"} · ${accepted} accepted · ${excluded} excluded/context`;
+}
+
+function StepGuidance({ step }: { step: WorkflowStep }) {
+  const guidance = getStepGuidance(step);
+  return (
+    <div className="step-guidance">
+      <section className="guidance-card meaning">
+        <span className="guide-icon">?</span>
+        <div>
+          <span className="label">What this step means</span>
+          <p>{guidance.meaning}</p>
+        </div>
+      </section>
+      <section className="guidance-card assistant-help">
+        <span className="guide-icon assistant">+</span>
+        <div>
+          <span className="label">How the assistant can help</span>
+          <p>{guidance.ai}</p>
+        </div>
+      </section>
+      <section className="judgment-callout">
+        <strong>Your analytic judgement matters here:</strong>
+        <span>{guidance.judgment}</span>
+      </section>
+    </div>
+  );
+}
+
+function GdiqrTips({ step }: { step: WorkflowStep }) {
+  const tips = getGdiqrTips(step);
+  return (
+    <section className="gdiqr-tips">
+      <span className="guide-icon tips">□</span>
+      <div>
+        <h3>Tips from GDI-QR</h3>
+        <ul>
+          {tips.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+function GuidanceCard({
+  emphasis = false,
+  text,
+  title
+}: {
+  emphasis?: boolean;
+  text: string;
+  title: string;
+}) {
+  return (
+    <div className={`guidance-card ${emphasis ? "judgment" : ""}`}>
+      <span className="label">{title}</span>
+      <p className="small">{text}</p>
+    </div>
+  );
+}
+
+function MethodologicalIntegrityGuide({
+  activeStep,
+  categoryCount,
+  issueCount,
+  meaningUnitCount,
+  transcriptConfirmed
+}: {
+  activeStep: WorkflowStep;
+  categoryCount: number;
+  issueCount: number;
+  meaningUnitCount: number;
+  transcriptConfirmed: boolean;
+}) {
+  return (
+    <aside className="method-guide">
+      <span className="label">Methodological Integrity</span>
+      <h3>Guidance while you work</h3>
+      <p className="small">
+        I can flag possible issues, and you decide how to respond.
+      </p>
+      <div className="integrity-mini-list">
+        <StatusLine
+          label="Transcript prepared"
+          status={transcriptConfirmed ? "Passed" : "Needs review"}
+        />
+        <StatusLine
+          label="Meaning units reviewed"
+          status={meaningUnitCount > 0 ? "Needs review" : "Not addressed"}
+        />
+        <StatusLine
+          label="Categories reviewed"
+          status={categoryCount > 0 ? "Needs review" : "Not addressed"}
+        />
+        <StatusLine
+          label="Active integrity issues"
+          status={issueCount > 0 ? "Needs review" : "Not addressed"}
+        />
+      </div>
+      <p className="small">
+        Current focus: {steps.find((step) => step.id === activeStep)?.label}.
+      </p>
+    </aside>
+  );
+}
+
+function MethodologicalIntegrityChecklist({
+  categoryCount,
+  issueCount,
+  meaningUnitCount,
+  narrativeReviewed,
+  transcriptConfirmed
+}: {
+  categoryCount: number;
+  issueCount: number;
+  meaningUnitCount: number;
+  narrativeReviewed: boolean;
+  transcriptConfirmed: boolean;
+}) {
+  const items: Array<{
+    label: string;
+    status: "Passed" | "Needs review" | "Not addressed";
+  }> = [
+    { label: "Respect for participants", status: transcriptConfirmed ? "Passed" : "Needs review" },
+    { label: "Clarity of presentation", status: narrativeReviewed ? "Passed" : "Needs review" },
+    { label: "Contextual information", status: meaningUnitCount > 0 ? "Passed" : "Not addressed" },
+    { label: "Coherence", status: categoryCount > 0 ? "Needs review" : "Not addressed" },
+    { label: "Credibility checks", status: issueCount > 0 ? "Needs review" : "Not addressed" },
+    { label: "Researcher expectations", status: "Needs review" },
+    { label: "Audit trail", status: "Needs review" },
+    { label: "Negative or contradictory cases", status: "Needs review" },
+    { label: "Category overlap", status: categoryCount > 1 ? "Needs review" : "Not addressed" },
+    { label: "Category overload", status: categoryCount > 8 ? "Needs review" : "Passed" },
+    { label: "Evidence support", status: meaningUnitCount > 0 ? "Needs review" : "Not addressed" }
+  ];
+
+  return (
+    <div className="mini-card">
+      <span className="label">Checklist</span>
+      <p className="small checklist-explanation">
+        Use this checklist as a review guide, not as an automatic pass/fail
+        score. Items marked "Needs review" are prompts for researcher judgement,
+        memo-writing, and revision before export.
+      </p>
+      <div className="integrity-checklist">
+        {items.map((item) => (
+          <StatusLine key={item.label} label={item.label} status={item.status} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StatusLine({
+  label,
+  status
+}: {
+  label: string;
+  status: "Passed" | "Needs review" | "Not addressed";
+}) {
+  return (
+    <div className="status-line">
+      <span>{label}</span>
+      <StatusBadge label={status} />
+    </div>
+  );
 }
 
 const segmentStatuses: SegmentStatus[] = [
@@ -4367,6 +5199,15 @@ function isTranscriptConfirmed(project: Project) {
   );
 }
 
+function normaliseResearcherFacingText(value: string) {
+  return value
+    .replace(
+      /Local-only mode:\s*transcript data is processed and stored within the local environment\.?/gi,
+      ""
+    )
+    .trim();
+}
+
 function buildLocalTranscriptSegment({
   caseId,
   createdBy = "manual",
@@ -4421,8 +5262,428 @@ function canRunMeaningUnitsForSegment(segment: TranscriptSegment) {
 function isConfirmedMeaningUnit(unit: MeaningUnit) {
   return (
     !unit.analysisExcluded &&
-    (unit.humanStatus === "Accepted" || unit.humanStatus === "Edited")
+    unit.humanStatus === "Accepted" &&
+    (!containsNonTranscriptMaterial(unit.excerpt) || Boolean(unit.exclusionReason?.trim()))
   );
+}
+
+function normalizeMeaningUnitNumbersForSegments(
+  units: MeaningUnit[],
+  segments: TranscriptSegment[]
+) {
+  const segmentOrder = new Map(
+    segments.map((segment, index) => [segment.segmentId, index])
+  );
+
+  return units
+    .sort((left, right) => {
+      const leftSegment = segmentOrder.get(left.segmentId) ?? Number.MAX_SAFE_INTEGER;
+      const rightSegment = segmentOrder.get(right.segmentId) ?? Number.MAX_SAFE_INTEGER;
+      if (leftSegment !== rightSegment) {
+        return leftSegment - rightSegment;
+      }
+      return left.number - right.number;
+    })
+    .map((unit, index) => ({
+      ...unit,
+      number: index + 1
+    }));
+}
+
+function getMeaningUnitValidationFlags(
+  unit: MeaningUnit
+): MeaningUnitValidationFlag[] {
+  const flags: MeaningUnitValidationFlag[] = [];
+  const reviewedSummary = (unit.humanSummary || "").trim();
+  const excerpt = unit.excerpt.trim();
+  const wordCount = approximateWordCount(excerpt);
+  const speaker = unit.speaker.toLowerCase();
+
+  if (unit.uncertainty?.toLowerCase().includes("rule-based draft")) {
+    flags.push({ label: "Rule-based draft — review required", tone: "warning" });
+  }
+  if (
+    unit.uncertainty?.toLowerCase().includes("summary needs researcher review")
+  ) {
+    flags.push({ label: "Summary needs researcher review", tone: "warning" });
+  }
+  if (!reviewedSummary) {
+    flags.push({ label: "Researcher summary needed", tone: "warning" });
+  }
+  if (excerpt && meaningUnitEndsMidSentence(excerpt)) {
+    flags.push({ label: "Meaning unit ends mid-sentence", tone: "danger" });
+  }
+  if (unit.uncertainty?.toLowerCase().includes("may be incomplete")) {
+    flags.push({ label: "Meaning unit may be incomplete", tone: "danger" });
+  }
+  if (reviewedSummary && summaryIsTooCloseToExcerpt(reviewedSummary, excerpt)) {
+    flags.push({ label: "Summary may be too close to excerpt", tone: "warning" });
+  }
+  if (reviewedSummary && summaryIsTooGeneric(reviewedSummary)) {
+    flags.push({ label: "Summary too generic", tone: "warning" });
+  }
+  if (excerpt && wordCount < 3) {
+    flags.push({ label: "Excerpt may be too short", tone: "warning" });
+  }
+  if (wordCount > 80) {
+    flags.push({ label: "Excerpt may be too long", tone: "warning" });
+  }
+  if (
+    speaker.includes("interviewer") ||
+    /^interviewer\s*:/i.test(excerpt) ||
+    /\?\s*$/.test(excerpt)
+  ) {
+    flags.push({ label: "Interviewer/context candidate", tone: "blue" });
+  }
+  if (unit.analysisExcluded && !unit.exclusionReason?.trim()) {
+    flags.push({ label: "Excluded without reason", tone: "danger" });
+  }
+  if (!unit.caseId || !unit.segmentId) {
+    flags.push({ label: "Source reference missing", tone: "danger" });
+  }
+  if (containsNonTranscriptMaterial(excerpt)) {
+    flags.push({ label: "Possible non-transcript material included", tone: "danger" });
+  }
+
+  return flags;
+}
+
+function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
+  const now = new Date().toISOString();
+  const issues: ReviewerComment[] = [];
+  const addIssue = (
+    unit: MeaningUnit,
+    issueType: string,
+    severity: ReviewerComment["severity"],
+    comment: string,
+    suggestedAction: string,
+    targetType: ReviewerComment["targetType"] = "meaning_unit"
+  ) => {
+    issues.push({
+      agent: "Meaning Unit Integrity Support",
+      comment,
+      createdAt: now,
+      id: `mu_integrity_${unit.id}_${issueType
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")}`,
+      issueType,
+      resolved: false,
+      severity,
+      status: "unresolved",
+      suggestedAction,
+      target: `MU ${unit.number}`,
+      targetId: `MU${unit.number}`,
+      targetType,
+      workspace: "meaning-units"
+    });
+  };
+
+  units.forEach((unit) => {
+    const excerpt = unit.excerpt.trim();
+    const summary = unit.humanSummary.trim();
+    const aiSummary = unit.aiSummary.trim();
+    const wordCount = approximateWordCount(excerpt);
+    const speaker = unit.speaker.toLowerCase();
+
+    if (!summary) {
+      addIssue(
+        unit,
+        "Researcher summary needed",
+        "warning",
+        "This MU does not yet have a researcher-reviewed summary.",
+        "What concise participant-close wording best captures this MU?",
+        "summary"
+      );
+    }
+    if (excerpt && meaningUnitEndsMidSentence(excerpt)) {
+      addIssue(
+        unit,
+        "Meaning unit ends mid-sentence",
+        "major",
+        "This MU appears to end with an incomplete phrase rather than a complete participant meaning.",
+        "Should the boundary be extended to include the next sentence, or should this MU be redrafted?"
+      );
+    } else if (unit.uncertainty?.toLowerCase().includes("may be incomplete")) {
+      addIssue(
+        unit,
+        "Meaning unit may be incomplete",
+        "warning",
+        "This MU was generated by fallback logic and may need a boundary check.",
+        "Does this MU stand alone as a clear meaning, or does it need surrounding participant text?"
+      );
+    }
+    if (wordCount > 0 && wordCount < 3) {
+      addIssue(
+        unit,
+        "Excerpt may be too short",
+        "info",
+        "This MU excerpt is very short and may not communicate a clear meaning on its own.",
+        "Would including surrounding participant text better represent the intended meaning?"
+      );
+    }
+    if (wordCount > 140) {
+      addIssue(
+        unit,
+        "MU may contain several meanings",
+        "major",
+        "This MU is long enough that it may contain several shifts in meaning.",
+        "Can this MU be split into smaller meaning-based units?"
+      );
+    } else if (wordCount > 80) {
+      addIssue(
+        unit,
+        "Excerpt may be long",
+        "info",
+        "This MU excerpt is relatively long and may benefit from a boundary check.",
+        "Does this still communicate one coherent meaning, or are there multiple meanings here?"
+      );
+    }
+    if (
+      !unit.analysisExcluded &&
+      (speaker.includes("interviewer") ||
+        /^interviewer\s*:/i.test(excerpt) ||
+        /\?\s*$/.test(excerpt))
+    ) {
+      const acceptedInterviewerPrompt = unit.humanStatus === "Accepted";
+      addIssue(
+        unit,
+        acceptedInterviewerPrompt
+          ? "Interviewer prompt accepted as participant MU"
+          : "Possible interviewer/context material",
+        acceptedInterviewerPrompt ? "major" : "info",
+        acceptedInterviewerPrompt
+          ? "This MU appears to contain an interviewer or researcher prompt, but it has been accepted as a participant meaning unit."
+          : "This MU may contain interviewer prompt or contextual material and should be reviewed before analysis.",
+        "Should this be treated as context rather than a participant meaning unit?"
+      );
+    }
+    if (unit.analysisExcluded && !unit.exclusionReason?.trim()) {
+      addIssue(
+        unit,
+        "Excluded without reason",
+        "warning",
+        "This MU is excluded but does not include a researcher reason.",
+        "What methodological reason explains the exclusion?"
+      );
+    }
+    if (!unit.caseId || !unit.segmentId) {
+      addIssue(
+        unit,
+        "Source reference missing",
+        unit.humanStatus === "Accepted" ? "major" : "info",
+        "This MU is missing a source reference, making auditability weaker.",
+        "Can you link this MU back to the transcript source reference?"
+      );
+    }
+    if (containsNonTranscriptMaterial(excerpt)) {
+      addIssue(
+        unit,
+        "Possible non-transcript material included",
+        "major",
+        "This MU excerpt appears to contain project setup, research question, domain labels, demo metadata, file labels, or another non-transcript source.",
+        "Should this be removed from analysis or explicitly justified as part of the participant account?"
+      );
+    }
+    if (
+      unit.humanStatus === "Accepted" &&
+      (!summary || summary === aiSummary || summary.toLowerCase() === "same as aisummary")
+    ) {
+      addIssue(
+        unit,
+        "Accepted without clear researcher-reviewed summary",
+        "warning",
+        "This MU is accepted but the summary appears unchanged or missing.",
+        "Have you reviewed the summary wording and confirmed it represents the participant account?",
+        "summary"
+      );
+    }
+    if (summary && summaryIsTooCloseToExcerpt(summary, excerpt)) {
+      addIssue(
+        unit,
+        "Summary may be too close to excerpt",
+        "warning",
+        "The researcher summary appears to repeat the MU excerpt rather than condensing the participant's main meaning.",
+        "Could this be condensed into a brief statement of the participant's main meaning?",
+        "summary"
+      );
+    }
+    if (summary && summaryIsTooGeneric(summary)) {
+      addIssue(
+        unit,
+        "Summary too generic",
+        "warning",
+        "The summary appears too generic to capture the specific meaning in this MU.",
+        "Can the summary name the participant's main meaning more specifically while staying close to their account?",
+        "summary"
+      );
+    }
+    if (summary && summaryPossiblyGoesBeyondExcerpt(summary, excerpt)) {
+      addIssue(
+        unit,
+        "Summary may go beyond participant account",
+        "major",
+        "The summary may introduce wording that is not clearly grounded in the MU excerpt.",
+        "Can the summary be revised closer to the participant's words?",
+        "summary"
+      );
+    }
+  });
+
+  const seen = new Map<string, MeaningUnit>();
+  units.forEach((unit) => {
+    const key = normalizeForOverlapCheck(unit.excerpt);
+    if (!key || key.length < 30) {
+      return;
+    }
+    const previous = seen.get(key);
+    if (previous) {
+      addIssue(
+        unit,
+        "Duplicate or overlapping MU",
+        "warning",
+        `This MU appears to overlap strongly with MU ${previous.number}.`,
+        "Should these MUs be merged, revised, or kept separate for a methodological reason?"
+      );
+    } else {
+      seen.set(key, unit);
+    }
+  });
+
+  return issues;
+}
+
+function normalizeForOverlapCheck(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+function buildMeaningUnitIssueContextById(
+  issues: ReviewerComment[],
+  units: MeaningUnit[]
+) {
+  const unitsByTargetId = new Map(
+    units.map((unit) => [`MU${unit.number}`, unit])
+  );
+
+  return issues.reduce<Record<string, ReviewerIssueContext>>((contexts, issue) => {
+    const unit = unitsByTargetId.get(issue.targetId);
+    if (!unit) {
+      return contexts;
+    }
+    const isSummaryIssue = issue.targetType === "summary";
+    const text = isSummaryIssue
+      ? unit.humanSummary || unit.aiSummary || "No summary available yet."
+      : unit.excerpt || unit.aiExcerpt || "No excerpt available yet.";
+    contexts[issue.id] = {
+      label: isSummaryIssue ? "Current summary" : "Current excerpt",
+      text: truncateForReviewSnippet(text)
+    };
+    return contexts;
+  }, {});
+}
+
+function truncateForReviewSnippet(text: string, maxLength = 220) {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxLength - 1).trim()}…`;
+}
+
+function summaryPossiblyGoesBeyondExcerpt(summary: string, excerpt: string) {
+  const lowerSummary = summary.toLowerCase();
+  const lowerExcerpt = excerpt.toLowerCase();
+  const interpretiveTerms = [
+    "causes",
+    "clinical",
+    "diagnosis",
+    "improves",
+    "psychological",
+    "therapeutic",
+    "trauma",
+    "treatment"
+  ];
+  return interpretiveTerms.some(
+    (term) => lowerSummary.includes(term) && !lowerExcerpt.includes(term)
+  );
+}
+
+function summaryIsTooCloseToExcerpt(summary: string, excerpt: string) {
+  const normalizedSummary = normalizeForSummarySimilarity(summary);
+  const normalizedExcerpt = normalizeForSummarySimilarity(excerpt);
+  if (!normalizedSummary || !normalizedExcerpt) {
+    return false;
+  }
+  if (
+    normalizedExcerpt.includes(normalizedSummary) &&
+    normalizedSummary.length > 24
+  ) {
+    return true;
+  }
+  if (/[\u3400-\u9fff]/.test(normalizedSummary)) {
+    const summaryChars = new Set([...normalizedSummary.replace(/\s/g, "")]);
+    const excerptChars = new Set([...normalizedExcerpt.replace(/\s/g, "")]);
+    if (summaryChars.size < 8) {
+      return false;
+    }
+    const overlap = [...summaryChars].filter((char) =>
+      excerptChars.has(char)
+    ).length;
+    return overlap / summaryChars.size > 0.9 && normalizedSummary.length > 24;
+  }
+  const summaryTokens = new Set(normalizedSummary.split(" ").filter(Boolean));
+  const excerptTokens = new Set(normalizedExcerpt.split(" ").filter(Boolean));
+  if (summaryTokens.size < 5) {
+    return false;
+  }
+  const overlap = [...summaryTokens].filter((token) =>
+    excerptTokens.has(token)
+  ).length;
+  return overlap / summaryTokens.size > 0.86 && summaryTokens.size > 10;
+}
+
+function meaningUnitEndsMidSentence(text: string) {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (/[.!?。！？)”'’」』]$/.test(trimmed)) {
+    return false;
+  }
+  return /\b(and|but|because|because of|when|while|where|which|that|so|so that|then|with|without|to|for|from|into|about|if|although|though|as)\s*$/i.test(
+    trimmed
+  );
+}
+
+function summaryIsTooGeneric(summary: string) {
+  const trimmed = summary.trim();
+  const normalized = normalizeForSummarySimilarity(trimmed);
+  if (!normalized) {
+    return true;
+  }
+  return (
+    /^participant (described|expressed|talked about|shared|said|mentioned)( at the beginning| in the beginning| initially)?\.?$/i.test(
+      trimmed
+    ) ||
+    /^participant (described|expressed|talked about|shared|said|mentioned) (at the beginning|in the beginning|initially)\b/i.test(
+      trimmed
+    ) ||
+    normalized === "participant described" ||
+    normalized === "participant expressed"
+  );
+}
+
+function normalizeForSummarySimilarity(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/^(interviewer|researcher|moderator|facilitator|participant|interviewee|student|[IQPA])\s*[:：]\s*/i, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function approximateWordCount(text: string) {
@@ -4752,7 +6013,7 @@ function markCategoriesEditableDraft(categories: CategoryNode[]): CategoryNode[]
 
 function formatCategoryStatus(status: NonNullable<CategoryNode["status"]>) {
   const labels: Record<NonNullable<CategoryNode["status"]>, string> = {
-    ai_draft: "AI draft",
+    ai_draft: "Suggested draft",
     edited: "Edited",
     confirmed: "Confirmed",
     fallback_draft: "Fallback draft",
@@ -4782,38 +6043,152 @@ function getCategoryRunDisabledReason({
   mode: CategoryMode;
 }) {
   if (confirmedMeaningUnits === 0) {
-    return "Accept or edit meaning-unit summaries before running categories";
+    return "Accept meaning units before running categories";
   }
   if (hasTemporaryFallbackCategories && (mode === "B" || mode === "C")) {
-    return "Regenerate or explicitly accept the temporary fallback draft before Mode B/C";
+    return "Regenerate or explicitly accept the temporary fallback draft before continuing";
   }
   if (mode === "B" && categoryCount === 0) {
-    return "Run Mode A first; Mode B refines an existing category system";
+    return "Construct provisional categories before refining the category system";
   }
   if (mode === "C" && categoryCount === 0) {
-    return "Run Mode A and Mode B before final Mode C integration";
+    return "Construct and review categories before integrating findings";
   }
   if (mode === "C" && !allSegmentsProcessedForModeC) {
-    return "Confirm all segments in this transcript have been processed and reviewed before Mode C";
+    return "Confirm all meaning units in this transcript have been processed and reviewed before integration";
   }
-  return `Run Mode ${mode} using confirmed MU summaries`;
+  return getCategoryRunLabel(mode);
+}
+
+function getCategoryRunLabel(mode: CategoryMode, running = false) {
+  const labels: Record<CategoryMode, string> = {
+    A: "Optional assistant suggestion: provisional categories",
+    B: "Refine categories",
+    C: "Optional assistant suggestion: structure and summary narrative"
+  };
+  return running ? `${labels[mode]}...` : labels[mode];
 }
 
 function getStepCopy(step: WorkflowStep) {
   switch (step) {
-    case "upload":
-      return "Add an interview audio file or import an existing transcript. Use anonymised or approved data, then review the prepared transcript before requesting AI draft support.";
-    case "transcript":
-      return "Carefully check every speaker label and every sentence. Meaning-unit analysis depends on this transcript being accurate.";
-    case "meaning-units":
-      return "Generate draft meaning units (MUs) from selected ready segments, then review each one. If a speaker or excerpt is wrong, correct the transcript and regenerate.";
-    case "categories":
-      return "Create category-level drafts only after meaning units have been reviewed. Mode A starts drafting, Mode B refines it, and Mode C creates an integration draft.";
+    case "pre-analysis":
+      return "Prepare and organise your data before formal analysis.";
+    case "understanding":
+      return "Work with meaning units and translate participants' accounts into analytically useful forms.";
+    case "categorizing":
+      return "Compare meaning units and work with provisional categories.";
+    case "integrating":
+      return "Depict structure and provide summary narratives.";
+    case "integrity":
+      return "Check transparency, coherence, and credibility.";
     case "export":
-      return "Download the reviewed transcript, meaning units, category drafts, reviewer notes, and review trail. Exports may contain AI-drafted material.";
-    default:
-      return "Set up the project and research question before importing data. Current workflow: GDI-QR-informed researcher-led analysis support.";
+      return "Export the analysis record and audit trail.";
   }
+}
+
+function getStepGuidance(step: WorkflowStep) {
+  const guidance: Record<
+    WorkflowStep,
+    { ai: string; judgment: string; meaning: string; task: string }
+  > = {
+    "pre-analysis": {
+      meaning:
+        "Pre-analysis helps you prepare your material before detailed analysis begins. You will organise data into domains of investigation, prepare your transcript, and make initial judgements about relevance.",
+      task:
+        "Define the research question, domains of investigation, researcher expectations, notes, and relevance guideline. Upload or paste a transcript and review it before analysis.",
+      ai:
+        "I can help you structure your domains, prepare transcript material, and flag sections that may need your attention. You remain the final decision-maker.",
+      judgment:
+        "You decide how to define your domains, what counts as relevant study data, and what preparation decisions are appropriate for your research question."
+    },
+    understanding: {
+      meaning:
+        "In this step, you work closely with meaning units. The aim is to understand what each meaning unit says and translate it into a more manageable analytic form.",
+      task:
+        "Review, split, merge, delete, and confirm meaning units. Edit summaries and implicit meaning notes before accepting them.",
+      ai:
+        "I can help suggest possible meaning unit boundaries, concise summaries, and context-based implicit meanings. These are draft suggestions for your review.",
+      judgment:
+        "You decide whether each meaning unit is clear, whether the summary stays close to the participant’s account, and whether any implicit meaning is justified by the context."
+    },
+    categorizing: {
+      meaning:
+        "Categorizing involves comparing meaning units, grouping similar meanings, naming categories, and revising them as the analysis develops.",
+      task:
+        "Review category names, descriptions, linked meaning units, participant count, supporting quotes, and researcher notes.",
+      ai:
+        "I can help notice possible similarities across meaning units and suggest provisional category names. You can rename, merge, split, or reject any suggestion.",
+      judgment:
+        "You decide whether a category captures the shared meaning across meaning units, whether it needs to be revised, and how it should be named."
+    },
+    integrating: {
+      meaning:
+        "Integrating means moving beyond a list of categories. The aim is to depict the structure of your findings and develop a coherent summary narrative.",
+      task:
+        "Review the category relationship map, edit relationships, reorder categories, and confirm the summary narrative.",
+      ai:
+        "I can help sketch possible relationships among categories and draft a provisional summary narrative. You decide whether the structure is convincing and grounded in the data.",
+      judgment:
+        "You decide how categories relate to one another, what structure best represents your findings, and which claims are supported by the evidence."
+    },
+    integrity: {
+      meaning:
+        "Methodological integrity helps you review whether the analysis is transparent, coherent, credible, and respectful of participants.",
+      task:
+        "Review checklist items, address flagged issues, add researcher notes, and export the audit trail.",
+      ai:
+        "I can help flag places where the analysis may need more evidence, clearer context, or closer attention to contradictory cases. These flags are prompts for reflection, not final judgements.",
+      judgment:
+        "You decide how to address each issue, what needs revision, and how to make the analysis more transparent and credible."
+    },
+    export: {
+      meaning:
+        "Export preserves the analysis record and audit trail for review, supervision, and reporting.",
+      task:
+        "Export the research question, domains, expectations, relevance guideline, meaning units, summaries, categories, structure, narrative, checklist, and audit trail.",
+      ai:
+        "I can help package the current analysis record into export formats.",
+      judgment:
+        "Take a final look before using exported material in reports, publications, supervision, or teaching."
+    }
+  };
+  return guidance[step];
+}
+
+function getGdiqrTips(step: WorkflowStep) {
+  const tips: Record<WorkflowStep, string[]> = {
+    "pre-analysis": [
+      "Domains of investigation help organise the data, but they are not findings.",
+      "Data preparation should preserve participants’ meaning and context.",
+      "Judgement of relevance is guided by the research problem and research questions."
+    ],
+    understanding: [
+      "Meaning units should be large enough to communicate a clear message and small enough to remain manageable.",
+      "Summaries should stay close to the participant's account.",
+      "Implicit meaning should clarify context-based meaning, not become speculation."
+    ],
+    categorizing: [
+      "Categories are provisional and may be renamed, merged, divided, or reorganised.",
+      "Categories emerge from meaning units.",
+      "Domains are not findings; categories are analytic findings developed from the data."
+    ],
+    integrating: [
+      "Integration shows how categories relate to one another.",
+      "Summary narratives help readers understand the structure of the findings.",
+      "Narrative claims should remain linked to category and meaning-unit evidence."
+    ],
+    integrity: [
+      "The analytic process should be transparent and traceable.",
+      "Coherence matters: findings should fit together while preserving complexity.",
+      "Contradictory or negative cases should be considered rather than smoothed over."
+    ],
+    export: [
+      "The analysis record should preserve decisions, evidence, and revisions.",
+      "Audit trails support transparency and supervision.",
+      "Exported material should be reviewed before use in reporting."
+    ]
+  };
+  return tips[step];
 }
 
 function EmptyState({ text }: { text: string }) {
@@ -5148,10 +6523,15 @@ function ModeButton({
 }
 
 function ReviewerPanel({
+  dismissActionLabel = "Dismiss",
+  emptyText = "Integrity check not yet run. The system flags possible issues; the researcher decides how to address them.",
   expandedIssueIds,
+  hasRun = false,
+  issueContextById = {},
   isOpen,
   issues,
   isRunning,
+  noActiveText = "No active review issues. Dismissed and resolved items remain in the review trail.",
   onAddMemo,
   onDismiss,
   onResolve,
@@ -5159,12 +6539,22 @@ function ReviewerPanel({
   onToggle,
   onToggleIssue,
   onView,
-  title
+  panelBadge = "Methodological Integrity Review",
+  responsibilityText,
+  runButtonLabel = "Review methodological integrity",
+  showAddMemoAction = true,
+  title,
+  viewActionLabel = "View target"
 }: {
+  dismissActionLabel?: string;
+  emptyText?: string;
   expandedIssueIds: string[];
+  hasRun?: boolean;
+  issueContextById?: Record<string, ReviewerIssueContext>;
   isOpen: boolean;
   issues: ReviewerComment[];
   isRunning: boolean;
+  noActiveText?: string;
   onAddMemo: (issue: ReviewerComment) => void;
   onDismiss: (issue: ReviewerComment) => void;
   onResolve: (issue: ReviewerComment) => void;
@@ -5172,12 +6562,19 @@ function ReviewerPanel({
   onToggle: () => void;
   onToggleIssue: (issueId: string) => void;
   onView: (issue: ReviewerComment) => void;
+  panelBadge?: string;
+  responsibilityText?: string;
+  runButtonLabel?: string;
+  showAddMemoAction?: boolean;
   title: string;
+  viewActionLabel?: string;
 }) {
-  const activeIssues = issues.filter((issue) => issue.status !== "dismissed");
+  const activeIssues = issues.filter((issue) => issue.status === "unresolved");
   const warningCount = activeIssues.filter(
     (issue) => issue.severity === "warning"
   ).length;
+  const infoCount = activeIssues.filter((issue) => issue.severity === "info")
+    .length;
   const majorCount = activeIssues.filter((issue) => issue.severity === "major")
     .length;
   const resolvedCount = issues.filter((issue) => issue.status === "resolved")
@@ -5190,9 +6587,19 @@ function ReviewerPanel({
     <aside className={`review-panel ${isOpen ? "" : "collapsed"}`}>
       <div className="category-header">
         <div>
-          <span className="badge blue">Reviewer check</span>
+          <span className="badge blue">{panelBadge}</span>
           <h3>{title}</h3>
-          <p className="small">{reviewSummaryText(issues, warningCount, majorCount)}</p>
+          <p className="small">
+            {hasRun && issues.length === 0
+              ? "No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
+              : reviewSummaryText(
+                  issues,
+                  infoCount,
+                  warningCount,
+                  majorCount,
+                  resolvedCount
+                )}
+          </p>
         </div>
         <button className="button icon" onClick={onToggle} type="button">
           {isOpen ? "−" : "+"}
@@ -5208,7 +6615,7 @@ function ReviewerPanel({
               type="button"
             >
               <ShieldCheck size={18} />
-              {isRunning ? "Checking..." : "Run check"}
+              {isRunning ? "Reviewing..." : runButtonLabel}
             </button>
             <span className="badge">
               {activeIssues.length} active · {resolvedCount} resolved
@@ -5217,16 +6624,26 @@ function ReviewerPanel({
               <span className="badge blue">{dismissedCount} dismissed</span>
             )}
           </div>
+          {responsibilityText && (
+            <p className="small review-responsibility-note">{responsibilityText}</p>
+          )}
           {issues.length === 0 ? (
-            <EmptyState text="Review not yet run. Reviewer checks flag possible issues; the researcher decides how to resolve them." />
+            <EmptyState
+              text={
+                hasRun
+                  ? "No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
+                  : emptyText
+              }
+            />
           ) : activeIssues.length === 0 ? (
-            <EmptyState text="No active review issues. Dismissed and resolved items remain in the review trail." />
+            <EmptyState text={noActiveText} />
           ) : (
             Object.entries(groupedIssues).map(([group, groupIssues]) => (
               <div className="review-group" key={group}>
                 <span className="label">{group}</span>
                 {groupIssues.map((issue) => {
                   const expanded = expandedIssueIds.includes(issue.id);
+                  const issueContext = issueContextById[issue.id];
                   return (
                     <article className="review-issue" key={issue.id}>
                       <button
@@ -5235,16 +6652,28 @@ function ReviewerPanel({
                         type="button"
                       >
                         <div>
-                          <strong>{issue.issueType}</strong>
-                          <p className="small">{issue.target}</p>
+                          <span className="review-issue-kicker">
+                            <StatusBadge label={issue.severity} />
+                            <span>{issue.target}</span>
+                          </span>
+                          <strong>{reviewerIssueTitle(issue)}</strong>
+                          <p className="small">{issue.issueType}</p>
                         </div>
-                        <StatusBadge label={issue.severity} />
                       </button>
                       {expanded && (
                         <div className="review-issue-body">
-                          <p>{issue.comment}</p>
+                          {issueContext && (
+                            <div className="review-issue-snippet">
+                              <span className="label">{issueContext.label}</span>
+                              <p>{issueContext.text}</p>
+                            </div>
+                          )}
+                          <div>
+                            <span className="label">Why this may need review</span>
+                            <p>{issue.comment}</p>
+                          </div>
                           <p className="small">
-                            <strong>Suggested action:</strong>{" "}
+                            <strong>Reflection question:</strong>{" "}
                             {issue.suggestedAction || "Researcher review needed."}
                           </p>
                           {issue.researcherMemo && (
@@ -5258,7 +6687,7 @@ function ReviewerPanel({
                               onClick={() => onView(issue)}
                               type="button"
                             >
-                              View target
+                              {viewActionLabel}
                             </button>
                             <button
                               className="button"
@@ -5273,15 +6702,17 @@ function ReviewerPanel({
                               onClick={() => onDismiss(issue)}
                               type="button"
                             >
-                              Dismiss
+                              {dismissActionLabel}
                             </button>
-                            <button
-                              className="button"
-                              onClick={() => onAddMemo(issue)}
-                              type="button"
-                            >
-                              Add memo
-                            </button>
+                            {showAddMemoAction && (
+                              <button
+                                className="button"
+                                onClick={() => onAddMemo(issue)}
+                                type="button"
+                              >
+                                Add memo
+                              </button>
+                            )}
                           </div>
                         </div>
                       )}
@@ -5297,18 +6728,197 @@ function ReviewerPanel({
   );
 }
 
+function MeaningUnitReviewCard({
+  onAccept,
+  onEditExclusionReason,
+  onEditExcerpt,
+  onEditSummary,
+  onExclude,
+  onRestore,
+  onReturnToTranscript,
+  onSaveExcerpt,
+  onSaveSummary,
+  unit
+}: {
+  onAccept: (unitId: string) => void;
+  onEditExclusionReason: (unitId: string, value: string) => void;
+  onEditExcerpt: (unitId: string, value: string) => void;
+  onEditSummary: (unitId: string, value: string) => void;
+  onExclude: (unit: MeaningUnit) => void;
+  onRestore: (unit: MeaningUnit) => void;
+  onReturnToTranscript: (unit: MeaningUnit) => void;
+  onSaveExcerpt: (unitId: string) => void;
+  onSaveSummary: (unitId: string) => void;
+  unit: MeaningUnit;
+}) {
+  const validationFlags = getMeaningUnitValidationFlags(unit);
+
+  return (
+    <article
+      className={`summary-card ${unit.analysisExcluded ? "excluded-row" : ""}`}
+      id={`mu-${unit.number}`}
+    >
+      <div className="category-header">
+        <strong>MU #{unit.number}</strong>
+        <StatusBadge label={unit.humanStatus} />
+      </div>
+      <p className="small">
+        Source reference: {unit.caseId || "No case"} ·{" "}
+        {unit.segmentId || "Transcript source"} ·
+        Speaker: {unit.speaker || "Unspecified"}
+      </p>
+      {validationFlags.length > 0 && (
+        <div className="button-row">
+          {validationFlags.map((flag) => (
+            <span className={`badge ${flag.tone ?? ""}`.trim()} key={flag.label}>
+              {flag.label}
+            </span>
+          ))}
+        </div>
+      )}
+      <span className="label">AI draft excerpt</span>
+      <p className="small">{unit.aiExcerpt ?? unit.excerpt}</p>
+      <label className="label">
+        Researcher-reviewed excerpt
+        <textarea
+          className="field"
+          disabled={unit.analysisExcluded}
+          onBlur={() => void onSaveExcerpt(unit.id)}
+          onChange={(event) => onEditExcerpt(unit.id, event.target.value)}
+          value={unit.excerpt}
+        />
+      </label>
+      <span className="label">Draft Meaning Unit Summary</span>
+      <p className="small">{unit.aiSummary || "No draft yet."}</p>
+      {unit.uncertainty &&
+        !unit.uncertainty.toLowerCase().includes("rule-based draft") && (
+          <p className="small panel-note">{unit.uncertainty}</p>
+        )}
+      <label className="label">
+        Researcher summary
+        <textarea
+          className="field"
+          disabled={unit.analysisExcluded}
+          onBlur={() => void onSaveSummary(unit.id)}
+          onChange={(event) => onEditSummary(unit.id, event.target.value)}
+          value={unit.humanSummary}
+        />
+      </label>
+      <label className="label">
+        Researcher memo / exclusion reason
+        <textarea
+          className="field"
+          onChange={(event) =>
+            onEditExclusionReason(unit.id, event.target.value)
+          }
+          placeholder={
+            unit.speaker === "Interviewer"
+              ? "Example: interviewer prompt or contextual question"
+              : "Required before excluding this meaning unit"
+          }
+          value={unit.exclusionReason ?? ""}
+        />
+      </label>
+      <div className="button-row">
+        {!unit.analysisExcluded && (
+          <button
+            className="button icon"
+            onClick={() => onAccept(unit.id)}
+            title="Accept meaning unit"
+            type="button"
+          >
+            <Check size={18} />
+          </button>
+        )}
+        {unit.analysisExcluded ? (
+          <button
+            className="button"
+            onClick={() => void onRestore(unit)}
+            type="button"
+          >
+            Restore
+          </button>
+        ) : (
+          <button
+            className="button"
+            onClick={() => void onExclude(unit)}
+            type="button"
+          >
+            Exclude
+          </button>
+        )}
+        <button
+          className="button icon"
+          disabled={unit.analysisExcluded}
+          onClick={() => onReturnToTranscript(unit)}
+          title="Fix source transcript and redraft"
+          type="button"
+        >
+          <Pencil size={18} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function reviewSummaryText(
   issues: ReviewerComment[],
+  infoCount: number,
   warningCount: number,
-  majorCount: number
+  majorCount: number,
+  resolvedCount: number
 ) {
   if (issues.length === 0) {
-    return "Review not yet run";
+    return "No integrity review yet";
   }
-  if (majorCount === 0 && warningCount === 0) {
-    return "No major issues found";
+  return `${majorCount} major · ${warningCount} warning${
+    warningCount === 1 ? "" : "s"
+  } · ${infoCount} info · ${resolvedCount} resolved`;
+}
+
+function reviewerIssueTitle(issue: ReviewerComment) {
+  const target = issue.target || issue.targetId;
+  const normalized = issue.issueType.toLowerCase();
+  if (normalized.includes("too short")) {
+    return `${target} may be too short`;
   }
-  return `${warningCount} warning${warningCount === 1 ? "" : "s"}, ${majorCount} major issue${majorCount === 1 ? "" : "s"}`;
+  if (normalized.includes("mid-sentence")) {
+    return `${target} may end mid-sentence`;
+  }
+  if (normalized.includes("may be incomplete")) {
+    return `${target} may be incomplete`;
+  }
+  if (normalized.includes("too long") || normalized.includes("several meanings")) {
+    return `${target} may contain more than one meaning`;
+  }
+  if (normalized.includes("summary missing") || normalized.includes("summary needed")) {
+    return `${target} needs a researcher summary`;
+  }
+  if (normalized.includes("too close to excerpt")) {
+    return `${target} summary may repeat the excerpt`;
+  }
+  if (normalized.includes("summary too generic")) {
+    return `${target} summary may be too generic`;
+  }
+  if (normalized.includes("interviewer")) {
+    return `${target} may be contextual material`;
+  }
+  if (normalized.includes("source reference")) {
+    return `${target} needs a clearer source reference`;
+  }
+  if (normalized.includes("duplicate") || normalized.includes("overlap")) {
+    return `${target} may overlap with another MU`;
+  }
+  if (normalized.includes("beyond participant")) {
+    return `${target} summary may over-interpret`;
+  }
+  if (normalized.includes("non-transcript")) {
+    return `${target} may include project setup or metadata`;
+  }
+  if (normalized.includes("excluded without reason")) {
+    return `${target} needs an exclusion reason`;
+  }
+  return `${target}: ${issue.issueType}`;
 }
 
 function groupReviewerIssues(issues: ReviewerComment[]) {
@@ -5321,6 +6931,17 @@ function groupReviewerIssues(issues: ReviewerComment[]) {
 
 function reviewerGroupLabel(issueType: string) {
   const normalized = issueType.toLowerCase();
+  if (
+    normalized.includes("excerpt") ||
+    normalized.includes("source reference") ||
+    normalized.includes("summary") ||
+    normalized.includes("interviewer") ||
+    normalized.includes("duplicate") ||
+    normalized.includes("overlap") ||
+    normalized.includes("excluded")
+  ) {
+    return "Potential issues for review";
+  }
   if (normalized.includes("coverage")) {
     return "Coverage";
   }
@@ -5339,7 +6960,192 @@ function reviewerGroupLabel(issueType: string) {
   if (normalized.includes("integration") || normalized.includes("narrative")) {
     return "Integration limits";
   }
-  return "Rule compliance";
+  return "Potential issues for review";
+}
+
+function getCategoryDisplayTitle(category: CategoryNode) {
+  if (isAutomaticCategoryTitle(category.name)) {
+    return "Untitled Provisional Category";
+  }
+  return category.name.trim() || "Untitled Provisional Category";
+}
+
+function getCategoryTitleInputValue(category: CategoryNode) {
+  if (
+    category.status === "ai_draft" ||
+    category.status === "fallback_draft" ||
+    category.status === "needs_review"
+  ) {
+    return "";
+  }
+  return isAutomaticCategoryTitle(category.name) ? "" : category.name;
+}
+
+function getCategoryDescriptionValue(category: CategoryNode) {
+  if (
+    category.status === "ai_draft" ||
+    category.status === "fallback_draft" ||
+    category.status === "needs_review"
+  ) {
+    return "";
+  }
+  if (isSystemGeneratedCategoryDescription(category.definition)) {
+    return "";
+  }
+  return category.definition;
+}
+
+function getCategoryMemoValue(category: CategoryNode) {
+  if (category.status === "ai_draft" || category.status === "fallback_draft") {
+    return "";
+  }
+  return category.rationale ?? "";
+}
+
+function getCategoryAssistantStatusItems(category: CategoryNode) {
+  if (isFallbackCategory(category)) {
+    return [
+      "Assistant suggestion unavailable",
+      "Fallback grouping used",
+      "Redraft available"
+    ];
+  }
+  if (category.status === "confirmed") {
+    return ["Researcher-confirmed category"];
+  }
+  if (category.status === "edited") {
+    return ["Researcher edits present", "Assistant suggestion remains provisional"];
+  }
+  if (category.status === "rejected") {
+    return ["Category rejected by researcher"];
+  }
+  return ["Assistant suggestion generated", "Researcher review required"];
+}
+
+function isAutomaticCategoryTitle(name: string) {
+  const trimmed = name.trim();
+  return (
+    /^draft category\s+\d+\s*:/i.test(trimmed) ||
+    /^untitled provisional category$/i.test(trimmed) ||
+    /^new draft category$/i.test(trimmed)
+  );
+}
+
+function isSystemGeneratedCategoryDescription(description: string) {
+  const normalized = description.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.includes("assistant could not generate") ||
+    normalized.includes("assistant returned empty") ||
+    normalized.includes("ai returned empty") ||
+    normalized.includes("returned empty output") ||
+    normalized.includes("fallback grouping") ||
+    normalized.includes("temporary fallback") ||
+    normalized.includes("fallback draft") ||
+    normalized.includes("could not draft") ||
+    normalized.includes("created as a temporary draft") ||
+    normalized.includes("researcher-created draft category")
+  );
+}
+
+function getOptionalCategoryDraft(
+  category: CategoryNode,
+  includedUnits: MeaningUnit[]
+) {
+  const assistantLabel =
+    !isAutomaticCategoryTitle(category.name) &&
+    category.status !== "edited" &&
+    category.status !== "confirmed" &&
+    category.name.trim()
+      ? category.name.trim()
+      : "";
+  const assistantDefinition =
+    !isSystemGeneratedCategoryDescription(category.definition) &&
+    category.status !== "edited" &&
+    category.status !== "confirmed" &&
+    category.definition.trim()
+      ? category.definition.trim()
+      : "";
+  const evidenceText = includedUnits
+    .map((unit) => `${unit.humanSummary || unit.aiSummary} ${unit.excerpt}`)
+    .join(" ")
+    .toLowerCase();
+  const evidenceSuggestion = buildEvidenceBasedCategorySuggestion(evidenceText);
+  const label = assistantLabel || evidenceSuggestion.label;
+  const definition = assistantDefinition || evidenceSuggestion.definition;
+  const rationale =
+    category.rationale && !isSystemGeneratedCategoryDescription(category.rationale)
+      ? category.rationale
+      : evidenceSuggestion.rationale;
+
+  return {
+    available: Boolean(label || definition),
+    definition,
+    label,
+    rationale,
+    statusNote: isFallbackCategory(category)
+      ? "Assistant draft label unavailable; this cautious suggestion is derived from the assigned MUs for review."
+      : "Assistant suggestion only · researcher confirmation required"
+  };
+}
+
+function buildEvidenceBasedCategorySuggestion(evidenceText: string) {
+  if (!evidenceText.trim()) {
+    return {
+      definition: "",
+      label: "",
+      rationale: ""
+    };
+  }
+  if (
+    /(safe|safety|trust|therapist|therapy|pace|overwhelm|emotion|emotional)/i.test(
+      evidenceText
+    )
+  ) {
+    return {
+      definition:
+        "These MUs may share a meaning around feeling sufficiently safe to approach difficult emotional experience.",
+      label: "Feeling safe enough to engage with difficult emotions",
+      rationale:
+        "The assigned MUs appear to connect emotional difficulty with conditions that made engagement feel safer. Review whether this wording fits the participant account."
+    };
+  }
+  if (/(confidence|confident|capable|able|ability|self-confidence)/i.test(evidenceText)) {
+    return {
+      definition:
+        "These MUs may share a meaning around developing a stronger sense of personal capability.",
+      label: "Developing a stronger sense of capability",
+      rationale:
+        "Several assigned MUs appear to describe shifts in confidence or perceived ability. Review similarities and exceptions before naming."
+    };
+  }
+  if (/(uncertain|uncertainty|change|changing|transition|different)/i.test(evidenceText)) {
+    return {
+      definition:
+        "These MUs may share a meaning around making sense of uncertainty or change in experience.",
+      label: "Making sense of uncertainty and change",
+      rationale:
+        "The assigned MUs appear to involve uncertainty, transition, or changing self-understanding. Check whether they belong together."
+    };
+  }
+  if (/(stress|body|physical|symptom|tired|sleep|pain|breath|breathing)/i.test(evidenceText)) {
+    return {
+      definition:
+        "These MUs may share a meaning around how experience is noticed or expressed through the body.",
+      label: "Noticing experience through the body",
+      rationale:
+        "Several assigned MUs appear to connect participant experience with bodily sensations or physical states. Review for fit."
+    };
+  }
+  return {
+    definition:
+      "These MUs may share a related meaning. Compare their summaries and excerpts before deciding how to name the category.",
+    label: "Possible shared meaning across accepted MUs",
+    rationale:
+      "This is a structural draft to support comparison, not a confirmed category name."
+  };
 }
 
 function CategoryBlock({
@@ -5351,6 +7157,7 @@ function CategoryBlock({
   onMerge,
   onReject,
   onRemoveUnit,
+  onSplit,
   onUpdate,
   units
 }: {
@@ -5362,6 +7169,7 @@ function CategoryBlock({
   onMerge: (category: CategoryNode) => void;
   onReject: (category: CategoryNode) => void;
   onRemoveUnit: (categoryId: string, unitNumber: number) => void;
+  onSplit: (category: CategoryNode) => void;
   onUpdate: (categoryId: string, updates: Partial<CategoryNode>) => void;
   units: MeaningUnit[];
 }) {
@@ -5369,11 +7177,18 @@ function CategoryBlock({
   const includedUnits = units.filter((unit) =>
     category.includedUnitIds.includes(unit.number)
   );
-  const statusLabel = category.status
-    ? formatCategoryStatus(category.status)
-    : isFallback
-      ? "Fallback draft"
-      : "AI draft";
+  const isConfirmedCategory = category.status === "confirmed";
+  const clusterStatusLabel = isConfirmedCategory
+    ? "Provisional category"
+    : "Unconfirmed evidence cluster";
+  const titleValue = getCategoryTitleInputValue(category);
+  const descriptionValue = getCategoryDescriptionValue(category);
+  const memoValue = getCategoryMemoValue(category);
+  const [similarityNote, setSimilarityNote] = useState("");
+  const [differenceNote, setDifferenceNote] = useState("");
+  const [clusterDecision, setClusterDecision] = useState("partly");
+  const [assistantDraftIgnored, setAssistantDraftIgnored] = useState(false);
+  const assistantDraft = getOptionalCategoryDraft(category, includedUnits);
   return (
     <article
       className={`category ${isFallback ? "temporary-draft" : ""}`}
@@ -5381,61 +7196,46 @@ function CategoryBlock({
     >
       <div className="category-header">
         <div>
-          <label className="label" htmlFor={`${category.id}-name`}>
-            Category title
-          </label>
-          <input
-            className="field category-title-input"
-            id={`${category.id}-name`}
-            onChange={(event) =>
-              onUpdate(category.id, { name: event.target.value })
-            }
-            value={category.name}
-          />
+          <span className="label">Evidence Cluster</span>
+          <h3 className="category-title">
+            {isConfirmedCategory && titleValue
+              ? titleValue
+              : "Accepted meaning units in this cluster"}
+          </h3>
         </div>
         <div className="button-row">
-          <StatusBadge label={statusLabel} />
-          {isFallback && <span className="badge warning">Requires review</span>}
+          <span className="badge blue">{clusterStatusLabel}</span>
           <span className="badge">
-            Units {category.includedUnitIds.join(", ")}
+            Units {includedUnits.map((unit) => unit.number).join(", ") || "None"}
           </span>
         </div>
       </div>
-      <label className="label" htmlFor={`${category.id}-definition`}>
-        Category description
-      </label>
-      <textarea
-        className="textarea compact-textarea"
-        id={`${category.id}-definition`}
-        onChange={(event) =>
-          onUpdate(category.id, { definition: event.target.value })
-        }
-        value={category.definition}
-      />
-      {category.rationale && (
-        <p className="small">
-          <strong>Draft rationale:</strong> {category.rationale}
-        </p>
-      )}
-      {isFallback && (
-        <p className="small">
-          This category was created by fallback grouping because the AI returned
-          empty output. Please review and rename before using it.
-        </p>
-      )}
       <details className="evidence-panel" open>
-        <summary>View supporting evidence ({includedUnits.length} MU)</summary>
+        <summary>
+          Accepted Meaning Units in this Cluster ({includedUnits.length} MU)
+        </summary>
         {includedUnits.length === 0 ? (
-          <EmptyState text="No meaning units assigned. Assign at least one MU before confirming this category." />
+          <EmptyState text="No meaning units assigned. Add accepted MUs before developing a provisional category." />
         ) : (
           <div className="evidence-list">
             {includedUnits.map((unit) => (
               <div className="evidence-item" key={unit.id}>
                 <div>
-                  <strong>MU #{unit.number}</strong>{" "}
-                  <span className="badge blue">{unit.segmentId}</span>
-                  <p className="small">{unit.humanSummary || unit.aiSummary}</p>
-                  <p className="small">Evidence: {unit.excerpt}</p>
+                  <div className="evidence-item-header">
+                    <strong>MU {unit.number}</strong>
+                    <span className="badge blue">{unit.speaker}</span>
+                  </div>
+                  <p>{unit.excerpt}</p>
+                  <p className="small">
+                    <strong>Researcher summary:</strong>{" "}
+                    {unit.humanSummary || "No researcher summary yet."}
+                  </p>
+                  <details className="source-reference-details">
+                    <summary>Source reference</summary>
+                    <p className="small">
+                      {unit.caseId} · {unit.segmentId}
+                    </p>
+                  </details>
                 </div>
                 <div className="button-row">
                   <button
@@ -5443,7 +7243,7 @@ function CategoryBlock({
                     onClick={() => onRemoveUnit(category.id, unit.number)}
                     type="button"
                   >
-                    Remove from category
+                    {isConfirmedCategory ? "Remove from category" : "Remove from cluster"}
                   </button>
                   <select
                     className="select compact"
@@ -5459,7 +7259,7 @@ function CategoryBlock({
                       .filter((item) => item.id !== category.id)
                       .map((item) => (
                         <option key={item.id} value={item.id}>
-                          {item.name}
+                          {getCategoryDisplayTitle(item)}
                         </option>
                       ))}
                   </select>
@@ -5469,19 +7269,186 @@ function CategoryBlock({
           </div>
         )}
       </details>
+      <section className="comparison-reflection-panel">
+        <span className="label">Compare Similarities and Differences</span>
+        <label className="label" htmlFor={`${category.id}-similarities`}>
+          What appears similar across these meaning units?
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          id={`${category.id}-similarities`}
+          onChange={(event) => setSimilarityNote(event.target.value)}
+          placeholder="Note repeated meanings, shared concerns, or common ways of describing experience."
+          value={similarityNote}
+        />
+        <label className="label" htmlFor={`${category.id}-differences`}>
+          Are there important differences or tensions?
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          id={`${category.id}-differences`}
+          onChange={(event) => setDifferenceNote(event.target.value)}
+          placeholder="Note contrasts, exceptions, uncertainties, or reasons this grouping may need revision."
+          value={differenceNote}
+        />
+        <label className="label" htmlFor={`${category.id}-decision`}>
+          Do these meaning units seem to belong together?
+        </label>
+        <select
+          className="select"
+          id={`${category.id}-decision`}
+          onChange={(event) => setClusterDecision(event.target.value)}
+          value={clusterDecision}
+        >
+          <option value="yes">Yes, develop as a provisional category</option>
+          <option value="partly">Partly / needs revision</option>
+          <option value="no">No, split or reassign these meaning units</option>
+        </select>
+      </section>
+      <section className="optional-draft-panel">
+        <div className="category-header">
+          <div>
+            <span className="label">Optional assistant draft</span>
+            <p className="small">
+              Possible shared meaning · draft label for review · not confirmed
+            </p>
+          </div>
+          <span className="badge blue">Researcher confirmation required</span>
+        </div>
+        {assistantDraftIgnored ? (
+          <EmptyState text="Assistant draft ignored for this cluster. You can still name the category by comparing the accepted meaning units." />
+        ) : assistantDraft.available ? (
+          <div className="assistant-draft-grid">
+            <div>
+              <span className="label">Draft category label</span>
+              <p className="assistant-draft-text">{assistantDraft.label}</p>
+            </div>
+            <div>
+              <span className="label">Draft shared-meaning definition</span>
+              <p className="assistant-draft-text">{assistantDraft.definition}</p>
+            </div>
+            <div>
+              <span className="label">Why these MUs may belong together</span>
+              <p className="small">{assistantDraft.rationale}</p>
+            </div>
+            <p className="small panel-note">{assistantDraft.statusNote}</p>
+            <div className="button-row">
+              <button
+                className="button"
+                disabled={!assistantDraft.label}
+                onClick={() => onUpdate(category.id, { name: assistantDraft.label })}
+                type="button"
+              >
+                Use label
+              </button>
+              <button
+                className="button"
+                disabled={!assistantDraft.definition}
+                onClick={() =>
+                  onUpdate(category.id, { definition: assistantDraft.definition })
+                }
+                type="button"
+              >
+                Use definition
+              </button>
+              <button
+                className="button"
+                disabled={!assistantDraft.label && !assistantDraft.definition}
+                onClick={() =>
+                  onUpdate(category.id, {
+                    definition: assistantDraft.definition,
+                    name: assistantDraft.label
+                  })
+                }
+                type="button"
+              >
+                Edit before using
+              </button>
+              <button
+                className="button"
+                onClick={() => setAssistantDraftIgnored(true)}
+                type="button"
+              >
+                Ignore suggestion
+              </button>
+            </div>
+          </div>
+        ) : (
+          <EmptyState text="Assistant draft label unavailable. You can still name this category by comparing the accepted meaning units." />
+        )}
+      </section>
+      <section className="emerging-category-panel">
+        <span className="label">Emerging Category</span>
+        <label className="label" htmlFor={`${category.id}-name`}>
+          Category name
+        </label>
+        <input
+          className="field category-title-input"
+          id={`${category.id}-name`}
+          onChange={(event) =>
+            onUpdate(category.id, { name: event.target.value })
+          }
+          placeholder="Name this category after reviewing the meaning units"
+          value={titleValue}
+        />
+        <label className="label" htmlFor={`${category.id}-definition`}>
+          Category definition / shared meaning
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          id={`${category.id}-definition`}
+          onChange={(event) =>
+            onUpdate(category.id, { definition: event.target.value })
+          }
+          placeholder="Describe the shared meaning represented by these meaning units"
+          value={descriptionValue}
+        />
+        <label className="label" htmlFor={`${category.id}-memo`}>
+          Researcher memo
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          id={`${category.id}-memo`}
+          onChange={(event) =>
+            onUpdate(category.id, { rationale: event.target.value })
+          }
+          placeholder="Note naming decisions, alternatives, doubts, or reasons to revisit this category"
+          value={memoValue}
+        />
+      </section>
+      <details className="assistant-status-panel">
+        <summary>Assistant Generation Status</summary>
+        <ul className="assistant-status-list">
+          {getCategoryAssistantStatusItems(category).map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+        {category.rationale && (category.status === "ai_draft" || isFallback) && (
+          <p className="small">
+            Assistant rationale available for review; keep analytic wording in
+            the category title, definition, and researcher memo.
+          </p>
+        )}
+      </details>
       <div className="button-row">
         <button
           className="button primary"
           onClick={() => onConfirm(category.id)}
           type="button"
         >
-          Confirm category
+          Confirm as provisional category
+        </button>
+        <button className="button" onClick={() => setClusterDecision("partly")} type="button">
+          Revise grouping
         </button>
         <button className="button" onClick={() => onMerge(category)} type="button">
-          Merge category
+          Merge with another cluster
+        </button>
+        <button className="button" onClick={() => onSplit(category)} type="button">
+          Split cluster
         </button>
         <button className="button" onClick={() => onReject(category)} type="button">
-          Reject
+          Reject grouping
         </button>
         <button
           className="button danger"
@@ -5536,7 +7503,7 @@ function UnassignedMeaningUnits({
           onClick={() => onCreateCategory(units.map((unit) => unit.number))}
           type="button"
         >
-          Create category from all unassigned
+          Make provisional category from all unassigned
         </button>
       </div>
       {units.length === 0 ? (
@@ -5576,6 +7543,350 @@ function UnassignedMeaningUnits({
   );
 }
 
+const relationshipTypeOptions = [
+  "supports",
+  "contrasts with",
+  "develops into",
+  "contextualises",
+  "overlaps with",
+  "tensions with",
+  "part of / contains",
+  "co-occurs with",
+  "unresolved relation"
+];
+
+function buildRelationshipEvidenceGroups({
+  relationship,
+  sourceCategory,
+  targetCategory,
+  units
+}: {
+  relationship: IntegrationRelationship;
+  sourceCategory: CategoryNode | undefined;
+  targetCategory: CategoryNode | undefined;
+  units: MeaningUnit[];
+}) {
+  const sourceNumbers = new Set(sourceCategory?.includedUnitIds ?? []);
+  const targetNumbers = new Set(targetCategory?.includedUnitIds ?? []);
+  const assignedNumbers = new Set<number>();
+  const sourceUnits = units.filter((unit) => {
+    const included = sourceNumbers.has(unit.number);
+    if (included) {
+      assignedNumbers.add(unit.number);
+    }
+    return included;
+  });
+  const targetUnits = units.filter((unit) => {
+    const included =
+      targetNumbers.has(unit.number) && !assignedNumbers.has(unit.number);
+    if (included) {
+      assignedNumbers.add(unit.number);
+    }
+    return included;
+  });
+  const otherUnits = units.filter(
+    (unit) =>
+      !assignedNumbers.has(unit.number) ||
+      relationship.evidenceUnitNumbers.includes(unit.number)
+  );
+
+  return [
+    {
+      label: `Source category MUs · ${sourceCategory?.name ?? "Source category"}`,
+      units: sourceUnits
+    },
+    {
+      label: `Target category MUs · ${targetCategory?.name ?? "Target category"}`,
+      units: targetUnits
+    },
+    {
+      label: "Other accepted MUs",
+      units: otherUnits.filter(
+        (unit, index, array) =>
+          array.findIndex((item) => item.number === unit.number) === index &&
+          !sourceNumbers.has(unit.number) &&
+          !targetNumbers.has(unit.number)
+      )
+    }
+  ];
+}
+
+function buildRelationshipEvidenceOptionText(unit: MeaningUnit) {
+  const summary = (unit.humanSummary || unit.aiSummary).trim();
+  const excerpt = unit.excerpt.trim();
+  const text = summary || excerpt || "No summary or excerpt available.";
+  return text.length > 150 ? `${text.slice(0, 147).trim()}...` : text;
+}
+
+function IntegrationRelationshipCard({
+  categories,
+  onRemove,
+  onUpdate,
+  relationship,
+  units
+}: {
+  categories: CategoryNode[];
+  onRemove: (relationshipId: string) => void;
+  onUpdate: (
+    relationshipId: string,
+    updates: Partial<IntegrationRelationship>
+  ) => void;
+  relationship: IntegrationRelationship;
+  units: MeaningUnit[];
+}) {
+  const sourceCategory = categories.find(
+    (category) => category.id === relationship.sourceCategoryId
+  );
+  const targetCategory = categories.find(
+    (category) => category.id === relationship.targetCategoryId
+  );
+  const evidenceUnits = units.filter((unit) =>
+    relationship.evidenceUnitNumbers.includes(unit.number)
+  );
+  const evidenceGroups = buildRelationshipEvidenceGroups({
+    relationship,
+    sourceCategory,
+    targetCategory,
+    units
+  });
+  const selectedEvidenceNumbers = new Set(relationship.evidenceUnitNumbers);
+  const updateEvidenceSelection = (unitNumber: number, selected: boolean) => {
+    const nextEvidenceNumbers = selected
+      ? Array.from(new Set([...relationship.evidenceUnitNumbers, unitNumber]))
+      : relationship.evidenceUnitNumbers.filter((number) => number !== unitNumber);
+    onUpdate(relationship.id, {
+      evidenceUnitNumbers: nextEvidenceNumbers.sort((left, right) => left - right)
+    });
+  };
+
+  return (
+    <article className="relationship-card">
+      <div className="category-header">
+        <div>
+          <span className="label">Editable relationship</span>
+          <h3>
+            {sourceCategory?.name ?? "Select source"} {"->"}{" "}
+            {targetCategory?.name ?? "Select target"}
+          </h3>
+        </div>
+        <StatusBadge label="Researcher review needed" />
+      </div>
+      <div className="relationship-card-grid">
+        <label className="label">
+          Source category
+          <select
+            className="select"
+            onChange={(event) =>
+              onUpdate(relationship.id, { sourceCategoryId: event.target.value })
+            }
+            value={relationship.sourceCategoryId}
+          >
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="label">
+          Relationship type
+          <select
+            className="select"
+            onChange={(event) =>
+              onUpdate(relationship.id, { type: event.target.value })
+            }
+            value={relationship.type}
+          >
+            {relationshipTypeOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="label">
+          Target category
+          <select
+            className="select"
+            onChange={(event) =>
+              onUpdate(relationship.id, { targetCategoryId: event.target.value })
+            }
+            value={relationship.targetCategoryId}
+          >
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <label className="label">
+        Relationship rationale
+        <textarea
+          className="textarea compact-textarea"
+          onChange={(event) =>
+            onUpdate(relationship.id, { rationale: event.target.value })
+          }
+          value={relationship.rationale}
+        />
+      </label>
+      <section className="relationship-evidence-selector">
+        <div className="category-header">
+          <div>
+            <span className="label">Evidence grounding</span>
+            <p className="small">
+              Choose the accepted meaning units that support, complicate, or
+              qualify this relationship.
+            </p>
+          </div>
+          {evidenceUnits.length === 0 ? (
+            <span className="badge warning">
+              This relationship has no evidence grounding yet
+            </span>
+          ) : (
+            <span className="badge blue">
+              {evidenceUnits.length} selected MU{evidenceUnits.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+        <div className="selected-evidence-list">
+          <span className="label">Selected meaning-unit evidence</span>
+          {evidenceUnits.length === 0 ? (
+            <p className="small">No linked MU evidence yet.</p>
+          ) : (
+            <div className="evidence-chip-list">
+              {evidenceUnits.map((unit) => (
+                <button
+                  className="evidence-chip"
+                  key={unit.id}
+                  onClick={() => updateEvidenceSelection(unit.number, false)}
+                  title="Remove evidence"
+                  type="button"
+                >
+                  MU {unit.number}
+                  <span>Remove evidence</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <details className="relationship-evidence-picker" open>
+          <summary>Select meaning-unit evidence for this relationship</summary>
+          {evidenceGroups.map((group) => (
+            <div className="relationship-evidence-group" key={group.label}>
+              <span className="label">{group.label}</span>
+              {group.units.length === 0 ? (
+                <p className="small">No accepted MUs in this group.</p>
+              ) : (
+                group.units.map((unit) => (
+                  <label className="relationship-evidence-option" key={unit.id}>
+                    <input
+                      checked={selectedEvidenceNumbers.has(unit.number)}
+                      onChange={(event) =>
+                        updateEvidenceSelection(unit.number, event.target.checked)
+                      }
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>
+                        MU {unit.number} · {unit.speaker || "Speaker unknown"}
+                      </strong>
+                      <small>
+                        {buildRelationshipEvidenceOptionText(unit)}
+                      </small>
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+          ))}
+        </details>
+      </section>
+      <label className="label">
+        Researcher note
+        <textarea
+          className="textarea compact-textarea"
+          onChange={(event) =>
+            onUpdate(relationship.id, { researcherNote: event.target.value })
+          }
+          placeholder="Revise, qualify, or reject this relationship after checking the evidence."
+          value={relationship.researcherNote}
+        />
+      </label>
+      <button
+        className="button danger"
+        onClick={() => onRemove(relationship.id)}
+        type="button"
+      >
+        Remove relationship
+      </button>
+    </article>
+  );
+}
+
+function RelationshipFlowRow({
+  categories,
+  relationship,
+  units
+}: {
+  categories: CategoryNode[];
+  relationship: IntegrationRelationship;
+  units: MeaningUnit[];
+}) {
+  const sourceCategory = categories.find(
+    (category) => category.id === relationship.sourceCategoryId
+  );
+  const targetCategory = categories.find(
+    (category) => category.id === relationship.targetCategoryId
+  );
+  const evidenceUnits = units.filter((unit) =>
+    relationship.evidenceUnitNumbers.includes(unit.number)
+  );
+
+  return (
+    <div className="relationship-flow-row">
+      <div className="relationship-map-node">
+        <span className="label">Category node</span>
+        <strong>{sourceCategory?.name ?? "Source category"}</strong>
+      </div>
+      <div className="relationship-map-link">
+        <span className="relationship-flow-type">
+          Possible relationship · {relationship.type}
+        </span>
+        <span className="relationship-arrow-inline">--&gt;</span>
+      </div>
+      <div className="relationship-map-node">
+        <span className="label">Category node</span>
+        <strong>{targetCategory?.name ?? "Target category"}</strong>
+      </div>
+      <p className="small">
+        <strong>Draft rationale:</strong> {relationship.rationale}
+      </p>
+      <details className="relationship-evidence-details">
+        <summary>
+          Review MU evidence ({evidenceUnits.length || relationship.evidenceUnitNumbers.length})
+        </summary>
+        <div className="evidence-strip">
+          {evidenceUnits.length === 0 ? (
+            <span className="badge warning">No linked MU evidence yet</span>
+          ) : (
+            evidenceUnits.map((unit) => (
+              <span className="badge blue" key={unit.id} title={unit.humanSummary || unit.aiSummary}>
+                MU {unit.number}
+              </span>
+            ))
+          )}
+        </div>
+        <p className="small">
+          Evidence is secondary here. Use it to check whether the draft
+          relationship is grounded before confirming or revising it.
+        </p>
+      </details>
+    </div>
+  );
+}
+
 function IntegrationDraftPanel({
   categories,
   integrationNote,
@@ -5602,12 +7913,12 @@ function IntegrationDraftPanel({
     <div className="mini-card soft">
       <div className="category-header">
         <div>
-          <span className="label">Mode C integration review workspace</span>
-          <h3>Editable provisional integration draft</h3>
+          <span className="label">Provisional summary of the category structure</span>
+          <h3>Editable summary narrative</h3>
           <p className="small">
-            Mode C is an integration aid, not a final analysis. Review the
-            structure, interpretation, evidence, and limitations before using
-            this draft.
+            This narrative should explain the relationships among categories.
+            Treat it as a provisional summary of the category structure, not as
+            the main analytic product.
           </p>
         </div>
         <StatusBadge
@@ -5628,7 +7939,7 @@ function IntegrationDraftPanel({
         className="textarea compact-textarea"
         id="integration-note"
         onChange={(event) => onNoteChange(event.target.value)}
-        placeholder="Add decisions, cautions, or reviewer follow-up notes."
+        placeholder="Add decisions, cautions, or methodological integrity notes."
         value={integrationNote}
       />
       <details className="evidence-panel">
@@ -5652,7 +7963,7 @@ function IntegrationDraftPanel({
         </div>
       </details>
       <div className="mini-card warning-card">
-        <strong>Mode C caution</strong>
+        <strong>Integration caution</strong>
         <p className="small">
           This draft is based on one transcript workspace. Avoid claims such as
           "mindfulness improves all students" or causal/clinical statements.
@@ -5664,4 +7975,225 @@ function IntegrationDraftPanel({
       </button>
     </div>
   );
+}
+
+function buildIntegrationMapGroups(
+  categories: CategoryNode[]
+): IntegrationMapGroup[] {
+  const groupDefinitions = [
+    {
+      key: "context",
+      label: "Context / starting point",
+      description:
+        "Categories that describe the situation, condition, or concern that frames the account."
+    },
+    {
+      key: "process",
+      label: "Experience / process",
+      description:
+        "Categories that describe what the participant noticed, did, felt, or made sense of."
+    },
+    {
+      key: "support",
+      label: "Supportive condition",
+      description:
+        "Categories that appear to support, enable, or shape the experience described."
+    },
+    {
+      key: "boundary",
+      label: "Boundary / tension",
+      description:
+        "Categories that qualify the account, introduce limits, or show tension in the interpretation."
+    },
+    {
+      key: "implication",
+      label: "Practical implication",
+      description:
+        "Categories that point toward cautious practical considerations within this transcript."
+    }
+  ];
+
+  return groupDefinitions
+    .map((group) => ({
+      categories: categories.filter(
+        (category) => classifyIntegrationCategory(category) === group.key
+      ),
+      description: group.description,
+      label: group.label
+    }))
+    .filter((group) => group.categories.length > 0);
+}
+
+function classifyIntegrationCategory(category: CategoryNode) {
+  const text = `${category.name} ${category.definition}`.toLowerCase();
+  if (
+    /\b(context|background|before|stress|pressure|symptom|anxiety|uncertainty|starting|initial)\b/.test(
+      text
+    )
+  ) {
+    return "context";
+  }
+  if (
+    /\b(peer|group|support|shared|relationship|recognised|recognized|belong|wechat|community)\b/.test(
+      text
+    )
+  ) {
+    return "support";
+  }
+  if (
+    /\b(limit|barrier|privacy|discomfort|difficulty|challenge|tension|concern|risk|hesitat)\b/.test(
+      text
+    )
+  ) {
+    return "boundary";
+  }
+  if (
+    /\b(implication|suggest|recommend|design|programme|program|practice|flexible|future|should)\b/.test(
+      text
+    )
+  ) {
+    return "implication";
+  }
+  return "process";
+}
+
+function buildIntegrationStructureDraft({
+  categories,
+  researchQuestion,
+  units
+}: {
+  categories: CategoryNode[];
+  researchQuestion: string;
+  units: MeaningUnit[];
+}) {
+  const acceptedUnitNumbers = new Set(units.map((unit) => unit.number));
+  const mapGroups = buildIntegrationMapGroups(categories);
+  const representativeByGroup = new Map(
+    mapGroups.map((group) => [group.label, group.categories[0]])
+  );
+  const relationships: IntegrationRelationship[] = [];
+
+  const addRelationship = (
+    source: CategoryNode | undefined,
+    target: CategoryNode | undefined,
+    type: string,
+    rationale: string
+  ) => {
+    if (!source || !target || source.id === target.id) {
+      return;
+    }
+    if (
+      relationships.some(
+        (relationship) =>
+          relationship.sourceCategoryId === source.id &&
+          relationship.targetCategoryId === target.id &&
+          relationship.type === type
+      )
+    ) {
+      return;
+    }
+    const evidenceUnitNumbers = [
+      ...source.includedUnitIds,
+      ...target.includedUnitIds
+    ].filter((unitNumber, index, array) =>
+      acceptedUnitNumbers.has(unitNumber) && array.indexOf(unitNumber) === index
+    );
+    relationships.push({
+      evidenceUnitNumbers: evidenceUnitNumbers.slice(0, 6),
+      id: `rel-${relationships.length + 1}-${source.id}-${target.id}`,
+      rationale,
+      researcherNote: "",
+      sourceCategoryId: source.id,
+      targetCategoryId: target.id,
+      type
+    });
+  };
+
+  const contextCategory = representativeByGroup.get("Context / starting point");
+  const processCategory = representativeByGroup.get("Experience / process");
+  const supportCategory = representativeByGroup.get("Supportive condition");
+  const boundaryCategory = representativeByGroup.get("Boundary / tension");
+  const implicationCategory = representativeByGroup.get("Practical implication");
+
+  addRelationship(
+    contextCategory,
+    processCategory,
+    "contextualises",
+    buildRelationshipRationale(contextCategory, processCategory, "may frame")
+  );
+  addRelationship(
+    supportCategory,
+    processCategory,
+    "supports",
+    buildRelationshipRationale(supportCategory, processCategory, "may support")
+  );
+  addRelationship(
+    boundaryCategory,
+    processCategory ?? supportCategory,
+    "tensions with",
+    buildRelationshipRationale(boundaryCategory, processCategory ?? supportCategory, "may qualify")
+  );
+  addRelationship(
+    processCategory,
+    implicationCategory,
+    "develops into",
+    buildRelationshipRationale(processCategory, implicationCategory, "may inform")
+  );
+
+  if (relationships.length === 0) {
+    categories.slice(0, 4).forEach((category, index, array) => {
+      const nextCategory = array[index + 1];
+      addRelationship(
+        category,
+        nextCategory,
+        "co-occurs with",
+        buildRelationshipRationale(category, nextCategory, "may be read alongside")
+      );
+    });
+  }
+
+  const categoryNames = categories.map((category) => category.name);
+  const narrative = [
+    `In relation to the research question${
+      researchQuestion.trim() ? ` ("${researchQuestion.trim()}")` : ""
+    }, the reviewed categories can be read as a provisional structure rather than final findings.`,
+    categoryNames.length > 0
+      ? `The current structure connects ${categoryNames
+          .slice(0, 4)
+          .join(", ")}${categoryNames.length > 4 ? ", and related categories" : ""}.`
+      : "",
+    relationships.length > 0
+      ? `The suggested links point to possible relationships among categories, grounded in accepted meaning units. These links should be checked against the source excerpts before being treated as analytic claims.`
+      : `No relationship has been confirmed yet. Add or revise links after reviewing the category evidence.`,
+    `Because this is a single-transcript prototype, the narrative should remain cautious: describe what appears in this account and avoid causal or generalisable claims.`
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  return {
+    explanation:
+      "This temporary draft organises reviewed categories into a cautious relationship structure. It is generated from accepted MUs and editable category assignments, not from unreviewed transcript text.",
+    narrative,
+    relationships,
+    title:
+      relationships.length > 0
+        ? "Provisional relationship structure from reviewed categories"
+        : "Researcher-created relationship structure needed"
+  };
+}
+
+function buildRelationshipRationale(
+  source: CategoryNode | undefined,
+  target: CategoryNode | undefined,
+  verb: string
+) {
+  if (!source || !target) {
+    return "Review the category evidence before treating this as an analytic relationship.";
+  }
+  const evidenceIds = [...source.includedUnitIds, ...target.includedUnitIds]
+    .filter((unitNumber, index, array) => array.indexOf(unitNumber) === index)
+    .slice(0, 4);
+  return `"${source.name}" ${verb} "${target.name}" in this transcript. Check MU ${evidenceIds.join(
+    ", "
+  ) || "evidence"} before confirming or revising this link.`;
 }

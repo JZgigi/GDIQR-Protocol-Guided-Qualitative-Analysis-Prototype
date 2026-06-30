@@ -1,10 +1,9 @@
 export type WorkflowStep =
-  | "setup"
-  | "upload"
-  | "transcript"
-  | "segments"
-  | "meaning-units"
-  | "categories"
+  | "pre-analysis"
+  | "understanding"
+  | "categorizing"
+  | "integrating"
+  | "integrity"
   | "export";
 
 export type HumanStatus =
@@ -84,6 +83,7 @@ export interface TranscriptionJobRecord {
 }
 
 export interface MeaningUnit {
+  aiExcerpt?: string;
   id: string;
   segmentId: string;
   caseId: string;

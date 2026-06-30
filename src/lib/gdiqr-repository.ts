@@ -724,19 +724,40 @@ export async function confirmTranscriptForAnalysis({
     supabase.from("category_systems").delete().eq("project_id", projectId)
   ]);
 
-  const segmentId = stableId("seg", projectId, Date.now());
-  const { error: segmentError } = await supabase.from("segments").insert({
-    id: segmentId,
-    project_id: projectId,
-    case_id: "CASE-001",
-    segment_id: "SEG-001",
-    speaker_info: "Researcher-confirmed transcript",
-    start_timestamp: "00:00",
-    end_timestamp: "00:00",
-    starting_mu_number: 1,
-    status: "Ready",
-    text: content
+  const splitResult = autoSplitTranscript(content, {
+    mode: "balanced",
+    sourceTranscriptId: transcriptRow.id
   });
+  const splitStartedAt = Date.now();
+  const segmentRows: Array<Database["public"]["Tables"]["segments"]["Insert"]> =
+    (splitResult.segments.length > 0
+      ? splitResult.segments
+      : [
+          {
+            createdBy: "auto" as const,
+            sourceTranscriptId: transcriptRow.id,
+            splittingMode: "balanced" as const,
+            text: content,
+            title: "Researcher-confirmed transcript",
+            wordCount: content.length
+          }
+        ]
+    ).map((segment, index) => ({
+      id: stableId("seg", `${projectId}_${splitStartedAt}`, index + 1),
+      project_id: projectId,
+      case_id: "CASE-001",
+      segment_id: `SEG-${String(index + 1).padStart(3, "0")}`,
+      speaker_info: segment.title || `Segment ${index + 1}`,
+      start_timestamp: "00:00",
+      end_timestamp: "00:00",
+      starting_mu_number: index * 100 + 1,
+      status: "Needs review",
+      text: segment.text
+    }));
+
+  const { error: segmentError } = await supabase
+    .from("segments")
+    .insert(segmentRows);
 
   if (segmentError) {
     throw new Error(segmentError.message);
@@ -761,7 +782,7 @@ export async function confirmTranscriptForAnalysis({
   await supabase.from("audit_events").insert({
     project_id: projectId,
     actor: "Researcher",
-    action: "Confirmed transcript for analysis",
+    action: `Confirmed transcript for analysis and created ${segmentRows.length} draft meaning-unit candidates`,
     target: transcriptRow.id
   });
 
@@ -851,6 +872,7 @@ export async function createAudioPreviewUrl({
 
 export async function updateMeaningUnit({
   analysisExcluded,
+  excerpt,
   exclusionReason,
   humanStatus,
   humanSummary,
@@ -858,6 +880,7 @@ export async function updateMeaningUnit({
   unitId
 }: {
   analysisExcluded?: boolean;
+  excerpt?: string;
   exclusionReason?: string | null;
   humanStatus?: MeaningUnit["humanStatus"];
   humanSummary?: string;
@@ -874,6 +897,9 @@ export async function updateMeaningUnit({
   };
   if (humanStatus) {
     updates.human_status = humanStatus;
+  }
+  if (excerpt !== undefined) {
+    updates.excerpt = excerpt;
   }
   if (humanSummary !== undefined) {
     updates.human_summary = humanSummary;
@@ -907,14 +933,27 @@ export async function updateMeaningUnit({
     actor: "Researcher",
     action:
       analysisExcluded === undefined
-        ? `Updated MU ${data.unit_number}`
+        ? humanStatus === "Accepted"
+          ? `Accepted MU ${data.unit_number}`
+          : excerpt !== undefined && humanSummary !== undefined
+            ? `Updated MU ${data.unit_number} excerpt and summary`
+            : excerpt !== undefined
+              ? `Updated MU ${data.unit_number} excerpt`
+              : humanSummary !== undefined
+                ? `Updated MU ${data.unit_number} summary`
+                : `Updated MU ${data.unit_number}`
         : analysisExcluded
           ? `Excluded MU ${data.unit_number} from analysis`
           : `Restored MU ${data.unit_number} to analysis`,
     target: data.id
   });
 
-  if (analysisExcluded !== undefined) {
+  const shouldClearDerivedWork =
+    analysisExcluded !== undefined ||
+    (humanStatus !== "Accepted" &&
+      (excerpt !== undefined || humanSummary !== undefined));
+
+  if (shouldClearDerivedWork) {
     await clearDerivedCategoryWork(data.project_id);
   }
 
@@ -1824,6 +1863,7 @@ function mapMeaningUnit(
     caseId: row.case_id,
     speaker: row.speaker,
     number: row.unit_number,
+    aiExcerpt: row.excerpt,
     excerpt: row.excerpt,
     aiSummary: row.ai_summary,
     humanSummary: row.human_summary,

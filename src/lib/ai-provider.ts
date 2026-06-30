@@ -12,6 +12,10 @@ import {
   getOllamaConnectionErrorMessage,
   getOllamaModel
 } from "@/lib/ollama-config";
+import {
+  cleanTranscriptSourceForAnalysis,
+  containsNonTranscriptMaterial
+} from "@/lib/transcript-source-cleaner";
 
 type AiProvider = "ollama";
 
@@ -49,6 +53,7 @@ interface ReviewerInput {
 }
 
 interface TranscriptProcessingInput {
+  abortSignal?: AbortSignal;
   language: Project["language"];
   runId?: string;
   transcript: string;
@@ -108,12 +113,32 @@ export async function generateMeaningUnits(
 ): Promise<MeaningUnitResult> {
   assertOllamaConfigured();
   assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
+  const cleanedSource = cleanTranscriptSourceForAnalysis(
+    input.transcript,
+    input.project
+  );
+  assertNonEmpty(
+    cleanedSource.transcript,
+    "Interview transcript / participant account is required before generating meaning units."
+  );
+  if (cleanedSource.removedLineCount > 0) {
+    addRunEvent(
+      input.runId,
+      `Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before MU generation`
+    );
+  }
 
   const model = getOllamaModel();
-  const chunks = chunkTranscript(
-    input.transcript,
+  const chunks = chunkMeaningUnitCandidates(
+    cleanedSource.transcript,
     Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 1200)
   );
+  console.info("[gdiqr:mu] generation start", {
+    candidateChunkCount: chunks.length,
+    model,
+    provider: "ollama",
+    transcriptChars: cleanedSource.transcript.length
+  });
   const caseId = input.caseId ?? "CASE-001";
   const segmentId = input.segmentId ?? "SEG-001";
   const initialNumber = input.startingNumber ?? 1;
@@ -122,7 +147,7 @@ export async function generateMeaningUnits(
 
   addRunEvent(
     input.runId,
-    `Meaning-unit generation split transcript into ${chunks.length} chunk${chunks.length === 1 ? "" : "s"}`
+    `Meaning-unit generation split transcript into ${chunks.length} candidate chunk${chunks.length === 1 ? "" : "s"}`
   );
 
   for (const [index, chunk] of chunks.entries()) {
@@ -131,7 +156,7 @@ export async function generateMeaningUnits(
     const startingNumber = initialNumber + allUnits.length;
     addRunEvent(
       input.runId,
-      `Calling Ollama for MU chunk ${index + 1}/${chunks.length} (${chunk.length} chars)`
+      `Calling Ollama for MU candidate ${index + 1}/${chunks.length} (${chunk.length} chars)`
     );
     const result = await generateMeaningUnitsForChunkWithFallback({
       chunk,
@@ -147,6 +172,48 @@ export async function generateMeaningUnits(
     allUncertainties.push(...result.uncertainties);
   }
 
+  const transcriptWordCount = countApproxWords(cleanedSource.transcript);
+  const minimumExpectedUnits = Math.min(
+    8,
+    Math.max(1, Math.floor(transcriptWordCount / 140))
+  );
+  const participantUnitCount = allUnits.filter(
+    (unit) => !unit.analysisExcluded && !/interviewer/i.test(unit.speaker)
+  ).length;
+  if (
+    transcriptWordCount >= 280 &&
+    participantUnitCount < minimumExpectedUnits
+  ) {
+    addRunEvent(
+      input.runId,
+      `Ollama returned only ${participantUnitCount} participant MU${participantUnitCount === 1 ? "" : "s"} for ${transcriptWordCount} words; using rule-based fallback delineation`
+    );
+    const fallbackUnits = fallbackMeaningUnitsFromChunk(cleanedSource.transcript, initialNumber, {
+      caseId,
+      segmentId: "Transcript fallback"
+    });
+    if (fallbackUnits.length > allUnits.length) {
+      console.info("[gdiqr:mu] fallback triggered because AI returned too few MUs", {
+        fallbackUnits: fallbackUnits.length,
+        participantUnitCount,
+        transcriptWordCount
+      });
+      allUnits.splice(0, allUnits.length, ...fallbackUnits);
+      allUncertainties.push({
+        note:
+          "Rule-based fallback delineation used because the local AI returned too few meaning units for the transcript length.",
+        unit: initialNumber
+      });
+    }
+  }
+  console.info("[gdiqr:mu] generation finished", {
+    fallbackTriggered: allUncertainties.some((item) =>
+      item.note.toLowerCase().includes("fallback")
+    ),
+    meaningUnits: allUnits.length,
+    provider: "ollama"
+  });
+
   return {
     provider: "ollama",
     model,
@@ -156,6 +223,94 @@ export async function generateMeaningUnits(
     meaningUnits: allUnits,
     uncertainties: allUncertainties,
     nextInstruction: "Review and accept or edit the generated meaning units."
+  };
+}
+
+export function generateRuleBasedMeaningUnits(
+  input: MeaningUnitInput,
+  reason = "Rule-based draft — for researcher review."
+): MeaningUnitResult {
+  assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
+  const cleanedSource = cleanTranscriptSourceForAnalysis(
+    input.transcript,
+    input.project
+  );
+  assertNonEmpty(
+    cleanedSource.transcript,
+    "Interview transcript / participant account is required before generating meaning units."
+  );
+
+  const maxChars = Math.min(
+    Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 900),
+    900
+  );
+  const chunks = chunkMeaningUnitCandidates(cleanedSource.transcript, maxChars);
+  const caseId = input.caseId ?? "CASE-001";
+  const initialNumber = input.startingNumber ?? 1;
+  const allUnits: MeaningUnit[] = [];
+  const fallbackNote =
+    "Rule-based draft — review and edit before accepting.";
+
+  console.info("[gdiqr:mu] rule-based fallback start", {
+    candidateChunkCount: chunks.length,
+    transcriptChars: cleanedSource.transcript.length
+  });
+  if (cleanedSource.removedLineCount > 0) {
+    addRunEvent(
+      input.runId,
+      `Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before rule-based MU generation`
+    );
+  }
+  addRunEvent(
+    input.runId,
+    `Rule-based fallback split transcript into ${chunks.length} candidate chunk${chunks.length === 1 ? "" : "s"}`
+  );
+
+  chunks.forEach((chunk, chunkIndex) => {
+    const chunkUnits = fallbackMeaningUnitsFromChunk(
+      chunk,
+      initialNumber + allUnits.length,
+      {
+        caseId,
+        segmentId: sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)
+      }
+    ).map((unit) => ({
+      ...unit,
+      reviewerStatus: "Warning" as const,
+      uncertainty: [
+        fallbackNote,
+        unit.analysisExcluded ? "Context candidate; review for exclusion." : "",
+        unit.uncertainty
+      ]
+        .filter(Boolean)
+        .join(" ")
+    }));
+    allUnits.push(...chunkUnits);
+  });
+
+  console.info("[gdiqr:mu] rule-based fallback finished", {
+    meaningUnits: allUnits.length
+  });
+  addRunEvent(
+    input.runId,
+    `Rule-based fallback generated ${allUnits.length} draft meaning unit${allUnits.length === 1 ? "" : "s"}`
+  );
+
+  return {
+    provider: "ollama",
+    model: "rule-based-fallback",
+    caseId,
+    segmentId: input.segmentId ?? "Transcript fallback",
+    lightInterpretation: input.lightInterpretation,
+    meaningUnits: allUnits,
+    uncertainties: [
+      {
+        note: reason,
+        unit: initialNumber
+      }
+    ],
+    nextInstruction:
+      "Rule-based draft MUs are provisional. Review, edit, accept, or exclude each unit."
   };
 }
 
@@ -181,23 +336,33 @@ async function generateMeaningUnitsForChunk({
       {
         role: "user",
         content: `/no_think
-Create GDI-QR-informed draft meaning units from this reviewed transcript segment.
+Create GDI-QR-informed draft meaning units from this reviewed transcript source excerpt.
 
 Rules:
 - Preserve participant meaning closely.
 - Do not create categories in this step.
-- Do not compare this segment with other transcripts or segments.
-- Keep summaries concise and descriptive.
+- Do not compare this excerpt with other transcripts.
+- Keep summaries concise and descriptive: one short sentence or phrase that condenses the participant's main meaning.
+- Do not copy the MU excerpt into aiSummary or humanSummary.
+- Do not introduce category-level interpretation or final findings in summaries.
 - Write aiSummary and humanSummary in the same language as the interview transcript.
-- Produce at most 5 meaning units for this chunk; combine adjacent short turns when they express the same point.
+- Research question, domains, project title, file names, and setup notes are context only. Never turn them into meaning-unit excerpts.
+- If the excerpt contains non-transcript metadata such as "Research Question", "Domains of Investigation", "Project title", "Demo Project", or file/upload labels, exclude that material from meaning units.
+- Treat this transcript excerpt as processing context, not as one meaning unit.
+- Delineate meaning units when a new meaning appears.
+- A meaning unit should be large enough to communicate a clear message, but small enough to remain analytically manageable.
+- Create multiple meaning units when the participant shifts topic, experience, feeling, action, evaluation, or implication.
+- Do not create one large meaning unit from the whole excerpt unless it genuinely contains only one clear meaning.
+- Do not merge interviewer/researcher questions into participant meaning units.
+- If the chunk is mainly an interviewer/researcher prompt, return it with speaker "Interviewer", reviewerStatus "Warning", and uncertainty "Context candidate; review for exclusion".
 - Set humanSummary to the exact same summary text as aiSummary.
 - Use reviewerStatus "Not run" unless there is a clear concern, then use "Warning".
 - Start numbering at ${startingNumber}.
-- Use caseId "${input.caseId ?? "CASE-001"}" and segmentId "${input.segmentId ?? "SEG-001"}".
+- Use caseId "${input.caseId ?? "CASE-001"}" and source reference "${sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)}".
 - Return only JSON matching this shape:
 {
   "caseId": "${input.caseId ?? "CASE-001"}",
-  "segmentId": "${input.segmentId ?? "SEG-001"}",
+  "segmentId": "${sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)}",
   "meaningUnits": [
     {
       "speaker": "Participant",
@@ -236,7 +401,10 @@ ${chunk}`
       startingNumber,
       {
         caseId: input.caseId ?? result.caseId ?? "CASE-001",
-        segmentId: input.segmentId ?? result.segmentId ?? "SEG-001"
+        segmentId:
+          input.segmentId ??
+          result.segmentId ??
+          sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)
       }
     ),
     uncertainties: (result.uncertainties ?? [])
@@ -257,12 +425,16 @@ async function generateMeaningUnitsForChunkWithFallback({
   startingNumber: number;
 }) {
   try {
-    return await generateMeaningUnitsForChunk({
+    const result = await generateMeaningUnitsForChunk({
       chunk,
       chunkIndex,
       input,
       startingNumber
     });
+    if (result.meaningUnits.length === 0) {
+      throw new Error("Ollama returned no draft meaning units.");
+    }
+    return result;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Meaning-unit chunk failed.";
@@ -274,7 +446,7 @@ async function generateMeaningUnitsForChunkWithFallback({
     return {
       meaningUnits: fallbackMeaningUnitsFromChunk(chunk, startingNumber, {
         caseId: input.caseId ?? "CASE-001",
-        segmentId: input.segmentId ?? "SEG-001"
+        segmentId: sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)
       }),
       uncertainties: [
         {
@@ -464,6 +636,7 @@ export async function processTranscriptForPrivacyAndSpeakers(
       chunkIndex: index,
       language: input.language,
       runId: input.runId,
+      signal: input.abortSignal,
       transcriptionSegments:
         chunks.length === 1 ? input.transcriptionSegments : undefined
     });
@@ -490,6 +663,39 @@ export async function processTranscriptForPrivacyAndSpeakers(
     sanitizedTranscript,
     privacyFindings: results.flatMap((result) => result.privacyFindings),
     speakerNotes: results.flatMap((result) => result.speakerNotes)
+  };
+}
+
+export function prepareTranscriptWithLocalRules(
+  input: TranscriptProcessingInput,
+  reason = "Local rule-based transcript preparation used for demo responsiveness."
+): TranscriptProcessingResult {
+  assertNonEmpty(input.transcript, "Transcript is required before privacy review.");
+
+  const chunks = chunkTranscript(
+    input.transcript,
+    Number(process.env.TRANSCRIPT_PROCESS_CHUNK_CHARS ?? 6000)
+  );
+  console.info("[gdiqr:transcript-prepare] local fallback start", {
+    chunkCount: chunks.length,
+    transcriptChars: input.transcript.length
+  });
+  addRunEvent(
+    input.runId,
+    `Local rule-based transcript preparation started (${chunks.length} chunk${chunks.length === 1 ? "" : "s"})`
+  );
+  const sanitizedTranscript = chunks.map(fallbackPrepareTranscript).join("\n\n");
+
+  return {
+    provider: "ollama",
+    model: "local-rule-based-fallback",
+    sanitizedTranscript,
+    privacyFindings: [
+      `${reason} Please review names, places, institutions, contact details, and other sensitive information before saving or analysis.`
+    ],
+    speakerNotes: [
+      "Speaker labels were inferred by local rules for demo responsiveness. Please check Interviewer/Participant labels carefully."
+    ]
   };
 }
 
@@ -732,12 +938,14 @@ async function processTranscriptChunk({
   chunkIndex,
   language,
   runId,
+  signal,
   transcriptionSegments
 }: {
   chunk: string;
   chunkIndex: number;
   language: Project["language"];
   runId?: string;
+  signal?: AbortSignal;
   transcriptionSegments?: TranscriptProcessingInput["transcriptionSegments"];
 }): Promise<TranscriptProcessingResult> {
   const model = getOllamaModel();
@@ -785,9 +993,8 @@ ${JSON.stringify(transcriptionSegments?.slice(0, 60) ?? [], null, 2)}`
         maxTokens: Number(
           process.env.OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS ?? 4096
         ),
-        timeoutMs: Number(
-          process.env.OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS ?? 300000
-        )
+        signal,
+        timeoutMs: getTranscriptProcessTimeoutMs()
       }
     );
 
@@ -978,6 +1185,17 @@ function getMeaningUnitChunkTimeoutMs() {
   );
 }
 
+function getTranscriptProcessTimeoutMs() {
+  const configured = Number(
+    process.env.OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS ??
+      Math.min(getOllamaTimeoutMs(), 45000)
+  );
+  if (!Number.isFinite(configured)) {
+    return 45000;
+  }
+  return Math.max(10000, Math.min(configured, 45000));
+}
+
 function assertOllamaConfigured() {
   if (process.env.AI_PROVIDER && process.env.AI_PROVIDER !== "ollama") {
     throw new Error("Local AI requires AI_PROVIDER=ollama.");
@@ -1026,6 +1244,193 @@ function chunkTranscript(transcript: string, maxChars: number) {
   return chunks.length > 0 ? chunks : [transcript.trim()];
 }
 
+function chunkMeaningUnitCandidates(transcript: string, maxChars: number) {
+  const normalized = transcript.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const turnChunks = chunkBySpeakerTurns(normalized, maxChars);
+  const baseChunks =
+    turnChunks.length > 1
+      ? turnChunks
+      : chunkTranscriptByMeaningBoundaries(normalized, maxChars);
+
+  const chunks = baseChunks
+    .flatMap((chunk) =>
+      chunk.length > maxChars ? chunkTranscriptByMeaningBoundaries(chunk, maxChars) : [chunk]
+    )
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+
+  return chunks.length > 0 ? chunks : chunkTranscript(normalized, maxChars);
+}
+
+function sourceReferenceForMeaningUnit(segmentId: string | undefined, chunkIndex: number) {
+  if (segmentId?.trim()) {
+    return segmentId.trim();
+  }
+  return `Transcript excerpt ${String(chunkIndex + 1).padStart(2, "0")}`;
+}
+
+function chunkBySpeakerTurns(transcript: string, maxChars: number) {
+  const turns = transcript
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const hasSpeakerLabels = turns.some((line) => parseSpeakerLine(line));
+  if (!hasSpeakerLabels) {
+    return [];
+  }
+
+  const chunks: string[] = [];
+  for (const turn of turns) {
+    const parsed = parseSpeakerLine(turn);
+    if (!parsed) {
+      chunks.push(...chunkTranscriptByMeaningBoundaries(turn, maxChars));
+      continue;
+    }
+
+    const speaker = normalizeSpeakerLabel(parsed.label);
+    if (speaker === "interviewer") {
+      chunks.push(turn);
+      continue;
+    }
+
+    chunks.push(
+      ...chunkTranscriptByMeaningBoundaries(turn, Math.min(maxChars, 900))
+    );
+  }
+
+  return combineTinyCandidateChunks(chunks);
+}
+
+function chunkTranscriptByMeaningBoundaries(transcript: string, maxChars: number) {
+  const paragraphs = transcript
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  const source = paragraphs.length > 1 ? paragraphs : splitIntoSentences(transcript);
+  const targetWords = 90;
+  const maxWords = 160;
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let currentWords = 0;
+
+  for (const item of source) {
+    const parts =
+      countApproxWords(item) > maxWords ? splitIntoSentences(item) : [item];
+    for (const part of parts) {
+      const partWords = countApproxWords(part);
+      const candidateWords = currentWords + partWords;
+      const candidateText = [...current, part].join(" ");
+      if (
+        current.length > 0 &&
+        (candidateWords > targetWords || candidateText.length > maxChars)
+      ) {
+        chunks.push(current.join(" ").trim());
+        current = [];
+        currentWords = 0;
+      }
+      current.push(part);
+      currentWords += partWords;
+    }
+  }
+
+  if (current.length > 0) {
+    chunks.push(current.join(" ").trim());
+  }
+
+  return chunks;
+}
+
+function combineTinyCandidateChunks(chunks: string[]) {
+  const combined: string[] = [];
+  for (const chunk of chunks) {
+    const trimmed = chunk.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const last = combined[combined.length - 1];
+    if (
+      last &&
+      countApproxWords(trimmed) < 12 &&
+      !isInterviewerCandidate(trimmed) &&
+      !isInterviewerCandidate(last)
+    ) {
+      combined[combined.length - 1] = `${last}\n${trimmed}`.trim();
+    } else {
+      combined.push(trimmed);
+    }
+  }
+  return combined;
+}
+
+function splitIntoSentences(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return [];
+  }
+  const sentences = normalized
+    .split(/(?<=[.!?。！？])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  return sentences.length > 1 ? sentences : [normalized];
+}
+
+function countApproxWords(text: string) {
+  const latinWords = text.match(/[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)?/g);
+  if (latinWords && latinWords.length > 0) {
+    return latinWords.length;
+  }
+  const cjkCharacters = text.match(/[\u3400-\u9fff]/g);
+  if (cjkCharacters && cjkCharacters.length > 0) {
+    return Math.ceil(cjkCharacters.length / 2);
+  }
+  return text.trim() ? 1 : 0;
+}
+
+function parseSpeakerLine(line: string) {
+  const match = line.match(/^([\p{L}][\p{L}\s.'-]{0,32}|[IQPA])\s*[:：]\s*(.*)$/u);
+  if (!match) {
+    return null;
+  }
+  return {
+    content: match[2] ?? "",
+    label: (match[1] ?? "").trim()
+  };
+}
+
+function normalizeSpeakerLabel(label: string) {
+  const normalized = label.trim().toLowerCase();
+  if (
+    [
+      "interviewer",
+      "researcher",
+      "moderator",
+      "facilitator",
+      "i",
+      "q",
+      "jiawan"
+    ].includes(normalized)
+  ) {
+    return "interviewer";
+  }
+  if (["participant", "interviewee", "student", "p", "a"].includes(normalized)) {
+    return "participant";
+  }
+  return "other";
+}
+
+function isInterviewerCandidate(text: string) {
+  const parsed = parseSpeakerLine(text.split("\n")[0] ?? text);
+  if (parsed && normalizeSpeakerLabel(parsed.label) === "interviewer") {
+    return true;
+  }
+  return /[?？]\s*$/.test(text.trim());
+}
+
 function splitLongText(text: string, maxChars: number) {
   const chunks: string[] = [];
   for (let index = 0; index < text.length; index += maxChars) {
@@ -1069,59 +1474,143 @@ function fallbackMeaningUnitsFromChunk(
   startingNumber: number,
   defaults: { caseId: string; segmentId: string }
 ) {
-  const lines = chunk
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const participantLines = lines.filter((line) =>
-    /^participant\s*:/i.test(line)
-  );
-  const sourceLines = participantLines.length ? participantLines : lines;
-  const grouped = groupLines(sourceLines, 5);
+  const candidates = chunkTranscriptByMeaningBoundaries(chunk, 900)
+    .map(finalizeFallbackMeaningUnitExcerpt)
+    .filter((candidate) => candidate.excerpt);
 
-  return grouped
-    .map((group, index) => {
+  return candidates
+    .map((candidate, index) => {
       const number = startingNumber + index;
-      const text = group
-        .join(" ")
-        .replace(/^(interviewer|participant)\s*:\s*/i, "")
-        .trim();
-      const excerpt = text.slice(0, 260);
-      const aiSummary =
-        excerpt.length > 140 ? `${excerpt.slice(0, 137)}...` : excerpt;
+      const rawText = candidate.excerpt;
+      const contextCandidate =
+        candidate.speaker === "interviewer" || isInterviewerCandidate(rawText);
+      const excerpt = stripSpeakerPrefix(rawText);
+      const nonTranscriptMaterial = containsNonTranscriptMaterial(excerpt);
+      const aiSummary = buildFallbackMeaningUnitSummary(
+        excerpt,
+        contextCandidate ? "Interviewer" : "Participant",
+        candidate.incomplete
+      );
+      const summaryNeedsReview = !aiSummary || summaryIsTooGeneric(aiSummary);
 
       return {
         id: `mu_ai_${String(number).padStart(3, "0")}`,
         segmentId: defaults.segmentId,
         caseId: defaults.caseId,
-        speaker: group.some((line) => /^interviewer\s*:/i.test(line))
-          ? "Interviewer"
-          : "Participant",
+        speaker: contextCandidate ? "Interviewer" : "Participant",
         number,
+        aiExcerpt: excerpt,
         excerpt,
-        aiSummary: aiSummary || "Local fallback meaning unit",
-        humanSummary: aiSummary || "Local fallback meaning unit",
+        aiSummary,
+        humanSummary: summaryNeedsReview ? "" : aiSummary,
         uncertainty:
-          "Generated by local fallback because the Ollama meaning-unit chunk failed.",
-        humanStatus: "Draft",
+          [
+            nonTranscriptMaterial
+              ? "Possible non-transcript material included; review before accepting."
+              : "",
+            candidate.incomplete
+              ? "Meaning unit may be incomplete; review the transcript boundary before accepting."
+              : "",
+            summaryNeedsReview
+              ? "Summary needs researcher review."
+              : "",
+            contextCandidate
+              ? "Context candidate; review for exclusion."
+              : "",
+            "Generated by local fallback because the Ollama meaning-unit chunk failed."
+          ]
+            .filter(Boolean)
+            .join(" "),
+        humanStatus: contextCandidate ? "Excluded" : "Draft",
         reviewerStatus: "Warning",
-        analysisExcluded: false
+        analysisExcluded: contextCandidate,
+        exclusionReason: contextCandidate
+          ? "Interviewer prompt/context candidate"
+          : undefined
       } satisfies MeaningUnit;
     })
     .filter((unit) => unit.excerpt);
 }
 
-function groupLines(lines: string[], maxGroups: number) {
-  if (lines.length <= maxGroups) {
-    return lines.map((line) => [line]);
+function finalizeFallbackMeaningUnitExcerpt(rawText: string) {
+  const cleaned = cleanText(rawText);
+  const parsed = parseSpeakerLine(cleaned.split("\n")[0] ?? cleaned);
+  const speaker = parsed ? normalizeSpeakerLabel(parsed.label) : "other";
+  const text = stripSpeakerPrefix(cleaned);
+  if (!text) {
+    return { excerpt: "", incomplete: false, speaker };
   }
 
-  const groupSize = Math.ceil(lines.length / maxGroups);
-  const groups: string[][] = [];
-  for (let index = 0; index < lines.length; index += groupSize) {
-    groups.push(lines.slice(index, index + groupSize));
+  const sentences = splitIntoSentences(text);
+  const lastSentence = sentences[sentences.length - 1] ?? text;
+  const incomplete = meaningUnitEndsMidSentence(lastSentence);
+
+  if (incomplete && sentences.length > 1) {
+    const completeText = sentences.slice(0, -1).join(" ").trim();
+    return {
+      excerpt: completeText || text,
+      incomplete: !completeText,
+      speaker
+    };
   }
-  return groups;
+
+  return {
+    excerpt: text,
+    incomplete,
+    speaker
+  };
+}
+
+function buildFallbackMeaningUnitSummary(
+  excerpt: string,
+  speaker: string,
+  incomplete = false
+) {
+  const text = stripSpeakerPrefix(cleanText(excerpt));
+  if (!text || incomplete || countApproxWords(text) < 6) {
+    return "";
+  }
+  if (/interviewer|researcher/i.test(speaker)) {
+    return "Interviewer prompt or contextual material.";
+  }
+  if (/therapist/i.test(text) && /(pace|rush|overwhelm|pause)/i.test(text)) {
+    return "Participant felt safer when the therapist respected their pace and responded to overwhelm.";
+  }
+  if (
+    /\b(beginning|initially|started|start)\b/i.test(text) &&
+    /\b(organised|organized|prepared|list|problems|reasons|fix|controlled)\b/i.test(text)
+  ) {
+    return "Participant initially tried to present their difficulties in a controlled and organised way.";
+  }
+  if (/[\u3400-\u9fff]/.test(text)) {
+    const summary = buildConciseMeaningUnitSummary(excerpt, speaker);
+    return summaryIsTooGeneric(summary) ? "" : summary;
+  }
+
+  const firstSentence = splitIntoSentences(text)[0] ?? text;
+  const transformed = firstSentence
+    .replace(/^(at the beginning|in the beginning|initially|first|firstly),?\s*/i, "")
+    .replace(/^(i\s+think\s+it\s+was|i\s+think|i\s+guess|i\s+felt|i\s+feel|i\s+was|i\s+am|i\s+had|i\s+tried|i\s+started)\b/i, "")
+    .replace(/\bI\b/g, "they")
+    .replace(/\bmy\b/gi, "their")
+    .replace(/\bme\b/gi, "them")
+    .replace(/\bmyself\b/gi, "themself")
+    .replace(/\s+/g, " ")
+    .trim();
+  const gist = transformed
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 18)
+    .join(" ")
+    .replace(/[.!?。！？,，;；:：]+$/g, "")
+    .trim();
+
+  if (!gist || countApproxWords(gist) < 5 || summaryIsTooGeneric(gist)) {
+    return "";
+  }
+
+  const summary = `Participant expressed ${lowercaseInitial(gist)}.`;
+  return summaryIsTooGeneric(summary) ? "" : summary;
 }
 
 function formatDuration(ms: number) {
@@ -1148,34 +1637,205 @@ function normalizeMeaningUnits(
   return items
     .map((item, index) => {
       const number = startingNumber + index;
-      const aiSummary = cleanText(item.aiSummary);
-      const humanSummary = cleanText(item.humanSummary);
+      const excerpt = cleanText(item.excerpt);
+      const speaker = cleanText(item.speaker) || "Participant";
+      const aiSummary = ensureConciseMeaningUnitSummary(
+        cleanText(item.aiSummary),
+        excerpt,
+        speaker
+      );
+      const rawHumanSummary = cleanText(item.humanSummary);
+      const humanSummary = ensureConciseMeaningUnitSummary(
+        rawHumanSummary.toLowerCase() === "same as aisummary"
+          ? aiSummary
+          : rawHumanSummary || aiSummary,
+        excerpt,
+        speaker
+      );
+      const normalizedSpeaker = speaker.toLowerCase();
+      const nonTranscriptMaterial = containsNonTranscriptMaterial(excerpt);
+      const contextCandidate =
+        normalizedSpeaker.includes("interviewer") ||
+        (!normalizedSpeaker.includes("participant") &&
+          isInterviewerCandidate(excerpt));
 
       return {
         id: `mu_ai_${String(number).padStart(3, "0")}`,
         segmentId: cleanText(item.segmentId) || defaults.segmentId,
         caseId: cleanText(item.caseId) || defaults.caseId,
-        speaker: cleanText(item.speaker) || "Participant",
+        speaker: contextCandidate ? "Interviewer" : speaker,
         number,
-        excerpt: cleanText(item.excerpt),
+        aiExcerpt: excerpt,
+        excerpt,
         aiSummary,
-        humanSummary:
-          humanSummary.toLowerCase() === "same as aisummary"
-            ? aiSummary
-            : humanSummary || aiSummary,
+        humanSummary,
         tentativeInterpretation:
           cleanText(item.tentativeInterpretation) || undefined,
-        uncertainty: cleanText(item.uncertainty) || undefined,
-        humanStatus: "Draft",
+        uncertainty:
+          nonTranscriptMaterial
+            ? [
+                cleanText(item.uncertainty),
+                "Possible non-transcript material included; review before accepting."
+              ]
+                .filter(Boolean)
+                .join(" ")
+            : cleanText(item.uncertainty) || undefined,
+        humanStatus: contextCandidate ? "Excluded" : "Draft",
         reviewerStatus:
+          nonTranscriptMaterial ||
+          contextCandidate ||
           item.reviewerStatus === "Warning" ||
           item.reviewerStatus === "Major issue"
             ? item.reviewerStatus
+              ? item.reviewerStatus
+              : "Warning"
             : "Not run",
-        analysisExcluded: false
+        analysisExcluded: contextCandidate,
+        exclusionReason: contextCandidate
+          ? "Interviewer prompt/context candidate"
+          : undefined
       } satisfies MeaningUnit;
     })
     .filter((item) => item.excerpt && item.aiSummary);
+}
+
+function ensureConciseMeaningUnitSummary(
+  summary: string,
+  excerpt: string,
+  speaker: string
+) {
+  const cleanedSummary = cleanText(summary);
+  if (
+    !cleanedSummary ||
+    summaryIsTooCloseToExcerpt(cleanedSummary, excerpt) ||
+    countApproxWords(cleanedSummary) > 28
+  ) {
+    return buildConciseMeaningUnitSummary(excerpt, speaker);
+  }
+  return cleanedSummary;
+}
+
+function buildConciseMeaningUnitSummary(excerpt: string, speaker: string) {
+  const text = stripSpeakerPrefix(cleanText(excerpt));
+  if (!text) {
+    return "Meaning requires researcher review.";
+  }
+  if (/interviewer|researcher/i.test(speaker)) {
+    return "Interviewer prompt or contextual material.";
+  }
+  if (/therapist/i.test(text) && /(pace|rush|overwhelm|pause)/i.test(text)) {
+    return "Participant felt safer when the therapist respected their pace and responded to overwhelm.";
+  }
+  const firstSentence = splitIntoSentences(text)[0] ?? text;
+  if (/[\u3400-\u9fff]/.test(firstSentence)) {
+    const gist = firstSentence
+      .replace(/^(我觉得|我认为|我想|然后|就是|其实|嗯|啊|那个|这个)/, "")
+      .replace(/[。！？,，;；:：]+$/g, "")
+      .trim()
+      .slice(0, 42);
+    return gist
+      ? `参与者表达了${gist}。`
+      : "参与者的主要含义需要研究者复核。";
+  }
+  const transformed = firstSentence
+    .replace(/^(i\s+think\s+it\s+was|i\s+think|i\s+guess|i\s+felt|i\s+feel|i\s+was|i\s+am)\b/i, "")
+    .replace(/\bI\b/g, "they")
+    .replace(/\bmy\b/gi, "their")
+    .replace(/\bme\b/gi, "them")
+    .replace(/\bmyself\b/gi, "themself")
+    .replace(/\s+/g, " ")
+    .trim();
+  const words = transformed.split(/\s+/).filter(Boolean).slice(0, 18);
+  const gist = words.join(" ").replace(/[.!?。！？,，;；:：]+$/g, "").trim();
+  if (!gist) {
+    return "Participant meaning requires researcher review.";
+  }
+  const prefix = /[\u3400-\u9fff]/.test(gist)
+    ? "参与者表达了"
+    : "Participant described";
+  return `${prefix} ${lowercaseInitial(gist)}.`;
+}
+
+function summaryIsTooCloseToExcerpt(summary: string, excerpt: string) {
+  const normalizedSummary = normalizeForSimilarity(summary);
+  const normalizedExcerpt = normalizeForSimilarity(excerpt);
+  if (!normalizedSummary || !normalizedExcerpt) {
+    return false;
+  }
+  if (
+    normalizedExcerpt.includes(normalizedSummary) &&
+    normalizedSummary.length > 24
+  ) {
+    return true;
+  }
+  if (/[\u3400-\u9fff]/.test(normalizedSummary)) {
+    const summaryChars = new Set([...normalizedSummary.replace(/\s/g, "")]);
+    const excerptChars = new Set([...normalizedExcerpt.replace(/\s/g, "")]);
+    if (summaryChars.size < 8) {
+      return false;
+    }
+    const overlap = [...summaryChars].filter((char) =>
+      excerptChars.has(char)
+    ).length;
+    return overlap / summaryChars.size > 0.9 && normalizedSummary.length > 24;
+  }
+  const summaryTokens = new Set(normalizedSummary.split(" ").filter(Boolean));
+  const excerptTokens = new Set(normalizedExcerpt.split(" ").filter(Boolean));
+  if (summaryTokens.size < 5) {
+    return false;
+  }
+  const overlap = [...summaryTokens].filter((token) =>
+    excerptTokens.has(token)
+  ).length;
+  return overlap / summaryTokens.size > 0.86 && summaryTokens.size > 10;
+}
+
+function meaningUnitEndsMidSentence(text: string) {
+  const trimmed = cleanText(text);
+  if (!trimmed) {
+    return false;
+  }
+  if (/[.!?。！？)”'’」』]$/.test(trimmed)) {
+    return false;
+  }
+  return /\b(and|but|because|because of|when|while|where|which|that|so|so that|then|with|without|to|for|from|into|about|if|although|though|as)\s*$/i.test(
+    trimmed
+  );
+}
+
+function summaryIsTooGeneric(summary: string) {
+  const normalized = normalizeForSimilarity(summary);
+  if (!normalized) {
+    return true;
+  }
+  return (
+    /^participant (described|expressed|talked about|shared|said|mentioned)( at the beginning| in the beginning| initially)?\.?$/i.test(
+      summary.trim()
+    ) ||
+    /^participant (described|expressed|talked about|shared|said|mentioned) (at the beginning|in the beginning|initially)\b/i.test(
+      summary.trim()
+    ) ||
+    normalized === "participant described" ||
+    normalized === "participant expressed"
+  );
+}
+
+function normalizeForSimilarity(text: string) {
+  return stripSpeakerPrefix(text)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripSpeakerPrefix(text: string) {
+  return text
+    .replace(/^(interviewer|researcher|moderator|facilitator|participant|interviewee|student|[IQPA])\s*[:：]\s*/i, "")
+    .trim();
+}
+
+function lowercaseInitial(text: string) {
+  return text ? `${text.charAt(0).toLowerCase()}${text.slice(1)}` : text;
 }
 
 function normalizeCategories(

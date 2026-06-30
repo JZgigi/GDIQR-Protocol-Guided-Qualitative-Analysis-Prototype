@@ -22,9 +22,9 @@ const modeSettings: Record<
   AutoSegmentMode,
   { maxWords: number; minWords: number; targetWords: number }
 > = {
-  balanced: { maxWords: 360, minWords: 50, targetWords: 220 },
-  conservative: { maxWords: 520, minWords: 80, targetWords: 340 },
-  detailed: { maxWords: 260, minWords: 40, targetWords: 150 }
+  balanced: { maxWords: 180, minWords: 20, targetWords: 90 },
+  conservative: { maxWords: 280, minWords: 35, targetWords: 150 },
+  detailed: { maxWords: 120, minWords: 12, targetWords: 60 }
 };
 
 const interviewerLabels = new Set([
@@ -349,13 +349,14 @@ function mergeTinySegments(
     }
 
     const last = merged[merged.length - 1];
-    if (
-      last &&
-      index > 0 &&
-      index < segments.length - 1 &&
-      countWords(text) < minWords &&
-      !segmentHasBoundaryCue(text)
-    ) {
+  if (
+    last &&
+    index > 0 &&
+    index < segments.length - 1 &&
+    countWords(text) < minWords &&
+    !startsWithInterviewerQuestion(text) &&
+    !segmentHasBoundaryCue(text)
+  ) {
       merged[merged.length - 1] = {
         endTurnIndex: segment.endTurnIndex ?? last.endTurnIndex,
         startTurnIndex: last.startTurnIndex,
@@ -368,6 +369,14 @@ function mergeTinySegments(
   });
 
   return merged;
+}
+
+function startsWithInterviewerQuestion(text: string) {
+  const firstLine = text
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  return Boolean(firstLine && isSubstantialInterviewerQuestion(firstLine));
 }
 
 function segmentHasBoundaryCue(text: string) {
@@ -407,24 +416,19 @@ function buildSegment(
 }
 
 function buildTitle(text: string, index: number) {
-  if (isOverviewSegment(text)) {
+  const participantSource = firstParticipantTitleSource(text);
+  if (!participantSource && isOverviewSegment(text)) {
     return "Introduction and overview";
   }
 
-  const participantTopicLine = text
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => {
-      const parsed = parseSpeakerLine(line);
-      return parsed && normalizeSpeaker(parsed.label) === "participant" && hasTopicCue(parsed.content);
-    });
-  const titleSource = participantTopicLine ?? text;
+  const titleSource =
+    participantSource ?? firstNonGenericTitleSource(text) ?? text;
   const keywordTitle = inferTitleFromKeywords(titleSource);
   if (keywordTitle) {
     return keywordTitle;
   }
 
-  const cleaned = stripSpeakerLabel(firstMeaningfulLine(text));
+  const cleaned = stripGenericTitleOpening(stripSpeakerLabel(titleSource));
   const topicTitle = extractTopicTitle(titleSource);
   if (topicTitle) {
     return topicTitle;
@@ -432,14 +436,72 @@ function buildTitle(text: string, index: number) {
 
   const title = cleaned
     .replace(/[?？。.!！]+$/g, "")
-    .replace(/^((can|could|would)\s+you\s+)?(tell|say|talk)\s+(me\s+)?(more\s+)?(about\s+)?/i, "")
     .split(/\s+/)
     .slice(0, 8)
     .join(" ")
     .slice(0, 80)
     .trim();
 
-  return title || (index === 0 ? "Introduction and overview" : `Segment ${index + 1}`);
+  if (title) {
+    return title;
+  }
+
+  return startsWithInterviewerQuestion(text)
+    ? "Context: interviewer prompt"
+    : index === 0
+      ? "Opening context"
+      : `Segment ${index + 1}`;
+}
+
+function firstParticipantTitleSource(text: string) {
+  const participantLines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .map((line) => {
+      const parsed = parseSpeakerLine(line);
+      return parsed && normalizeSpeaker(parsed.label) === "participant"
+        ? parsed.content.trim()
+        : "";
+    })
+    .filter((line) => line && !isBackchannel(line));
+
+  return (
+    participantLines.find((line) => hasTopicCue(line)) ??
+    participantLines.find((line) => countWords(line) >= 6) ??
+    participantLines[0] ??
+    null
+  );
+}
+
+function firstNonGenericTitleSource(text: string) {
+  return (
+    text
+      .split("\n")
+      .map((line) => stripSpeakerLabel(line.trim()))
+      .find((line) => line && !isGenericInterviewerOpening(line)) ?? null
+  );
+}
+
+function stripGenericTitleOpening(text: string) {
+  return text
+    .replace(/^thank you for taking part(?: today)?[,.]?\s*/i, "")
+    .replace(/^thanks for taking part(?: today)?[,.]?\s*/i, "")
+    .replace(/^to start(?: with)?[,.]?\s*/i, "")
+    .replace(/^((can|could|would)\s+you\s+)?(tell|say|talk)\s+(me\s+)?(more\s+)?(about\s+)?/i, "")
+    .trim();
+}
+
+function isGenericInterviewerOpening(text: string) {
+  const normalized = text.toLowerCase().trim();
+  return (
+    /^(thank you|thanks)\s+for\s+taking\s+part/.test(normalized) ||
+    /^to\s+start/.test(normalized) ||
+    /^((can|could|would)\s+you\s+)?(tell|say|talk)\s+(me\s+)?(more\s+)?(about\s+)?/.test(normalized)
+  );
+}
+
+function isBackchannel(text: string) {
+  return backchannels.has(text.toLowerCase().replace(/[.!?。！？]/g, "").trim());
 }
 
 function isOverviewSegment(text: string) {
@@ -482,6 +544,14 @@ function extractTopicTitle(text: string) {
 
 function inferTitleFromKeywords(text: string) {
   const lower = text.toLowerCase();
+  if (
+    /(first|initial|started|beginning|第一次|开始|刚开始).{0,40}(mindfulness|breath|breathing|meditat|正念|呼吸|冥想)|(?:mindfulness|breath|breathing|meditat|正念|呼吸|冥想).{0,40}(first|initial|started|beginning|第一次|开始|刚开始)/.test(lower)
+  ) {
+    return "First experience of brief mindfulness practice";
+  }
+  if (/mindfulness|breath|breathing|meditat|正念|呼吸|冥想/.test(lower)) {
+    return "Mindfulness practice experience";
+  }
   if (/stress|anxiety|worry|react|calm|压力|焦虑|紧张/.test(lower)) {
     return "Stress and anxiety";
   }
