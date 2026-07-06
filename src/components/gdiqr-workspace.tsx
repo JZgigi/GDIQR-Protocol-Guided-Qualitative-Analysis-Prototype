@@ -28,6 +28,7 @@ import type {
   MeaningUnit,
   Project,
   ProjectDataSource,
+  PreAnalysisNotes,
   ReviewerComment,
   ReviewerWorkspace,
   SegmentStatus,
@@ -115,6 +116,7 @@ interface GdiqrWorkspaceProps {
   audioFiles: AudioFileRecord[];
   transcriptionJobs: TranscriptionJobRecord[];
   transcriptRecords?: TranscriptRecord[];
+  preAnalysisNotes?: PreAnalysisNotes;
   meaningUnits: MeaningUnit[];
   categories: CategoryNode[];
   reviewerComments: ReviewerComment[];
@@ -134,6 +136,7 @@ export function GdiqrWorkspace({
   audioFiles,
   transcriptionJobs,
   transcriptRecords = [],
+  preAnalysisNotes,
   meaningUnits,
   categories,
   reviewerComments,
@@ -144,7 +147,14 @@ export function GdiqrWorkspace({
   supabaseConfigured = false
 }: GdiqrWorkspaceProps) {
   const isLocalOnlyMode = storageMode === "local";
-  const [activeStep, setActiveStep] = useState<WorkflowStep>("pre-analysis");
+  const [activeStep, setActiveStep] = useState<WorkflowStep>(() =>
+    getRecommendedActiveStep({
+      categories,
+      integratedNarrative,
+      meaningUnits,
+      project
+    })
+  );
   const [currentProject, setCurrentProject] = useState(project);
   const [availableProjects, setAvailableProjects] = useState(projectList);
   const [projectTitle, setProjectTitle] = useState(project.title);
@@ -172,15 +182,28 @@ export function GdiqrWorkspace({
     useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [researchQuestion, setResearchQuestion] = useState(
-    project.researchQuestion
+    preAnalysisNotes?.researchQuestion || project.researchQuestion
   );
   const [studyDescription, setStudyDescription] = useState(
-    normaliseResearcherFacingText(project.studyDescription)
+    normaliseResearcherFacingText(
+      preAnalysisNotes?.studyDescription || project.studyDescription
+    )
   );
-  const [researcherExpectations, setResearcherExpectations] = useState("");
-  const [researcherNotes, setResearcherNotes] = useState("");
+  const [researcherExpectations, setResearcherExpectations] = useState(
+    preAnalysisNotes?.initialSensitisingConcepts ?? ""
+  );
+  const [researcherNotes, setResearcherNotes] = useState(
+    preAnalysisNotes?.contextualNotes ?? ""
+  );
   const [researcherReflexivityNotes, setResearcherReflexivityNotes] =
-    useState("");
+    useState(preAnalysisNotes?.researcherPosition ?? "");
+  const [dataFamiliarisationNotes, setDataFamiliarisationNotes] = useState(
+    preAnalysisNotes?.dataFamiliarisationNotes ?? ""
+  );
+  const [preAnalysisSavedAt, setPreAnalysisSavedAt] = useState(
+    preAnalysisNotes?.updatedAt ?? ""
+  );
+  const [isSavingPreAnalysis, setIsSavingPreAnalysis] = useState(false);
   const [relevanceGuideline, setRelevanceGuideline] = useState("");
   const [theoreticalFramework, setTheoreticalFramework] = useState("");
   const [projectLanguage, setProjectLanguage] =
@@ -651,8 +674,27 @@ export function GdiqrWorkspace({
     setProjectDataSource(workspace.project.dataSource);
     setDataSuitabilityConfirmed(workspace.project.dataSuitabilityConfirmed);
     setProjectResearcherNotes(workspace.project.researcherNotes);
-    setResearchQuestion(workspace.project.researchQuestion);
-    setStudyDescription(normaliseResearcherFacingText(workspace.project.studyDescription));
+    setResearchQuestion(
+      workspace.preAnalysisNotes?.researchQuestion ||
+        workspace.project.researchQuestion
+    );
+    setStudyDescription(
+      normaliseResearcherFacingText(
+        workspace.preAnalysisNotes?.studyDescription ||
+          workspace.project.studyDescription
+      )
+    );
+    setResearcherReflexivityNotes(
+      workspace.preAnalysisNotes?.researcherPosition ?? ""
+    );
+    setResearcherNotes(workspace.preAnalysisNotes?.contextualNotes ?? "");
+    setResearcherExpectations(
+      workspace.preAnalysisNotes?.initialSensitisingConcepts ?? ""
+    );
+    setDataFamiliarisationNotes(
+      workspace.preAnalysisNotes?.dataFamiliarisationNotes ?? ""
+    );
+    setPreAnalysisSavedAt(workspace.preAnalysisNotes?.updatedAt ?? "");
     setProjectLanguage(workspace.project.language);
     setLightInterpretation(workspace.project.lightInterpretation);
     setUploadLanguage(workspace.project.language);
@@ -677,6 +719,7 @@ export function GdiqrWorkspace({
     setCategoryDraftNotice("");
     setCategoryDraftIsFallback(false);
     setApiDataSource(workspace.dataSource);
+    setActiveStep(getRecommendedActiveStep(workspace));
     setApiStatus("Workspace refreshed.");
   }
 
@@ -778,6 +821,99 @@ export function GdiqrWorkspace({
       );
     } finally {
       setIsSavingProject(false);
+    }
+  }
+
+
+  async function saveStepOnePreAnalysisNotes() {
+    if (!researchQuestion.trim() || !studyDescription.trim()) {
+      setApiStatus(
+        "Add a research question and study description/domains before saving Step 1."
+      );
+      return;
+    }
+
+    setIsSavingPreAnalysis(true);
+
+    if (isLocalOnlyMode) {
+      const now = new Date().toISOString();
+      setCurrentProject((current) => ({
+        ...current,
+        researchQuestion,
+        studyDescription,
+        updatedAt: now
+      }));
+      setPreAnalysisSavedAt(now);
+      recordLocalAuditEvent({
+        action: "Updated Step 1 pre-analysis notes locally",
+        target: "Step 1 pre-analysis"
+      });
+      setApiStatus(
+        "Step 1 pre-analysis notes saved locally for this browser session. Export JSON to keep a copy."
+      );
+      setIsSavingPreAnalysis(false);
+      return;
+    }
+
+    setApiStatus("Saving Step 1 pre-analysis notes...");
+
+    try {
+      const response = await fetch("/api/pre-analysis", {
+        body: JSON.stringify({
+          contextualNotes: researcherNotes,
+          dataFamiliarisationNotes,
+          initialSensitisingConcepts: researcherExpectations,
+          projectId: currentProject.id,
+          researcherPosition: researcherReflexivityNotes,
+          researchQuestion,
+          studyDescription
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "PATCH"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        preAnalysisNotes?: PreAnalysisNotes;
+        project?: Project;
+        saved?: boolean;
+      };
+
+      if (!response.ok || !result.saved) {
+        setApiStatus(result.error ?? "Step 1 pre-analysis save failed.");
+        return;
+      }
+
+      if (result.project) {
+        setCurrentProject(result.project);
+        setProjectTitle(result.project.title);
+        setProjectLanguage(result.project.language);
+      }
+      if (result.preAnalysisNotes) {
+        setResearchQuestion(result.preAnalysisNotes.researchQuestion);
+        setStudyDescription(
+          normaliseResearcherFacingText(result.preAnalysisNotes.studyDescription)
+        );
+        setResearcherReflexivityNotes(
+          result.preAnalysisNotes.researcherPosition
+        );
+        setResearcherNotes(result.preAnalysisNotes.contextualNotes);
+        setResearcherExpectations(
+          result.preAnalysisNotes.initialSensitisingConcepts
+        );
+        setDataFamiliarisationNotes(
+          result.preAnalysisNotes.dataFamiliarisationNotes
+        );
+        setPreAnalysisSavedAt(result.preAnalysisNotes.updatedAt);
+      }
+      setApiStatus("Step 1 pre-analysis notes saved to Supabase.");
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error
+          ? error.message
+          : "Step 1 pre-analysis save failed."
+      );
+    } finally {
+      setIsSavingPreAnalysis(false);
     }
   }
 
@@ -3365,6 +3501,15 @@ export function GdiqrWorkspace({
         confirmedAt: currentProject.dataSuitabilityConfirmedAt,
         researcherNotes: currentProject.researcherNotes
       },
+      preAnalysis: {
+        researchQuestion,
+        studyDescription,
+        researcherPosition: researcherReflexivityNotes,
+        contextualNotes: researcherNotes,
+        initialSensitisingConcepts: researcherExpectations,
+        dataFamiliarisationNotes,
+        relevanceGuideline
+      },
       transcript: editableTranscript,
       transcriptRecords: displayTranscriptRecords,
       segments: displaySegments,
@@ -3413,6 +3558,16 @@ export function GdiqrWorkspace({
       `Data source: ${currentProject.dataSource}`,
       `Data suitability confirmed: ${currentProject.dataSuitabilityConfirmed ? "Yes" : "No"}`,
       `Researcher notes: ${currentProject.researcherNotes || "Not set"}`,
+      "",
+      "Step 1 Pre-analysis",
+      `Research question: ${researchQuestion || "Not set"}`,
+      `Study description / domains: ${studyDescription || "Not set"}`,
+      `Researcher position / reflexive note: ${researcherReflexivityNotes || "Not set"}`,
+      `Contextual notes: ${researcherNotes || "Not set"}`,
+      `Initial sensitising concepts: ${researcherExpectations || "Not set"}`,
+      `Data familiarisation notes: ${dataFamiliarisationNotes || "Not set"}`,
+      `Relevance guideline: ${relevanceGuideline || "Not set"}`,
+      "",
       `Transcript records: ${displayTranscriptRecords.length}`,
       `Original transcript saved: ${displayTranscriptRecords.some((item) => Boolean(item.rawContent)) ? "Yes" : "No"}`,
       `Edited transcript draft saved: ${displayTranscriptRecords.some((item) => Boolean(item.cleanedContent)) ? "Yes" : "No"}`,
@@ -3907,38 +4062,15 @@ export function GdiqrWorkspace({
                     value={studyDescription}
                   />
                 </div>
-                <details className="workbook-details">
-                  <summary>Optional researcher notes</summary>
+                <details className="workbook-details" open>
+                  <summary>Step 1 pre-analysis notes</summary>
+                  <p className="small">
+                    These notes are part of the durable project record and will appear in the analysis export.
+                  </p>
                   <div className="grid">
                     <div>
-                      <label className="label" htmlFor="researcher-expectations">
-                        Researcher Expectations / Preunderstandings
-                      </label>
-                      <textarea
-                        className="textarea compact-textarea"
-                        id="researcher-expectations"
-                        onChange={(event) =>
-                          setResearcherExpectations(event.target.value)
-                        }
-                        placeholder="Record assumptions, expectations, and prior understandings before detailed analysis."
-                        value={researcherExpectations}
-                      />
-                    </div>
-                    <div>
-                      <label className="label" htmlFor="researcher-notes">
-                        Researcher Notes
-                      </label>
-                      <textarea
-                        className="textarea compact-textarea"
-                        id="researcher-notes"
-                        onChange={(event) => setResearcherNotes(event.target.value)}
-                        placeholder="Add early decisions, questions, and methodological notes."
-                        value={researcherNotes}
-                      />
-                    </div>
-                    <div>
                       <label className="label" htmlFor="researcher-reflexivity">
-                        Researcher Reflexivity Notes
+                        Researcher position / reflexive note
                       </label>
                       <textarea
                         className="textarea compact-textarea"
@@ -3946,10 +4078,67 @@ export function GdiqrWorkspace({
                         onChange={(event) =>
                           setResearcherReflexivityNotes(event.target.value)
                         }
-                        placeholder="What assumptions, experiences, expectations, or theoretical perspectives might influence your analysis?"
+                        placeholder="What assumptions, experiences, expectations, roles, or theoretical perspectives might shape your analysis?"
                         value={researcherReflexivityNotes}
                       />
                     </div>
+                    <div>
+                      <label className="label" htmlFor="researcher-notes">
+                        Contextual notes
+                      </label>
+                      <textarea
+                        className="textarea compact-textarea"
+                        id="researcher-notes"
+                        onChange={(event) => setResearcherNotes(event.target.value)}
+                        placeholder="Add project context, sample/context notes, early decisions, questions, and methodological notes."
+                        value={researcherNotes}
+                      />
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="researcher-expectations">
+                        Initial sensitising concepts
+                      </label>
+                      <textarea
+                        className="textarea compact-textarea"
+                        id="researcher-expectations"
+                        onChange={(event) =>
+                          setResearcherExpectations(event.target.value)
+                        }
+                        placeholder="Record sensitising concepts, preunderstandings, expectations, or concepts to watch without treating them as fixed findings."
+                        value={researcherExpectations}
+                      />
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="data-familiarisation-notes">
+                        Data familiarisation notes
+                      </label>
+                      <textarea
+                        className="textarea compact-textarea"
+                        id="data-familiarisation-notes"
+                        onChange={(event) =>
+                          setDataFamiliarisationNotes(event.target.value)
+                        }
+                        placeholder="Record first impressions from reading/listening, transcript quality notes, questions to revisit, or repeated points noticed during familiarisation."
+                        value={dataFamiliarisationNotes}
+                      />
+                    </div>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      className="button primary"
+                      disabled={isSavingPreAnalysis}
+                      onClick={() => void saveStepOnePreAnalysisNotes()}
+                      type="button"
+                    >
+                      {isSavingPreAnalysis
+                        ? "Saving Step 1 notes..."
+                        : "Save Step 1 pre-analysis notes"}
+                    </button>
+                    {preAnalysisSavedAt && (
+                      <span className="small">
+                        Last saved: {new Date(preAnalysisSavedAt).toLocaleString()}
+                      </span>
+                    )}
                   </div>
                 </details>
               </div>
@@ -5513,6 +5702,38 @@ function TranscriptReviewHistory({
       </div>
     </div>
   );
+
+}
+
+function getRecommendedActiveStep({
+  categories,
+  integratedNarrative,
+  meaningUnits,
+  project
+}: {
+  categories: CategoryNode[];
+  integratedNarrative: string;
+  meaningUnits: MeaningUnit[];
+  project: Project;
+}): WorkflowStep {
+  if (!project.dataSuitabilityConfirmed || !isTranscriptConfirmed(project)) {
+    return "pre-analysis";
+  }
+
+  const acceptedUnits = meaningUnits.filter(isConfirmedMeaningUnit);
+  if (meaningUnits.length === 0 || acceptedUnits.length === 0) {
+    return "understanding";
+  }
+
+  if (categories.length === 0) {
+    return "categorizing";
+  }
+
+  if (!integratedNarrative.trim()) {
+    return "integrating";
+  }
+
+  return "integrity";
 }
 
 function StatusBadge({ label }: { label: string }) {
