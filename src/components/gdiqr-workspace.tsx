@@ -275,6 +275,8 @@ export function GdiqrWorkspace({
   const [isGeneratingMeaningUnits, setIsGeneratingMeaningUnits] =
     useState(false);
   const [isAcceptingMeaningUnits, setIsAcceptingMeaningUnits] = useState(false);
+  const [isSavingMeaningUnitAction, setIsSavingMeaningUnitAction] =
+    useState(false);
   const [meaningUnitGenerationScope, setMeaningUnitGenerationScope] =
     useState<"all" | "selected">("selected");
   const [meaningUnitSegmentId, setMeaningUnitSegmentId] = useState(
@@ -2883,6 +2885,343 @@ export function GdiqrWorkspace({
     ]);
   }
 
+  function createLocalMeaningUnitDraft({
+    excerpt,
+    humanSummary = "",
+    segmentId,
+    speaker = "Participant"
+  }: {
+    excerpt: string;
+    humanSummary?: string;
+    segmentId?: string;
+    speaker?: string;
+  }): MeaningUnit {
+    const nextNumber = Math.max(0, ...currentMeaningUnits.map((unit) => unit.number)) + 1;
+    const sourceSegment =
+      displaySegments.find((segment) => segment.segmentId === segmentId) ??
+      selectedMeaningUnitSegment ??
+      displaySegments[0];
+    return {
+      aiExcerpt: excerpt.trim(),
+      aiSummary: "",
+      analysisExcluded: false,
+      caseId: sourceSegment?.caseId ?? "CASE-001",
+      excerpt: excerpt.trim(),
+      humanStatus: "Needs review",
+      humanSummary: humanSummary.trim(),
+      id: `mu_manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      number: nextNumber,
+      reviewerStatus: "Not run",
+      segmentId: segmentId ?? sourceSegment?.segmentId ?? "SEG-001",
+      speaker,
+      uncertainty: "Researcher-created meaning unit"
+    };
+  }
+
+  function renumberMeaningUnitsForDisplay(nextUnits: MeaningUnit[]) {
+    return [...nextUnits]
+      .sort((left, right) => left.number - right.number)
+      .map((unit, index) => ({ ...unit, number: index + 1 }));
+  }
+
+  async function addManualMeaningUnit() {
+    const excerpt = window.prompt(
+      "New meaning-unit excerpt. Keep it close to the participant account:"
+    )?.trim();
+    if (!excerpt) {
+      return;
+    }
+    const humanSummary = window.prompt(
+      "Optional researcher summary for this manual MU:",
+      ""
+    )?.trim() ?? "";
+    const researcherNote = window.prompt(
+      "Optional audit note for why this manual MU was added:",
+      "Manual MU added during researcher review"
+    )?.trim() ?? "Manual MU added during researcher review";
+    const sourceSegment = selectedMeaningUnitSegment ?? displaySegments[0];
+
+    setIsSavingMeaningUnitAction(true);
+    setApiStatus("Adding manual meaning unit...");
+
+    try {
+      if (isLocalOnlyMode) {
+        const manualUnit = createLocalMeaningUnitDraft({
+          excerpt,
+          humanSummary,
+          segmentId: sourceSegment?.segmentId,
+          speaker: "Participant"
+        });
+        setUnits((current) => renumberMeaningUnitsForDisplay([...current, manualUnit]));
+        clearDerivedAnalysisAfterMeaningUnitChange();
+        recordLocalAuditEvent({
+          action: `Created manual MU #${manualUnit.number}: ${researcherNote}`,
+          target: manualUnit.id
+        });
+        setApiStatus("Manual meaning unit added locally. Review it before accepting.");
+        return;
+      }
+
+      const response = await fetch("/api/meaning-units", {
+        body: JSON.stringify({
+          action: "manual_create",
+          caseId: sourceSegment?.caseId ?? "CASE-001",
+          excerpt,
+          humanSummary,
+          projectId: currentProject.id,
+          researcherNote,
+          segmentId: sourceSegment?.segmentId ?? "SEG-001",
+          speaker: "Participant"
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        saved?: boolean;
+        units?: MeaningUnit[];
+      };
+      if (!response.ok || !result.saved) {
+        setApiStatus(result.error ?? "Manual meaning unit could not be added.");
+        return;
+      }
+      setUnits(result.units ?? []);
+      clearDerivedAnalysisAfterMeaningUnitChange();
+      setApiStatus("Manual meaning unit added and audit logged. Review it before accepting.");
+    } catch (error) {
+      setApiStatus(error instanceof Error ? error.message : "Manual meaning unit could not be added.");
+    } finally {
+      setIsSavingMeaningUnitAction(false);
+    }
+  }
+
+  function findMeaningUnitNeighbor(unit: MeaningUnit, direction: "previous" | "next") {
+    const ordered = [...currentMeaningUnits].sort((left, right) => left.number - right.number);
+    const index = ordered.findIndex((item) => item.id === unit.id);
+    return direction === "previous" ? ordered[index - 1] : ordered[index + 1];
+  }
+
+  function suggestMeaningUnitSplit(text: string) {
+    const trimmed = text.trim();
+    const sentenceBoundary = trimmed.search(/(?<=[.!?。！？])\s+/u);
+    if (sentenceBoundary > 0 && sentenceBoundary < trimmed.length - 1) {
+      const firstEnd = sentenceBoundary + 1;
+      return {
+        first: trimmed.slice(0, firstEnd).trim(),
+        second: trimmed.slice(firstEnd).trim()
+      };
+    }
+    const midpoint = Math.floor(trimmed.length / 2);
+    const nearestSpace = trimmed.indexOf(" ", midpoint);
+    const splitIndex = nearestSpace > 0 ? nearestSpace : midpoint;
+    return {
+      first: trimmed.slice(0, splitIndex).trim(),
+      second: trimmed.slice(splitIndex).trim()
+    };
+  }
+
+  async function splitMeaningUnitFromCard(unit: MeaningUnit) {
+    if (unit.analysisExcluded) {
+      setApiStatus("Restore the meaning unit before splitting it.");
+      return;
+    }
+    const suggestion = suggestMeaningUnitSplit(unit.excerpt);
+    const firstExcerpt = window.prompt(
+      `First part for MU #${unit.number}:`,
+      suggestion.first
+    )?.trim();
+    if (!firstExcerpt) {
+      return;
+    }
+    const secondExcerpt = window.prompt(
+      `Second part for MU #${unit.number}:`,
+      suggestion.second
+    )?.trim();
+    if (!secondExcerpt) {
+      return;
+    }
+    const researcherNote = window.prompt(
+      "Optional audit note for the split decision:",
+      "Split because the original MU contained more than one meaning"
+    )?.trim() ?? "Split because the original MU contained more than one meaning";
+
+    setIsSavingMeaningUnitAction(true);
+    setApiStatus(`Splitting MU #${unit.number}...`);
+
+    try {
+      if (isLocalOnlyMode) {
+        const secondUnit: MeaningUnit = {
+          ...unit,
+          aiExcerpt: secondExcerpt,
+          aiSummary: "",
+          excerpt: secondExcerpt,
+          humanStatus: "Needs review",
+          humanSummary: "",
+          id: `mu_split_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          number: unit.number + 0.1,
+          uncertainty: "Researcher split from an existing MU"
+        };
+        setUnits((current) =>
+          renumberMeaningUnitsForDisplay(
+            current.flatMap((item) =>
+              item.id === unit.id
+                ? [
+                    {
+                      ...item,
+                      excerpt: firstExcerpt,
+                      humanStatus: "Needs review" as const,
+                      humanSummary: item.humanSummary || item.aiSummary || ""
+                    },
+                    secondUnit
+                  ]
+                : [item]
+            )
+          )
+        );
+        clearDerivedAnalysisAfterMeaningUnitChange();
+        recordLocalAuditEvent({
+          action: `Split MU #${unit.number}: ${researcherNote}`,
+          target: unit.id
+        });
+        setApiStatus("Meaning unit split locally. Review both MUs before accepting.");
+        return;
+      }
+
+      const response = await fetch("/api/meaning-units", {
+        body: JSON.stringify({
+          action: "split",
+          firstExcerpt,
+          firstSummary: unit.humanSummary || unit.aiSummary || "",
+          projectId: currentProject.id,
+          researcherNote,
+          secondExcerpt,
+          secondSummary: "",
+          unitId: unit.id
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        saved?: boolean;
+        units?: MeaningUnit[];
+      };
+      if (!response.ok || !result.saved) {
+        setApiStatus(result.error ?? "Meaning unit split failed.");
+        return;
+      }
+      setUnits(result.units ?? []);
+      clearDerivedAnalysisAfterMeaningUnitChange();
+      setApiStatus("Meaning unit split and audit logged. Review both MUs before accepting.");
+    } catch (error) {
+      setApiStatus(error instanceof Error ? error.message : "Meaning unit split failed.");
+    } finally {
+      setIsSavingMeaningUnitAction(false);
+    }
+  }
+
+  async function mergeMeaningUnitFromCard(
+    unit: MeaningUnit,
+    direction: "previous" | "next"
+  ) {
+    const neighbor = findMeaningUnitNeighbor(unit, direction);
+    if (!neighbor) {
+      setApiStatus(`No ${direction} meaning unit is available to merge.`);
+      return;
+    }
+    const first = neighbor.number < unit.number ? neighbor : unit;
+    const second = neighbor.number < unit.number ? unit : neighbor;
+    const confirmed = window.confirm(
+      `Merge MU #${first.number} and MU #${second.number}? This clears category and reviewer outputs because the accepted evidence base changes.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    const mergedExcerpt = window.prompt(
+      "Merged MU excerpt:",
+      `${first.excerpt.trim()}\n\n${second.excerpt.trim()}`.trim()
+    )?.trim();
+    if (!mergedExcerpt) {
+      return;
+    }
+    const mergedSummary = window.prompt(
+      "Optional merged researcher summary:",
+      [
+        first.humanSummary || first.aiSummary,
+        second.humanSummary || second.aiSummary
+      ]
+        .filter(Boolean)
+        .join(" / ")
+    )?.trim() ?? "";
+    const researcherNote = window.prompt(
+      "Optional audit note for the merge decision:",
+      "Merged because the two MUs represented one connected meaning"
+    )?.trim() ?? "Merged because the two MUs represented one connected meaning";
+
+    setIsSavingMeaningUnitAction(true);
+    setApiStatus(`Merging MU #${first.number} and MU #${second.number}...`);
+
+    try {
+      if (isLocalOnlyMode) {
+        setUnits((current) =>
+          renumberMeaningUnitsForDisplay(
+            current
+              .filter((item) => item.id !== second.id)
+              .map((item) =>
+                item.id === first.id
+                  ? {
+                      ...item,
+                      analysisExcluded: false,
+                      exclusionReason: undefined,
+                      excerpt: mergedExcerpt,
+                      humanStatus: "Needs review" as const,
+                      humanSummary: mergedSummary
+                    }
+                  : item
+              )
+          )
+        );
+        clearDerivedAnalysisAfterMeaningUnitChange();
+        recordLocalAuditEvent({
+          action: `Merged MU #${first.number} and MU #${second.number}: ${researcherNote}`,
+          target: first.id
+        });
+        setApiStatus("Meaning units merged locally. Review the merged MU before accepting.");
+        return;
+      }
+
+      const response = await fetch("/api/meaning-units", {
+        body: JSON.stringify({
+          action: "merge",
+          mergedExcerpt,
+          mergedSummary,
+          projectId: currentProject.id,
+          researcherNote,
+          sourceUnitId: first.id,
+          targetUnitId: second.id
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        saved?: boolean;
+        units?: MeaningUnit[];
+      };
+      if (!response.ok || !result.saved) {
+        setApiStatus(result.error ?? "Meaning unit merge failed.");
+        return;
+      }
+      setUnits(result.units ?? []);
+      clearDerivedAnalysisAfterMeaningUnitChange();
+      setApiStatus("Meaning units merged and audit logged. Review the merged MU before accepting.");
+    } catch (error) {
+      setApiStatus(error instanceof Error ? error.message : "Meaning unit merge failed.");
+    } finally {
+      setIsSavingMeaningUnitAction(false);
+    }
+  }
+
   function updateMeaningUnitExcerpt(unitId: string, value: string) {
     setUnits((current) =>
       current.map((unit) =>
@@ -3268,11 +3607,16 @@ export function GdiqrWorkspace({
 
     setApiStatus(`Deleting MU #${unit.number}...`);
     if (isLocalOnlyMode) {
-      setUnits((current) => current.filter((item) => item.id !== unit.id));
-      setDisplayCategories([]);
-      setNarrative("");
-      setCategoryDraftNotice("");
-      setCategoryDraftIsFallback(false);
+      setUnits((current) =>
+        renumberMeaningUnitsForDisplay(
+          current.filter((item) => item.id !== unit.id)
+        )
+      );
+      clearDerivedAnalysisAfterMeaningUnitChange();
+      recordLocalAuditEvent({
+        action: `Deleted MU #${unit.number}`,
+        target: unit.id
+      });
       setApiStatus(
         `MU #${unit.number} deleted locally. Existing categories were cleared; rerun categories when ready.`
       );
@@ -3285,16 +3629,22 @@ export function GdiqrWorkspace({
     const result = (await response.json().catch(() => ({}))) as {
       deleted?: boolean;
       error?: string;
+      units?: MeaningUnit[];
     };
     if (!response.ok || !result.deleted) {
       setApiStatus(result.error ?? "Meaning unit could not be deleted.");
       return;
     }
-    setUnits((current) => current.filter((item) => item.id !== unit.id));
-    setDisplayCategories([]);
-    setNarrative("");
-    setCategoryDraftNotice("");
-    setCategoryDraftIsFallback(false);
+    if (result.units) {
+      setUnits(result.units);
+    } else {
+      setUnits((current) =>
+        renumberMeaningUnitsForDisplay(
+          current.filter((item) => item.id !== unit.id)
+        )
+      );
+    }
+    clearDerivedAnalysisAfterMeaningUnitChange();
     setApiStatus(
       `MU #${unit.number} deleted. Existing categories were cleared; rerun categories when ready.`
     );
@@ -4902,6 +5252,14 @@ export function GdiqrWorkspace({
                           ? "Saving accepted summaries..."
                           : "Accept reviewed summaries"}
                       </button>
+                      <button
+                        className="button"
+                        disabled={isSavingMeaningUnitAction || !transcriptConfirmed}
+                        onClick={() => void addManualMeaningUnit()}
+                        type="button"
+                      >
+                        Add manual meaning unit
+                      </button>
                     </div>
                     <div className="summary-list">
                       {currentMeaningUnits.length === 0 ? (
@@ -4917,11 +5275,21 @@ export function GdiqrWorkspace({
                                 onEditExclusionReason={updateExclusionReason}
                                 onEditExcerpt={updateMeaningUnitExcerpt}
                                 onEditSummary={updateHumanSummary}
+                                onDelete={deleteMeaningUnitFromWorkspace}
                                 onExclude={excludeMeaningUnit}
+                                onMergeNext={(targetUnit) =>
+                                  void mergeMeaningUnitFromCard(targetUnit, "next")
+                                }
+                                onMergePrevious={(targetUnit) =>
+                                  void mergeMeaningUnitFromCard(targetUnit, "previous")
+                                }
                                 onRestore={restoreMeaningUnit}
                                 onReturnToTranscript={returnToTranscriptForUnit}
                                 onSaveExcerpt={saveMeaningUnitExcerpt}
                                 onSaveSummary={saveMeaningUnitHumanSummary}
+                                onSplit={(targetUnit) =>
+                                  void splitMeaningUnitFromCard(targetUnit)
+                                }
                                 unit={unit}
                               />
                             ))}
@@ -4938,11 +5306,21 @@ export function GdiqrWorkspace({
                                     onEditExclusionReason={updateExclusionReason}
                                     onEditExcerpt={updateMeaningUnitExcerpt}
                                     onEditSummary={updateHumanSummary}
+                                    onDelete={deleteMeaningUnitFromWorkspace}
                                     onExclude={excludeMeaningUnit}
+                                    onMergeNext={(targetUnit) =>
+                                      void mergeMeaningUnitFromCard(targetUnit, "next")
+                                    }
+                                    onMergePrevious={(targetUnit) =>
+                                      void mergeMeaningUnitFromCard(targetUnit, "previous")
+                                    }
                                     onRestore={restoreMeaningUnit}
                                     onReturnToTranscript={returnToTranscriptForUnit}
                                     onSaveExcerpt={saveMeaningUnitExcerpt}
                                     onSaveSummary={saveMeaningUnitHumanSummary}
+                                    onSplit={(targetUnit) =>
+                                      void splitMeaningUnitFromCard(targetUnit)
+                                    }
                                     unit={unit}
                                   />
                                 ))}
@@ -7554,25 +7932,33 @@ function ReviewerPanel({
 
 function MeaningUnitReviewCard({
   onAccept,
+  onDelete,
   onEditExclusionReason,
   onEditExcerpt,
   onEditSummary,
   onExclude,
+  onMergeNext,
+  onMergePrevious,
   onRestore,
   onReturnToTranscript,
   onSaveExcerpt,
   onSaveSummary,
+  onSplit,
   unit
 }: {
   onAccept: (unitId: string) => void;
+  onDelete: (unit: MeaningUnit) => void;
   onEditExclusionReason: (unitId: string, value: string) => void;
   onEditExcerpt: (unitId: string, value: string) => void;
   onEditSummary: (unitId: string, value: string) => void;
   onExclude: (unit: MeaningUnit) => void;
+  onMergeNext: (unit: MeaningUnit) => void;
+  onMergePrevious: (unit: MeaningUnit) => void;
   onRestore: (unit: MeaningUnit) => void;
   onReturnToTranscript: (unit: MeaningUnit) => void;
   onSaveExcerpt: (unitId: string) => void;
   onSaveSummary: (unitId: string) => void;
+  onSplit: (unit: MeaningUnit) => void;
   unit: MeaningUnit;
 }) {
   const validationFlags = getMeaningUnitValidationFlags(unit);
@@ -7672,6 +8058,28 @@ function MeaningUnitReviewCard({
           </button>
         )}
         <button
+          className="button"
+          disabled={unit.analysisExcluded}
+          onClick={() => onSplit(unit)}
+          type="button"
+        >
+          Split
+        </button>
+        <button
+          className="button"
+          onClick={() => onMergePrevious(unit)}
+          type="button"
+        >
+          Merge previous
+        </button>
+        <button
+          className="button"
+          onClick={() => onMergeNext(unit)}
+          type="button"
+        >
+          Merge next
+        </button>
+        <button
           className="button icon"
           disabled={unit.analysisExcluded}
           onClick={() => onReturnToTranscript(unit)}
@@ -7679,6 +8087,13 @@ function MeaningUnitReviewCard({
           type="button"
         >
           <Pencil size={18} />
+        </button>
+        <button
+          className="button danger"
+          onClick={() => onDelete(unit)}
+          type="button"
+        >
+          Delete
         </button>
       </div>
     </article>

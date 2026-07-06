@@ -1551,6 +1551,15 @@ export async function updateMeaningUnit({
     return { saved: false, reason: "Supabase is not configured." };
   }
 
+  const { data: before, error: loadError } = await supabase
+    .from("meaning_units")
+    .select("*")
+    .eq("id", unitId)
+    .single();
+  if (loadError) {
+    throw new Error(loadError.message);
+  }
+
   const updates: Database["public"]["Tables"]["meaning_units"]["Update"] = {
     updated_at: new Date().toISOString()
   };
@@ -1587,36 +1596,324 @@ export async function updateMeaningUnit({
     throw new Error(error.message);
   }
 
-  await supabase.from("audit_events").insert({
-    project_id: data.project_id,
-    actor: "Researcher",
-    action:
-      analysisExcluded === undefined
-        ? humanStatus === "Accepted"
+  const mappedBefore = mapMeaningUnit(before);
+  const mappedAfter = mapMeaningUnit(data);
+  const actionType: AuditActionType =
+    analysisExcluded === true
+      ? "meaning_unit_excluded"
+      : humanStatus === "Accepted"
+        ? "meaning_unit_accepted"
+        : "meaning_unit_edited";
+  const action =
+    analysisExcluded === true
+      ? `Excluded MU ${data.unit_number} from analysis`
+      : analysisExcluded === false
+        ? `Restored MU ${data.unit_number} to researcher review`
+        : humanStatus === "Accepted"
           ? `Accepted MU ${data.unit_number}`
           : excerpt !== undefined && humanSummary !== undefined
-            ? `Updated MU ${data.unit_number} excerpt and summary`
+            ? `Edited MU ${data.unit_number} excerpt and summary`
             : excerpt !== undefined
-              ? `Updated MU ${data.unit_number} excerpt`
+              ? `Edited MU ${data.unit_number} excerpt`
               : humanSummary !== undefined
-                ? `Updated MU ${data.unit_number} summary`
-                : `Updated MU ${data.unit_number}`
-        : analysisExcluded
-          ? `Excluded MU ${data.unit_number} from analysis`
-          : `Restored MU ${data.unit_number} to analysis`,
-    target: data.id
+                ? `Edited MU ${data.unit_number} summary`
+                : speaker !== undefined
+                  ? `Edited MU ${data.unit_number} speaker label`
+                  : `Updated MU ${data.unit_number}`;
+
+  await recordEditLog({
+    action,
+    actionType,
+    newValue: mappedAfter,
+    previousValue: mappedBefore,
+    projectId: data.project_id,
+    researcherNote: data.exclusion_reason ?? undefined,
+    step: "understanding",
+    targetId: data.id,
+    targetType: "meaning_unit"
   });
 
   const shouldClearDerivedWork =
     analysisExcluded !== undefined ||
     (humanStatus !== "Accepted" &&
-      (excerpt !== undefined || humanSummary !== undefined));
+      (excerpt !== undefined || humanSummary !== undefined || speaker !== undefined));
 
   if (shouldClearDerivedWork) {
     await clearDerivedCategoryWork(data.project_id);
   }
 
-  return { saved: true, meaningUnit: mapMeaningUnit(data) };
+  return { saved: true, meaningUnit: mappedAfter };
+}
+
+export async function createManualMeaningUnit({
+  caseId = "CASE-001",
+  excerpt,
+  humanSummary = "",
+  projectId = defaultProjectId,
+  researcherNote,
+  segmentId = "SEG-001",
+  speaker = "Participant"
+}: {
+  caseId?: string;
+  excerpt: string;
+  humanSummary?: string;
+  projectId?: string;
+  researcherNote?: string;
+  segmentId?: string;
+  speaker?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const existingUnits = await loadRawMeaningUnits(projectId);
+  const nextNumber =
+    existingUnits.reduce((max, unit) => Math.max(max, unit.unit_number), 0) + 1;
+  const row: Database["public"]["Tables"]["meaning_units"]["Insert"] = {
+    id: stableId("mu", `${projectId}_manual_${Date.now()}`, nextNumber),
+    project_id: projectId,
+    segment_id: segmentId,
+    case_id: caseId,
+    speaker,
+    unit_number: nextNumber,
+    excerpt: excerpt.trim(),
+    ai_summary: "",
+    human_summary: humanSummary.trim(),
+    tentative_interpretation: null,
+    uncertainty: researcherNote || "Researcher-created meaning unit",
+    human_status: "Needs review",
+    reviewer_status: "Not run",
+    analysis_excluded: false,
+    exclusion_reason: null
+  };
+
+  const { data, error } = await supabase
+    .from("meaning_units")
+    .insert(row)
+    .select()
+    .single();
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await clearDerivedCategoryWork(projectId);
+  await recordEditLog({
+    action: `Created manual MU ${data.unit_number}`,
+    actionType: "meaning_unit_created",
+    newValue: mapMeaningUnit(data),
+    projectId,
+    researcherNote,
+    step: "understanding",
+    targetId: data.id,
+    targetType: "meaning_unit"
+  });
+
+  return {
+    saved: true,
+    meaningUnit: mapMeaningUnit(data),
+    units: await loadMeaningUnits(projectId)
+  };
+}
+
+export async function splitMeaningUnit({
+  firstExcerpt,
+  firstSummary = "",
+  projectId = defaultProjectId,
+  researcherNote,
+  secondExcerpt,
+  secondSummary = "",
+  unitId
+}: {
+  firstExcerpt: string;
+  firstSummary?: string;
+  projectId?: string;
+  researcherNote?: string;
+  secondExcerpt: string;
+  secondSummary?: string;
+  unitId: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const { data: before, error: loadError } = await supabase
+    .from("meaning_units")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("id", unitId)
+    .single();
+  if (loadError) {
+    throw new Error(loadError.message);
+  }
+
+  const now = new Date().toISOString();
+  const secondNumber = before.unit_number + 1;
+  const { data: followingUnits, error: followingError } = await supabase
+    .from("meaning_units")
+    .select("id, unit_number")
+    .eq("project_id", projectId)
+    .gte("unit_number", secondNumber)
+    .order("unit_number", { ascending: false });
+  if (followingError) {
+    throw new Error(followingError.message);
+  }
+  await Promise.all(
+    (followingUnits ?? []).map((unit) =>
+      supabase
+        .from("meaning_units")
+        .update({ unit_number: unit.unit_number + 10000, updated_at: now })
+        .eq("id", unit.id)
+    )
+  );
+  const secondRow: Database["public"]["Tables"]["meaning_units"]["Insert"] = {
+    id: stableId("mu", `${projectId}_split_${Date.now()}`, secondNumber),
+    project_id: projectId,
+    segment_id: before.segment_id,
+    case_id: before.case_id,
+    speaker: before.speaker,
+    unit_number: secondNumber,
+    excerpt: secondExcerpt.trim(),
+    ai_summary: "",
+    human_summary: secondSummary.trim(),
+    tentative_interpretation: null,
+    uncertainty: "Researcher split from an existing MU",
+    human_status: "Needs review",
+    reviewer_status: "Not run",
+    analysis_excluded: false,
+    exclusion_reason: null,
+    updated_at: now
+  };
+
+  const { data: firstRow, error: updateError } = await supabase
+    .from("meaning_units")
+    .update({
+      excerpt: firstExcerpt.trim(),
+      human_summary: firstSummary.trim(),
+      human_status: "Needs review",
+      analysis_excluded: false,
+      exclusion_reason: null,
+      updated_at: now
+    })
+    .eq("id", unitId)
+    .select()
+    .single();
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+
+  const { data: insertedSecond, error: insertError } = await supabase
+    .from("meaning_units")
+    .insert(secondRow)
+    .select()
+    .single();
+  if (insertError) {
+    throw new Error(insertError.message);
+  }
+
+  await renumberMeaningUnits(projectId);
+  await clearDerivedCategoryWork(projectId);
+  await recordEditLog({
+    action: `Split MU ${before.unit_number} into two reviewable meaning units`,
+    actionType: "meaning_unit_split",
+    newValue: {
+      first: mapMeaningUnit(firstRow),
+      second: mapMeaningUnit(insertedSecond)
+    },
+    previousValue: mapMeaningUnit(before),
+    projectId,
+    researcherNote,
+    step: "understanding",
+    targetId: before.id,
+    targetType: "meaning_unit"
+  });
+
+  return { saved: true, units: await loadMeaningUnits(projectId) };
+}
+
+export async function mergeMeaningUnits({
+  mergedExcerpt,
+  mergedSummary,
+  projectId = defaultProjectId,
+  researcherNote,
+  sourceUnitId,
+  targetUnitId
+}: {
+  mergedExcerpt?: string;
+  mergedSummary?: string;
+  projectId?: string;
+  researcherNote?: string;
+  sourceUnitId: string;
+  targetUnitId: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const { data: rows, error: loadError } = await supabase
+    .from("meaning_units")
+    .select("*")
+    .eq("project_id", projectId)
+    .in("id", [sourceUnitId, targetUnitId]);
+  if (loadError) {
+    throw new Error(loadError.message);
+  }
+  if (!rows || rows.length !== 2) {
+    return { saved: false, reason: "Could not find both meaning units to merge." };
+  }
+
+  const [first, second] = [...rows].sort(
+    (left, right) => left.unit_number - right.unit_number
+  );
+  const mergedText =
+    mergedExcerpt?.trim() || `${first.excerpt.trim()}\n\n${second.excerpt.trim()}`.trim();
+  const firstSummary = first.human_summary || first.ai_summary || "";
+  const secondSummary = second.human_summary || second.ai_summary || "";
+  const mergedHumanSummary =
+    mergedSummary?.trim() || [firstSummary, secondSummary].filter(Boolean).join(" / ");
+
+  const { data: mergedRow, error: updateError } = await supabase
+    .from("meaning_units")
+    .update({
+      excerpt: mergedText,
+      human_summary: mergedHumanSummary,
+      human_status: "Needs review",
+      analysis_excluded: false,
+      exclusion_reason: null,
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", first.id)
+    .select()
+    .single();
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+
+  const { error: deleteError } = await supabase
+    .from("meaning_units")
+    .delete()
+    .eq("id", second.id);
+  if (deleteError) {
+    throw new Error(deleteError.message);
+  }
+
+  await renumberMeaningUnits(projectId);
+  await clearDerivedCategoryWork(projectId);
+  await recordEditLog({
+    action: `Merged MU ${first.unit_number} and MU ${second.unit_number}`,
+    actionType: "meaning_unit_merged",
+    newValue: mapMeaningUnit(mergedRow),
+    previousValue: [mapMeaningUnit(first), mapMeaningUnit(second)],
+    projectId,
+    researcherNote,
+    step: "understanding",
+    targetId: mergedRow.id,
+    targetType: "meaning_unit"
+  });
+
+  return { saved: true, units: await loadMeaningUnits(projectId) };
 }
 
 export async function deleteMeaningUnit({
@@ -1640,19 +1937,22 @@ export async function deleteMeaningUnit({
     throw new Error(error.message);
   }
 
-  await Promise.all([
-    supabase.from("audit_events").insert({
-      project_id: data.project_id,
-      actor: "Researcher",
-      action: `Deleted MU ${data.unit_number}`,
-      target: data.id
-    }),
-    clearDerivedCategoryWork(data.project_id)
-  ]);
+  await renumberMeaningUnits(data.project_id);
+  await clearDerivedCategoryWork(data.project_id);
+  await recordEditLog({
+    action: `Deleted MU ${data.unit_number}`,
+    actionType: "meaning_unit_deleted",
+    previousValue: mapMeaningUnit(data),
+    projectId: data.project_id,
+    step: "understanding",
+    targetId: data.id,
+    targetType: "meaning_unit"
+  });
 
   return {
     deleted: true,
-    meaningUnit: mapMeaningUnit(data)
+    meaningUnit: mapMeaningUnit(data),
+    units: await loadMeaningUnits(data.project_id)
   };
 }
 
@@ -1662,7 +1962,13 @@ async function clearDerivedCategoryWork(projectId: string) {
     return;
   }
 
-  await supabase.from("category_systems").delete().eq("project_id", projectId);
+  await Promise.all([
+    supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase.from("integrity_reviews").delete().eq("project_id", projectId),
+    supabase.from("integration_relationships").delete().eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId)
+  ]);
 }
 
 export async function updateSegment({
@@ -2003,6 +2309,12 @@ export async function replaceMeaningUnitsForSegment({
     return { saved: false, reason: "Supabase is not configured.", units };
   }
 
+  const { data: previousUnits } = await supabase
+    .from("meaning_units")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("segment_id", segmentId);
+
   await supabase
     .from("meaning_units")
     .delete()
@@ -2043,11 +2355,16 @@ export async function replaceMeaningUnitsForSegment({
     .eq("project_id", projectId)
     .eq("segment_id", segmentId);
 
-  await supabase.from("audit_events").insert({
-    project_id: projectId,
+  await recordEditLog({
+    action: `Generated ${units.length} draft meaning units for ${segmentId}`,
+    actionType: "meaning_units_generated",
     actor: "AI",
-    action: `Generated ${units.length} meaning units for ${segmentId}`,
-    target: segmentId
+    newValue: (data ?? []).map(mapMeaningUnit),
+    previousValue: (previousUnits ?? []).map(mapMeaningUnit),
+    projectId,
+    step: "understanding",
+    targetId: segmentId,
+    targetType: "meaning_unit"
   });
 
   return {
@@ -2068,9 +2385,28 @@ export async function replaceMeaningUnitsFromAi({
     return { saved: false, reason: "Supabase is not configured.", units };
   }
 
-  await supabase.from("meaning_units").delete().eq("project_id", projectId);
+  const { data: previousUnits } = await supabase
+    .from("meaning_units")
+    .select("*")
+    .eq("project_id", projectId);
+
+  await Promise.all([
+    supabase.from("meaning_units").delete().eq("project_id", projectId),
+    clearDerivedCategoryWork(projectId)
+  ]);
 
   if (units.length === 0) {
+    await recordEditLog({
+      action: "Cleared draft meaning units",
+      actionType: "meaning_units_generated",
+      actor: "AI",
+      newValue: [],
+      previousValue: (previousUnits ?? []).map(mapMeaningUnit),
+      projectId,
+      step: "understanding",
+      targetId: projectId,
+      targetType: "meaning_unit"
+    });
     return { saved: true, units: [] };
   }
 
@@ -2103,11 +2439,16 @@ export async function replaceMeaningUnitsFromAi({
     throw new Error(error.message);
   }
 
-  await supabase.from("audit_events").insert({
-    project_id: projectId,
+  await recordEditLog({
+    action: `Generated ${units.length} draft meaning units from confirmed transcript`,
+    actionType: "meaning_units_generated",
     actor: "AI",
-    action: `Generated ${units.length} local AI meaning units`,
-    target: "Meaning Units"
+    newValue: (data ?? []).map(mapMeaningUnit),
+    previousValue: (previousUnits ?? []).map(mapMeaningUnit),
+    projectId,
+    step: "understanding",
+    targetId: projectId,
+    targetType: "meaning_unit"
   });
 
   return {
@@ -2387,6 +2728,45 @@ async function loadRawSegments(projectId: string) {
 
 async function loadSegments(projectId: string) {
   return (await loadRawSegments(projectId)).map(mapSegment);
+}
+
+async function loadRawMeaningUnits(projectId: string) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("meaning_units")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("unit_number", { ascending: true });
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
+}
+
+async function loadMeaningUnits(projectId: string) {
+  return (await loadRawMeaningUnits(projectId)).map(mapMeaningUnit);
+}
+
+async function renumberMeaningUnits(projectId: string) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return;
+  }
+
+  const units = await loadRawMeaningUnits(projectId);
+  await Promise.all(
+    units.map((unit, index) =>
+      supabase
+        .from("meaning_units")
+        .update({ unit_number: index + 1, updated_at: new Date().toISOString() })
+        .eq("id", unit.id)
+    )
+  );
 }
 
 async function renumberSegments(projectId: string, orderedIds?: string[]) {
