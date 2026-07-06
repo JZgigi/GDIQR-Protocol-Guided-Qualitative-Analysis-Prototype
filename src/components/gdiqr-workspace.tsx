@@ -24,8 +24,10 @@ import type {
   AuditEvent,
   CategoryMode,
   CategoryNode,
+  DatasetType,
   MeaningUnit,
   Project,
+  ProjectDataSource,
   ReviewerComment,
   ReviewerWorkspace,
   SegmentStatus,
@@ -106,6 +108,7 @@ const steps: Array<{
 interface GdiqrWorkspaceProps {
   aiProvider?: string;
   project: Project;
+  projectList?: Project[];
   transcript: string;
   segments: TranscriptSegment[];
   audioFiles: AudioFileRecord[];
@@ -123,6 +126,7 @@ interface GdiqrWorkspaceProps {
 export function GdiqrWorkspace({
   aiProvider = "ollama",
   project,
+  projectList = [project],
   transcript,
   segments,
   audioFiles,
@@ -136,9 +140,34 @@ export function GdiqrWorkspace({
   storageMode = "local",
   supabaseConfigured = false
 }: GdiqrWorkspaceProps) {
+  const isLocalOnlyMode = storageMode === "local";
   const [activeStep, setActiveStep] = useState<WorkflowStep>("pre-analysis");
   const [currentProject, setCurrentProject] = useState(project);
+  const [availableProjects, setAvailableProjects] = useState(projectList);
   const [projectTitle, setProjectTitle] = useState(project.title);
+  const [datasetType, setDatasetType] =
+    useState<DatasetType>(project.datasetType);
+  const [projectDataSource, setProjectDataSource] =
+    useState<ProjectDataSource>(project.dataSource);
+  const [dataSuitabilityConfirmed, setDataSuitabilityConfirmed] = useState(
+    project.dataSuitabilityConfirmed
+  );
+  const [projectResearcherNotes, setProjectResearcherNotes] = useState(
+    project.researcherNotes
+  );
+  const [createProjectExpanded, setCreateProjectExpanded] = useState(
+    !project.dataSuitabilityConfirmed && !isLocalOnlyMode
+  );
+  const [newProjectTitle, setNewProjectTitle] = useState("");
+  const [newResearchQuestion, setNewResearchQuestion] = useState("");
+  const [newStudyDescription, setNewStudyDescription] = useState("");
+  const [newDatasetType, setNewDatasetType] = useState<DatasetType>("open");
+  const [newDataSource, setNewDataSource] =
+    useState<ProjectDataSource>("SMARTEN");
+  const [newResearcherNotes, setNewResearcherNotes] = useState("");
+  const [newDataSuitabilityConfirmed, setNewDataSuitabilityConfirmed] =
+    useState(false);
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [researchQuestion, setResearchQuestion] = useState(
     project.researchQuestion
   );
@@ -264,9 +293,9 @@ export function GdiqrWorkspace({
   const transcriptTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const segmentTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const meaningUnitAbortControllerRef = useRef<AbortController | null>(null);
-  const isLocalOnlyMode = storageMode === "local";
 
   async function loadRunLogs() {
+  try {
     const response = await fetch("/api/run-logs", { cache: "no-store" });
     if (!response.ok) {
       return;
@@ -275,9 +304,14 @@ export function GdiqrWorkspace({
       logs?: RunLog[];
     };
     setRunLogs(result.logs ?? []);
+  } catch {
+    // Ignore transient polling failures during dev-server reloads,
+    // page navigation, or temporary browser fetch interruption.
   }
+}
 
-  async function clearFinishedRunLogs() {
+async function clearFinishedRunLogs() {
+  try {
     const response = await fetch("/api/run-logs", {
       method: "DELETE"
     });
@@ -287,7 +321,14 @@ export function GdiqrWorkspace({
     if (response.ok) {
       setRunLogs(result.logs ?? []);
     }
+  } catch (error) {
+    setApiStatus(
+      error instanceof Error
+        ? error.message
+        : "Could not clear run logs."
+    );
   }
+}
 
   useEffect(() => {
     let cancelled = false;
@@ -409,6 +450,11 @@ export function GdiqrWorkspace({
   const unresolvedHighRiskCount = pendingHighRiskItems.length;
   const canProceedWithTranscript =
     unresolvedHighRiskCount === 0 || privacyOverrideAccepted;
+  const identifiableSensitiveDatasetSelected =
+    datasetType === "identifiable_sensitive" && !isLocalOnlyMode;
+  const dataSuitabilityBlocksAnalysis =
+    !isLocalOnlyMode &&
+    (!dataSuitabilityConfirmed || identifiableSensitiveDatasetSelected);
   const activeSensitiveItem =
     sensitiveReviewItems.find((item) => item.id === activeSensitiveItemId) ??
     null;
@@ -599,6 +645,10 @@ export function GdiqrWorkspace({
   function applyWorkspace(workspace: WorkspaceData) {
     setCurrentProject(workspace.project);
     setProjectTitle(workspace.project.title);
+    setDatasetType(workspace.project.datasetType);
+    setProjectDataSource(workspace.project.dataSource);
+    setDataSuitabilityConfirmed(workspace.project.dataSuitabilityConfirmed);
+    setProjectResearcherNotes(workspace.project.researcherNotes);
     setResearchQuestion(workspace.project.researchQuestion);
     setStudyDescription(normaliseResearcherFacingText(workspace.project.studyDescription));
     setProjectLanguage(workspace.project.language);
@@ -629,12 +679,35 @@ export function GdiqrWorkspace({
 
   async function saveProjectSetup() {
     setIsSavingProject(true);
+    if (!dataSuitabilityConfirmed) {
+      setApiStatus(
+        "Confirm the data suitability notice before saving project setup or uploading data."
+      );
+      setIsSavingProject(false);
+      return;
+    }
+
+    if (datasetType === "identifiable_sensitive" && !isLocalOnlyMode) {
+      setApiStatus(
+        "Identifiable sensitive data is not supported in the cloud-assisted v1.0 research release. Use an approved secure/local deployment before uploading that data."
+      );
+      setIsSavingProject(false);
+      return;
+    }
+
     if (isLocalOnlyMode) {
       const now = new Date().toISOString();
       setCurrentProject((current) => ({
         ...current,
+        dataSource: projectDataSource,
+        dataSuitabilityConfirmed,
+        dataSuitabilityConfirmedAt: dataSuitabilityConfirmed
+          ? current.dataSuitabilityConfirmedAt ?? now
+          : undefined,
+        datasetType,
         language: projectLanguage,
         lightInterpretation,
+        researcherNotes: projectResearcherNotes,
         researchQuestion,
         studyDescription,
         title: projectTitle,
@@ -654,9 +727,13 @@ export function GdiqrWorkspace({
     try {
       const response = await fetch("/api/project", {
         body: JSON.stringify({
+          dataSource: projectDataSource,
+          dataSuitabilityConfirmed,
+          datasetType,
           language: projectLanguage,
           lightInterpretation,
           projectId: currentProject.id,
+          researcherNotes: projectResearcherNotes,
           researchQuestion,
           studyDescription,
           title: projectTitle
@@ -676,7 +753,19 @@ export function GdiqrWorkspace({
       }
 
       if (result.project) {
-        setCurrentProject(result.project);
+        const nextProject = result.project;
+        setCurrentProject(nextProject);
+        setDatasetType(nextProject.datasetType);
+        setProjectDataSource(nextProject.dataSource);
+        setDataSuitabilityConfirmed(nextProject.dataSuitabilityConfirmed);
+        setProjectResearcherNotes(nextProject.researcherNotes);
+        setAvailableProjects((current) =>
+          current.some((item) => item.id === nextProject.id)
+            ? current.map((item) =>
+                item.id === nextProject.id ? nextProject : item
+              )
+            : [nextProject, ...current]
+        );
       }
       setProjectSetupSavedAt(new Date().toISOString());
       setApiStatus("Project setup saved to Supabase");
@@ -686,6 +775,125 @@ export function GdiqrWorkspace({
       );
     } finally {
       setIsSavingProject(false);
+    }
+  }
+
+
+  function openProject(projectId: string) {
+    if (!projectId || projectId === currentProject.id) {
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.set("projectId", projectId);
+    window.location.href = url.toString();
+  }
+
+  function ensureDataSuitabilityConfirmed(actionLabel: string) {
+    if (isLocalOnlyMode) {
+      return true;
+    }
+
+    if (!dataSuitabilityConfirmed) {
+      setApiStatus(
+        `Confirm the data suitability notice before ${actionLabel}. This v1.0 release is for open, public, or anonymised datasets only.`
+      );
+      setCreateProjectExpanded(true);
+      return false;
+    }
+
+    if (datasetType === "identifiable_sensitive") {
+      setApiStatus(
+        "Identifiable sensitive data is not supported in the cloud-assisted v1.0 research release. Use an approved secure/local deployment before uploading that data."
+      );
+      setCreateProjectExpanded(true);
+      return false;
+    }
+
+    return true;
+  }
+
+  async function createNewProject() {
+    if (isLocalOnlyMode) {
+      setApiStatus(
+        "Project creation is stored only in browser state in local-only mode. Use the current workspace or switch to Supabase storage for a project list."
+      );
+      return;
+    }
+
+    if (
+      !newProjectTitle.trim() ||
+      !newResearchQuestion.trim() ||
+      !newStudyDescription.trim() ||
+      !newResearcherNotes.trim()
+    ) {
+      setApiStatus(
+        "Complete the project title, research question, study description, and researcher notes before creating a project."
+      );
+      return;
+    }
+
+    if (!newDataSuitabilityConfirmed) {
+      setApiStatus(
+        "Confirm the data suitability notice before creating a v1.0 research-release project."
+      );
+      return;
+    }
+
+    if (newDatasetType === "identifiable_sensitive") {
+      setApiStatus(
+        "Identifiable sensitive data is not supported in the cloud-assisted v1.0 research release. Choose open/anonymised data or use an approved secure/local deployment."
+      );
+      return;
+    }
+
+    setIsCreatingProject(true);
+    setApiStatus("Creating project...");
+
+    try {
+      const response = await fetch("/api/project", {
+        body: JSON.stringify({
+          dataSource: newDataSource,
+          dataSuitabilityConfirmed: newDataSuitabilityConfirmed,
+          datasetType: newDatasetType,
+          language: projectLanguage,
+          lightInterpretation,
+          researcherNotes: newResearcherNotes,
+          researchQuestion: newResearchQuestion,
+          studyDescription: newStudyDescription,
+          title: newProjectTitle
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        created?: boolean;
+        error?: string;
+        project?: Project;
+        reason?: string;
+      };
+
+      if (!response.ok || !result.created || !result.project) {
+        setApiStatus(
+          result.error ?? result.reason ?? "Project creation failed."
+        );
+        return;
+      }
+
+      const createdProject = result.project;
+      setAvailableProjects((current) => [
+        createdProject,
+        ...current.filter((item) => item.id !== createdProject.id)
+      ]);
+      setApiStatus("Project created. Opening the new workspace...");
+      const url = new URL(window.location.href);
+      url.searchParams.set("projectId", createdProject.id);
+      window.location.href = url.toString();
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error ? error.message : "Project creation failed."
+      );
+    } finally {
+      setIsCreatingProject(false);
     }
   }
 
@@ -709,6 +917,10 @@ export function GdiqrWorkspace({
       setApiStatus(
         "Audio upload is disabled in local-only sharing mode because raw audio would need special temporary handling. Please import an anonymised transcript for this prototype test."
       );
+      return;
+    }
+
+    if (!ensureDataSuitabilityConfirmed("uploading audio")) {
       return;
     }
 
@@ -817,6 +1029,10 @@ export function GdiqrWorkspace({
       return;
     }
 
+    if (!ensureDataSuitabilityConfirmed("importing a transcript")) {
+      return;
+    }
+
     setIsImportingTranscript(true);
     setTranscriptPreparationStage(
       forceRuleBased
@@ -913,6 +1129,10 @@ export function GdiqrWorkspace({
   }
 
   async function saveTranscriptVersion() {
+    if (!ensureDataSuitabilityConfirmed("saving a transcript")) {
+      return;
+    }
+
     if (!canProceedWithTranscript) {
       setApiStatus(
         "This transcript may still contain identifiable or sensitive information. Please review high-risk items before saving."
@@ -985,6 +1205,9 @@ export function GdiqrWorkspace({
   async function confirmTranscriptForAnalysis() {
     if (!editableTranscript.trim()) {
       setApiStatus("Add or import a transcript before confirming it for analysis.");
+      return;
+    }
+    if (!ensureDataSuitabilityConfirmed("confirming a transcript for analysis")) {
       return;
     }
     if (!canProceedWithTranscript) {
@@ -3111,6 +3334,13 @@ export function GdiqrWorkspace({
       exportNote:
         "This export may contain draft assistant-supported material. Review all outputs against transcript evidence before use.",
       project: currentProject,
+      dataSuitability: {
+        datasetType: currentProject.datasetType,
+        dataSource: currentProject.dataSource,
+        confirmed: currentProject.dataSuitabilityConfirmed,
+        confirmedAt: currentProject.dataSuitabilityConfirmedAt,
+        researcherNotes: currentProject.researcherNotes
+      },
       transcript: editableTranscript,
       segments: displaySegments,
       audioFiles: displayAudioFiles,
@@ -3149,6 +3379,10 @@ export function GdiqrWorkspace({
       `Methodological frame: ${METHODOLOGICAL_FRAME}`,
       "Note: assistant-supported drafts need researcher review against transcript evidence before use.",
       `Language: ${currentProject.language}`,
+      `Dataset type: ${currentProject.datasetType}`,
+      `Data source: ${currentProject.dataSource}`,
+      `Data suitability confirmed: ${currentProject.dataSuitabilityConfirmed ? "Yes" : "No"}`,
+      `Researcher notes: ${currentProject.researcherNotes || "Not set"}`,
       "",
       "Transcript",
       editableTranscript || "No transcript yet.",
@@ -3272,6 +3506,269 @@ export function GdiqrWorkspace({
 
       <div className="layout">
         <main className="main">
+          <section className="mini-card soft" aria-label="Project setup and data suitability">
+            <div className="section-header">
+              <div>
+                <span className="badge">v1.0 research release</span>
+                <h2 className="section-title">Project setup and data suitability</h2>
+                <p className="section-copy">
+                  Create or select a project before upload. This research release is intended for open, public, or anonymised datasets only.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid two">
+              <div>
+                <label className="label" htmlFor="project-switcher">
+                  Existing project
+                </label>
+                <select
+                  className="select"
+                  id="project-switcher"
+                  onChange={(event) => openProject(event.target.value)}
+                  value={currentProject.id}
+                >
+                  {availableProjects.length === 0 && (
+                    <option value={currentProject.id}>{currentProject.title}</option>
+                  )}
+                  {availableProjects.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.title || "Untitled GDI-QR project"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="project-title">
+                  Project title
+                </label>
+                <input
+                  className="field"
+                  id="project-title"
+                  onChange={(event) => setProjectTitle(event.target.value)}
+                  value={projectTitle}
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="project-dataset-type">
+                  Dataset type
+                </label>
+                <select
+                  className="select"
+                  id="project-dataset-type"
+                  onChange={(event) => {
+                    const value = event.target.value as DatasetType;
+                    setDatasetType(value);
+                    setDataSuitabilityConfirmed(
+                      value === "identifiable_sensitive" ? false : dataSuitabilityConfirmed
+                    );
+                  }}
+                  value={datasetType}
+                >
+                  <option value="open">Open / public dataset</option>
+                  <option value="anonymised">Anonymised or de-identified dataset</option>
+                  <option value="identifiable_sensitive">Identifiable sensitive data</option>
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="project-data-source">
+                  Data source
+                </label>
+                <select
+                  className="select"
+                  id="project-data-source"
+                  onChange={(event) =>
+                    setProjectDataSource(event.target.value as ProjectDataSource)
+                  }
+                  value={projectDataSource}
+                >
+                  <option value="SMARTEN">SMARTEN</option>
+                  <option value="photovoice">Photovoice</option>
+                  <option value="interview">Interview</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+            </div>
+
+            <label className="label" htmlFor="project-researcher-notes">
+              Researcher notes
+            </label>
+            <textarea
+              className="textarea"
+              id="project-researcher-notes"
+              onChange={(event) => setProjectResearcherNotes(event.target.value)}
+              placeholder="Briefly document the dataset source, de-identification status, or any project-level notes that should appear in the export."
+              value={projectResearcherNotes}
+            />
+
+            <div className={dataSuitabilityBlocksAnalysis ? "mini-card warning-card" : "mini-card soft"}>
+              <span className="label">Data suitability notice</span>
+              <p className="small">
+                This research release is intended for open, public, or anonymised datasets only. Please do not upload identifiable or highly sensitive data unless an approved secure/local deployment is in place.
+              </p>
+              {datasetType === "identifiable_sensitive" && !isLocalOnlyMode && (
+                <p className="small strong-warning">
+                  Identifiable sensitive data is blocked in this cloud-assisted v1.0 release. Choose an open/anonymised dataset or use the later secure/local deployment.
+                </p>
+              )}
+              <label className="scope-option">
+                <input
+                  checked={dataSuitabilityConfirmed}
+                  disabled={datasetType === "identifiable_sensitive" && !isLocalOnlyMode}
+                  onChange={(event) =>
+                    setDataSuitabilityConfirmed(event.target.checked)
+                  }
+                  type="checkbox"
+                />
+                I confirm this project will use open, public, anonymised, or otherwise approved data suitable for this v1.0 release.
+              </label>
+            </div>
+
+            <div className="button-row">
+              <button
+                className="button primary"
+                disabled={isSavingProject}
+                onClick={() => void saveProjectSetup()}
+                type="button"
+              >
+                {isSavingProject ? "Saving project..." : "Save project setup"}
+              </button>
+              <button
+                className="button"
+                onClick={() => setCreateProjectExpanded((current) => !current)}
+                type="button"
+              >
+                {createProjectExpanded ? "Hide create project" : "Create new project"}
+              </button>
+              {projectSetupSavedAt && (
+                <span className="small">
+                  Last saved: {new Date(projectSetupSavedAt).toLocaleTimeString()}
+                </span>
+              )}
+            </div>
+
+            {createProjectExpanded && (
+              <div className="mini-card">
+                <span className="label">Create Project</span>
+                <div className="grid two">
+                  <div>
+                    <label className="label" htmlFor="new-project-title">
+                      Project title
+                    </label>
+                    <input
+                      className="field"
+                      id="new-project-title"
+                      onChange={(event) => setNewProjectTitle(event.target.value)}
+                      value={newProjectTitle}
+                    />
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="new-data-source">
+                      Data source
+                    </label>
+                    <select
+                      className="select"
+                      id="new-data-source"
+                      onChange={(event) =>
+                        setNewDataSource(event.target.value as ProjectDataSource)
+                      }
+                      value={newDataSource}
+                    >
+                      <option value="SMARTEN">SMARTEN</option>
+                      <option value="photovoice">Photovoice</option>
+                      <option value="interview">Interview</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="new-dataset-type">
+                      Dataset type
+                    </label>
+                    <select
+                      className="select"
+                      id="new-dataset-type"
+                      onChange={(event) => {
+                        const value = event.target.value as DatasetType;
+                        setNewDatasetType(value);
+                        if (value === "identifiable_sensitive") {
+                          setNewDataSuitabilityConfirmed(false);
+                        }
+                      }}
+                      value={newDatasetType}
+                    >
+                      <option value="open">Open / public dataset</option>
+                      <option value="anonymised">Anonymised or de-identified dataset</option>
+                      <option value="identifiable_sensitive">Identifiable sensitive data</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="new-research-question">
+                      Research question
+                    </label>
+                    <textarea
+                      className="textarea"
+                      id="new-research-question"
+                      onChange={(event) => setNewResearchQuestion(event.target.value)}
+                      value={newResearchQuestion}
+                    />
+                  </div>
+                </div>
+                <label className="label" htmlFor="new-study-description">
+                  Study description
+                </label>
+                <textarea
+                  className="textarea"
+                  id="new-study-description"
+                  onChange={(event) => setNewStudyDescription(event.target.value)}
+                  value={newStudyDescription}
+                />
+                <label className="label" htmlFor="new-researcher-notes">
+                  Researcher notes
+                </label>
+                <textarea
+                  className="textarea"
+                  id="new-researcher-notes"
+                  onChange={(event) => setNewResearcherNotes(event.target.value)}
+                  value={newResearcherNotes}
+                />
+                <div className="mini-card soft">
+                  <span className="label">Required confirmation</span>
+                  <p className="small">
+                    This research release is intended for open, public, or anonymised datasets only. Please do not upload identifiable or highly sensitive data unless an approved secure/local deployment is in place.
+                  </p>
+                  <label className="scope-option">
+                    <input
+                      checked={newDataSuitabilityConfirmed}
+                      disabled={newDatasetType === "identifiable_sensitive"}
+                      onChange={(event) =>
+                        setNewDataSuitabilityConfirmed(event.target.checked)
+                      }
+                      type="checkbox"
+                    />
+                    I confirm the dataset is suitable for this v1.0 research release.
+                  </label>
+                </div>
+                <button
+                  className="button primary"
+                  disabled={isCreatingProject}
+                  onClick={() => void createNewProject()}
+                  type="button"
+                >
+                  {isCreatingProject ? "Creating project..." : "Create project"}
+                </button>
+              </div>
+            )}
+          </section>
+
+          {dataSuitabilityBlocksAnalysis && (
+            <div className="mini-card warning-card">
+              <span className="label">Action required before upload or analysis</span>
+              <p className="small">
+                Confirm data suitability for an open/public/anonymised dataset before uploading transcripts, uploading audio, or generating analysis outputs.
+              </p>
+            </div>
+          )}
+
           <div className="top-stepper" aria-label="GDI-QR workflow progress">
             {guidedSteps.map((step, index) => (
               <button
@@ -3279,7 +3776,14 @@ export function GdiqrWorkspace({
                   activeStep === step.id ? "active" : ""
                 } ${completedSteps.has(step.id) ? "complete" : ""}`}
                 key={step.id}
-                onClick={() => setActiveStep(step.id)}
+                disabled={dataSuitabilityBlocksAnalysis && step.id !== "pre-analysis"}
+                onClick={() => {
+                  if (dataSuitabilityBlocksAnalysis && step.id !== "pre-analysis") {
+                    void ensureDataSuitabilityConfirmed("moving beyond project setup");
+                    return;
+                  }
+                  setActiveStep(step.id);
+                }}
                 type="button"
               >
                 <span className="top-step-number">{index + 1}</span>
@@ -3519,7 +4023,7 @@ export function GdiqrWorkspace({
                         <input
                           accept="audio/*,.m4a,.mp3,.mp4,.wav,.webm,.ogg,.aac"
                           className="field"
-                          disabled={isLocalOnlyMode}
+                          disabled={isLocalOnlyMode || dataSuitabilityBlocksAnalysis}
                           id="audio-file"
                           onChange={(event) =>
                             setSelectedAudioFile(event.target.files?.[0] ?? null)
@@ -3540,7 +4044,10 @@ export function GdiqrWorkspace({
                       <button
                         className="button primary"
                         disabled={
-                          isLocalOnlyMode || isUploadingAudio || !selectedAudioFile
+                          isLocalOnlyMode ||
+                          dataSuitabilityBlocksAnalysis ||
+                          isUploadingAudio ||
+                          !selectedAudioFile
                         }
                         onClick={uploadAndTranscribeAudio}
                         type="button"
@@ -3608,6 +4115,7 @@ export function GdiqrWorkspace({
                         <input
                           accept=".txt,.md,.vtt,.srt,.docx,.pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
                           className="field"
+                          disabled={dataSuitabilityBlocksAnalysis}
                           id="transcript-file"
                           onChange={(event) =>
                             void loadTranscriptFile(event.target.files?.[0] ?? null)
@@ -3630,7 +4138,11 @@ export function GdiqrWorkspace({
                     />
                     <button
                       className="button primary"
-                      disabled={isImportingTranscript || !transcriptImportText.trim()}
+                      disabled={
+                        dataSuitabilityBlocksAnalysis ||
+                        isImportingTranscript ||
+                        !transcriptImportText.trim()
+                      }
                       onClick={() => void importTranscript(false)}
                       type="button"
                     >
@@ -3641,7 +4153,11 @@ export function GdiqrWorkspace({
                     </button>
                     <button
                       className="button"
-                      disabled={isImportingTranscript || !transcriptImportText.trim()}
+                      disabled={
+                        dataSuitabilityBlocksAnalysis ||
+                        isImportingTranscript ||
+                        !transcriptImportText.trim()
+                      }
                       onClick={() => void importTranscript(true)}
                       type="button"
                     >
@@ -3899,6 +4415,7 @@ export function GdiqrWorkspace({
                     disabled={
                       isConfirmingTranscript ||
                       !editableTranscript.trim() ||
+                      dataSuitabilityBlocksAnalysis ||
                       !canProceedWithTranscript
                     }
                     onClick={confirmTranscriptForAnalysis}
@@ -3931,7 +4448,11 @@ export function GdiqrWorkspace({
                   </button>
                   <button
                     className="button"
-                    disabled={!editableTranscript.trim() || !canProceedWithTranscript}
+                    disabled={
+                      !editableTranscript.trim() ||
+                      dataSuitabilityBlocksAnalysis ||
+                      !canProceedWithTranscript
+                    }
                     onClick={saveTranscriptVersion}
                     type="button"
                   >
