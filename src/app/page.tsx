@@ -1,13 +1,28 @@
 import { GdiqrWorkspace } from "@/components/gdiqr-workspace";
-import { getLocalWorkspace, getWorkspace } from "@/lib/gdiqr-repository";
+import {
+  getLocalWorkspace,
+  getWorkspace,
+  listProjects
+} from "@/lib/gdiqr-repository";
 import { getStorageMode } from "@/lib/storage-mode";
 
 export const dynamic = "force-dynamic";
 
-export default async function Home() {
+export default async function Home(props: {
+  searchParams?: Promise<{ projectId?: string | string[] }>;
+}) {
   const storageMode = getStorageMode();
+  const searchParams = (await props.searchParams) ?? {};
+  const selectedProjectId =
+    typeof searchParams.projectId === "string"
+      ? searchParams.projectId
+      : undefined;
   const workspace =
-    storageMode === "local" ? getLocalWorkspace() : await getWorkspace();
+    storageMode === "local"
+      ? getLocalWorkspace()
+      : await getWorkspace(selectedProjectId);
+  const projectList =
+    storageMode === "local" ? [workspace.project] : await listProjects();
 
   return (
     <GdiqrWorkspace
@@ -19,6 +34,7 @@ export default async function Home() {
       integratedNarrative={workspace.integratedNarrative}
       meaningUnits={workspace.meaningUnits}
       project={workspace.project}
+      projectList={projectList}
       reviewerComments={workspace.reviewerComments}
       segments={workspace.segments}
       supabaseConfigured={workspace.supabaseConfigured}

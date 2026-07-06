@@ -370,6 +370,135 @@ export async function saveTranscriptVersion({
   return { saved: true, transcript: data };
 }
 
+
+export async function listProjects(): Promise<Project[]> {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*")
+    .order("updated_at", { ascending: false });
+
+  if (error) {
+    console.warn("Could not list projects:", error.message);
+    return [];
+  }
+
+  return (data ?? []).map(mapProject);
+}
+
+export async function createProject({
+  dataSource,
+  dataSuitabilityConfirmed,
+  datasetType,
+  language = "English",
+  lightInterpretation = false,
+  researcherNotes,
+  researchQuestion,
+  studyDescription,
+  title
+}: {
+  dataSource: ProjectDataSource;
+  dataSuitabilityConfirmed: boolean;
+  datasetType: DatasetType;
+  language?: Project["language"];
+  lightInterpretation?: boolean;
+  researcherNotes: string;
+  researchQuestion: string;
+  studyDescription: string;
+  title: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { created: false, reason: "Supabase is not configured." };
+  }
+
+  const createdAt = new Date().toISOString();
+  const projectId = `proj_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+
+  const { data, error } = await supabase
+    .from("projects")
+    .insert({
+      id: projectId,
+      title: title.trim(),
+      research_question: researchQuestion.trim(),
+      study_description: studyDescription.trim(),
+      language,
+      protocol: "GDIQR",
+      light_interpretation: lightInterpretation,
+      status: "Project created — transcript not uploaded",
+      updated_at: createdAt,
+      dataset_type: datasetType,
+      data_source: dataSource,
+      data_suitability_confirmed: dataSuitabilityConfirmed,
+      data_suitability_confirmed_at: dataSuitabilityConfirmed
+        ? createdAt
+        : null,
+      researcher_notes: researcherNotes.trim(),
+      metadata: {
+        release: "v1.0 research release",
+        data_suitability_notice:
+          "This research release is intended for open, public, or anonymised datasets only. Please do not upload identifiable or highly sensitive data unless an approved secure/local deployment is in place."
+      }
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await supabase.from("pre_analysis_notes").upsert(
+    {
+      project_id: projectId,
+      research_question: researchQuestion.trim(),
+      study_description: studyDescription.trim(),
+      researcher_position: "",
+      contextual_notes: "",
+      initial_sensitising_concepts: "",
+      data_familiarisation_notes: "",
+      updated_at: createdAt
+    },
+    { onConflict: "project_id" }
+  );
+
+  await recordEditLog({
+    action: "Created project",
+    actionType: "project_created",
+    newValue: data,
+    projectId,
+    researcherNote: researcherNotes.trim() || undefined,
+    step: "pre-analysis",
+    targetId: projectId,
+    targetType: "project"
+  });
+
+  if (dataSuitabilityConfirmed) {
+    await recordEditLog({
+      action: "Confirmed data suitability notice",
+      actionType: "data_suitability_confirmed",
+      newValue: {
+        dataSource,
+        datasetType,
+        dataSuitabilityConfirmed: true,
+        dataSuitabilityConfirmedAt: data.data_suitability_confirmed_at
+      },
+      projectId,
+      researcherNote: researcherNotes.trim() || undefined,
+      step: "pre-analysis",
+      targetId: projectId,
+      targetType: "project"
+    });
+  }
+
+  return { created: true, project: mapProject(data) };
+}
+
 export async function updateProjectSettings({
   dataSource,
   dataSuitabilityConfirmed,
@@ -399,6 +528,11 @@ export async function updateProjectSettings({
   }
 
   const updatedAt = new Date().toISOString();
+  const { data: previousProject } = await supabase
+    .from("projects")
+    .select("*")
+    .eq("id", projectId)
+    .maybeSingle();
   const projectUpsert: Database["public"]["Tables"]["projects"]["Insert"] = {
     id: projectId,
     title: title.trim() || "Untitled GDI-QR project",
@@ -437,11 +571,21 @@ export async function updateProjectSettings({
     throw new Error(error.message);
   }
 
-  await supabase.from("audit_events").insert({
-    project_id: projectId,
-    actor: "Researcher",
-    action: "Updated project setup",
-    target: data.title
+  await recordEditLog({
+    action:
+      !previousProject?.data_suitability_confirmed && data.data_suitability_confirmed
+        ? "Updated project setup and confirmed data suitability notice"
+        : "Updated project setup",
+    actionType:
+      !previousProject?.data_suitability_confirmed && data.data_suitability_confirmed
+        ? "data_suitability_confirmed"
+        : "project_updated",
+    newValue: data,
+    previousValue: previousProject,
+    projectId,
+    step: "pre-analysis",
+    targetId: projectId,
+    targetType: "project"
   });
 
   return { saved: true, project: mapProject(data) };
