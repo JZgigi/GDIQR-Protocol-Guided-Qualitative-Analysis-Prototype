@@ -105,7 +105,12 @@ export async function POST(request: NextRequest) {
         status: "Local-only draft workspace",
         studyDescription: "",
         title: "Local-only prototype workspace",
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
+        datasetType: "open",
+        dataSource: "other",
+        dataSuitabilityConfirmed: false,
+        researcherNotes: "",
+        metadata: {},
       };
     const existingCategories = workspace?.categories ?? body.categories ?? [];
     const result = await generateCategories({

@@ -1,23 +1,42 @@
 import type {
   AudioFileRecord,
+  AuditActionType,
+  AuditActor,
   AuditEvent,
+  AuditTargetType,
   CategoryMode,
   CategoryNode,
+  DatasetType,
+  EditLog,
+  ExportRecord,
+  IntegrityReviewItem,
+  IntegrationRelationship,
   MeaningUnit,
+  PreAnalysisNotes,
   Project,
+  ProjectDataSource,
   ReviewerComment,
   ReviewerIssueStatus,
   TranscriptionJobRecord,
-  TranscriptSegment
+  TranscriptSegment,
+  WorkflowStep
 } from "@/lib/types";
 import { createSupabaseServerClient, hasSupabaseConfig } from "./supabase/server";
-import type { Database } from "./supabase/database.types";
+import type { Database, Json } from "./supabase/database.types";
 import { autoSplitTranscript, type AutoSegmentMode } from "./auto-segmenter";
 
 type AudioFileRow = Database["public"]["Tables"]["audio_files"]["Row"];
 type CategoryRow = Database["public"]["Tables"]["categories"]["Row"];
 type TranscriptionJobRow =
   Database["public"]["Tables"]["transcription_jobs"]["Row"];
+type EditLogRow = Database["public"]["Tables"]["edit_logs"]["Row"];
+type ExportRow = Database["public"]["Tables"]["exports"]["Row"];
+type IntegrityReviewItemRow =
+  Database["public"]["Tables"]["integrity_review_items"]["Row"];
+type IntegrationRelationshipRow =
+  Database["public"]["Tables"]["integration_relationships"]["Row"];
+type PreAnalysisNotesRow =
+  Database["public"]["Tables"]["pre_analysis_notes"]["Row"];
 
 export interface WorkspaceData {
   project: Project;
@@ -29,7 +48,13 @@ export interface WorkspaceData {
   categories: CategoryNode[];
   reviewerComments: ReviewerComment[];
   auditEvents: AuditEvent[];
+  editLogs: EditLog[];
+  preAnalysisNotes: PreAnalysisNotes;
+  integrationRelationships: IntegrationRelationship[];
+  integrityReviewItems: IntegrityReviewItem[];
+  exportRecords: ExportRecord[];
   integratedNarrative: string;
+  integrationMemo: string;
   dataSource: "local" | "supabase" | "unconfigured";
   supabaseConfigured: boolean;
 }
@@ -45,6 +70,25 @@ interface TranscriptPrivacyMetadata {
   sensitiveItemsReviewedAt?: string | null;
 }
 
+function createEmptyPreAnalysisNotes(
+  projectId = defaultProjectId,
+  project?: Pick<Project, "researchQuestion" | "studyDescription">
+): PreAnalysisNotes {
+  const now = new Date().toISOString();
+  return {
+    id: `pre_${projectId}`,
+    projectId,
+    researchQuestion: project?.researchQuestion ?? "",
+    studyDescription: project?.studyDescription ?? "",
+    researcherPosition: "",
+    contextualNotes: "",
+    initialSensitisingConcepts: "",
+    dataFamiliarisationNotes: "",
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
 export function getEmptyWorkspace(reason = "Supabase is not configured."): WorkspaceData {
   return {
     project: {
@@ -56,7 +100,12 @@ export function getEmptyWorkspace(reason = "Supabase is not configured."): Works
       protocol: "GDIQR",
       lightInterpretation: false,
       status: "Needs Supabase configuration",
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      datasetType: "open",
+      dataSource: "other",
+      dataSuitabilityConfirmed: false,
+      researcherNotes: "",
+      metadata: {}
     },
     transcript: "",
     segments: [],
@@ -66,7 +115,13 @@ export function getEmptyWorkspace(reason = "Supabase is not configured."): Works
     categories: [],
     reviewerComments: [],
     auditEvents: [],
+    editLogs: [],
+    preAnalysisNotes: createEmptyPreAnalysisNotes(),
+    integrationRelationships: [],
+    integrityReviewItems: [],
+    exportRecords: [],
     integratedNarrative: "",
+    integrationMemo: "",
     dataSource: "unconfigured",
     supabaseConfigured: hasSupabaseConfig()
   };
@@ -106,7 +161,12 @@ export async function getWorkspace(
     meaningUnitsResult,
     categorySystemResult,
     reviewerCommentsResult,
-    auditEventsResult
+    auditEventsResult,
+    preAnalysisResult,
+    integrationRelationshipsResult,
+    integrityReviewItemsResult,
+    editLogsResult,
+    exportRecordsResult
   ] = await Promise.all([
     supabase.from("projects").select("*").eq("id", projectId).maybeSingle(),
     supabase
@@ -154,7 +214,32 @@ export async function getWorkspace(
       .from("audit_events")
       .select("*")
       .eq("project_id", projectId)
-      .order("event_timestamp", { ascending: true })
+      .order("event_timestamp", { ascending: true }),
+    supabase
+      .from("pre_analysis_notes")
+      .select("*")
+      .eq("project_id", projectId)
+      .maybeSingle(),
+    supabase
+      .from("integration_relationships")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("integrity_review_items")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("edit_logs")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("exports")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("generated_at", { ascending: false })
   ]);
 
   const firstError =
@@ -166,7 +251,12 @@ export async function getWorkspace(
     meaningUnitsResult.error ??
     categorySystemResult.error ??
     reviewerCommentsResult.error ??
-    auditEventsResult.error;
+    auditEventsResult.error ??
+    preAnalysisResult.error ??
+    integrationRelationshipsResult.error ??
+    integrityReviewItemsResult.error ??
+    editLogsResult.error ??
+    exportRecordsResult.error;
 
   if (firstError) {
     console.warn("Could not load Supabase workspace:", firstError.message);
@@ -202,8 +292,10 @@ export async function getWorkspace(
     }
   }
 
+  const mappedProject = mapProject(projectResult.data);
+
   return {
-    project: mapProject(projectResult.data),
+    project: mappedProject,
     transcript: transcriptResult.data?.content ?? "",
     segments: (segmentsResult.data ?? []).map(mapSegment),
     audioFiles: (audioFilesResult.data ?? []).map(mapAudioFile),
@@ -216,7 +308,19 @@ export async function getWorkspace(
       mapReviewerComment
     ),
     auditEvents: (auditEventsResult.data ?? []).map(mapAuditEvent),
+    editLogs: (editLogsResult.data ?? []).map(mapEditLog),
+    preAnalysisNotes: preAnalysisResult.data
+      ? mapPreAnalysisNotes(preAnalysisResult.data)
+      : createEmptyPreAnalysisNotes(projectId, mappedProject),
+    integrationRelationships: (integrationRelationshipsResult.data ?? []).map(
+      mapIntegrationRelationship
+    ),
+    integrityReviewItems: (integrityReviewItemsResult.data ?? []).map(
+      mapIntegrityReviewItem
+    ),
+    exportRecords: (exportRecordsResult.data ?? []).map(mapExportRecord),
     integratedNarrative: categorySystemResult.data?.integrated_narrative ?? "",
+    integrationMemo: categorySystemResult.data?.integration_memo ?? "",
     dataSource: "supabase",
     supabaseConfigured: true
   };
@@ -267,16 +371,24 @@ export async function saveTranscriptVersion({
 }
 
 export async function updateProjectSettings({
+  dataSource,
+  dataSuitabilityConfirmed,
+  datasetType,
   language,
   lightInterpretation,
   projectId = defaultProjectId,
+  researcherNotes,
   researchQuestion,
   studyDescription,
   title
 }: {
+  dataSource?: ProjectDataSource;
+  dataSuitabilityConfirmed?: boolean;
+  datasetType?: DatasetType;
   language: Project["language"];
   lightInterpretation: boolean;
   projectId?: string;
+  researcherNotes?: string;
   researchQuestion: string;
   studyDescription: string;
   title: string;
@@ -287,19 +399,37 @@ export async function updateProjectSettings({
   }
 
   const updatedAt = new Date().toISOString();
+  const projectUpsert: Database["public"]["Tables"]["projects"]["Insert"] = {
+    id: projectId,
+    title: title.trim() || "Untitled GDI-QR project",
+    research_question: researchQuestion.trim(),
+    study_description: studyDescription.trim(),
+    language,
+    protocol: "GDIQR",
+    light_interpretation: lightInterpretation,
+    status: "Ready for local testing",
+    updated_at: updatedAt
+  };
+
+  if (datasetType !== undefined) {
+    projectUpsert.dataset_type = datasetType;
+  }
+  if (dataSource !== undefined) {
+    projectUpsert.data_source = dataSource;
+  }
+  if (dataSuitabilityConfirmed !== undefined) {
+    projectUpsert.data_suitability_confirmed = dataSuitabilityConfirmed;
+    projectUpsert.data_suitability_confirmed_at = dataSuitabilityConfirmed
+      ? updatedAt
+      : null;
+  }
+  if (researcherNotes !== undefined) {
+    projectUpsert.researcher_notes = researcherNotes.trim();
+  }
+
   const { data, error } = await supabase
     .from("projects")
-    .upsert({
-      id: projectId,
-      title: title.trim() || "Untitled GDI-QR project",
-      research_question: researchQuestion.trim(),
-      study_description: studyDescription.trim(),
-      language,
-      protocol: "GDIQR",
-      light_interpretation: lightInterpretation,
-      status: "Ready for local testing",
-      updated_at: updatedAt
-    })
+    .upsert(projectUpsert)
     .select()
     .single();
 
@@ -315,6 +445,145 @@ export async function updateProjectSettings({
   });
 
   return { saved: true, project: mapProject(data) };
+}
+
+export async function savePreAnalysisNotes({
+  contextualNotes,
+  dataFamiliarisationNotes,
+  initialSensitisingConcepts,
+  projectId = defaultProjectId,
+  researcherPosition,
+  researchQuestion,
+  studyDescription
+}: {
+  contextualNotes: string;
+  dataFamiliarisationNotes: string;
+  initialSensitisingConcepts: string;
+  projectId?: string;
+  researcherPosition: string;
+  researchQuestion: string;
+  studyDescription: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const updatedAt = new Date().toISOString();
+  const { data: before } = await supabase
+    .from("pre_analysis_notes")
+    .select("*")
+    .eq("project_id", projectId)
+    .maybeSingle();
+
+  const { data, error } = await supabase
+    .from("pre_analysis_notes")
+    .upsert({
+      project_id: projectId,
+      research_question: researchQuestion.trim(),
+      study_description: studyDescription.trim(),
+      researcher_position: researcherPosition.trim(),
+      contextual_notes: contextualNotes.trim(),
+      initial_sensitising_concepts: initialSensitisingConcepts.trim(),
+      data_familiarisation_notes: dataFamiliarisationNotes.trim(),
+      updated_at: updatedAt
+    }, { onConflict: "project_id" })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await recordEditLog({
+    action: "Updated Step 1 pre-analysis notes",
+    actionType: "pre_analysis_updated",
+    newValue: data,
+    previousValue: before,
+    projectId,
+    step: "pre-analysis",
+    targetId: data.id,
+    targetType: "pre_analysis"
+  });
+
+  return { saved: true, preAnalysisNotes: mapPreAnalysisNotes(data) };
+}
+
+export async function recordEditLog({
+  action,
+  actionType = "other",
+  actor = "Researcher",
+  newValue,
+  previousValue,
+  projectId = defaultProjectId,
+  researcherNote,
+  step,
+  targetId,
+  targetType
+}: {
+  action: string;
+  actionType?: AuditActionType;
+  actor?: AuditActor;
+  newValue?: unknown;
+  previousValue?: unknown;
+  projectId?: string;
+  researcherNote?: string;
+  step: WorkflowStep;
+  targetId: string;
+  targetType: AuditTargetType;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const previousJson = toJsonValue(previousValue);
+  const newJson = toJsonValue(newValue);
+  const target = `${targetType}:${targetId}`;
+
+  const [{ data: editLog, error: editLogError }, { error: auditError }] =
+    await Promise.all([
+      supabase
+        .from("edit_logs")
+        .insert({
+          project_id: projectId,
+          step,
+          target_type: targetType,
+          target_id: targetId,
+          actor,
+          action_type: actionType,
+          action,
+          previous_value: previousJson,
+          new_value: newJson,
+          researcher_note: researcherNote ?? null,
+          before_value: previousValue === undefined ? null : safeStringify(previousValue),
+          after_value: newValue === undefined ? null : safeStringify(newValue)
+        })
+        .select()
+        .single(),
+      supabase.from("audit_events").insert({
+        project_id: projectId,
+        actor,
+        action,
+        target,
+        step,
+        action_type: actionType,
+        target_type: targetType,
+        target_id: targetId,
+        previous_value: previousJson,
+        new_value: newJson,
+        researcher_note: researcherNote ?? null
+      })
+    ]);
+
+  if (editLogError) {
+    throw new Error(editLogError.message);
+  }
+  if (auditError) {
+    throw new Error(auditError.message);
+  }
+
+  return { saved: true, editLog: mapEditLog(editLog) };
 }
 
 export async function uploadAudioForTranscription({
@@ -603,7 +872,12 @@ export async function clearProjectTranscriptData(projectId = defaultProjectId) {
 
   await Promise.all([
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase.from("integrity_reviews").delete().eq("project_id", projectId),
+    supabase.from("exports").delete().eq("project_id", projectId),
+    supabase.from("edit_logs").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
+    supabase.from("integration_relationships").delete().eq("project_id", projectId),
     supabase.from("category_systems").delete().eq("project_id", projectId),
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("transcription_jobs").delete().eq("project_id", projectId),
@@ -751,7 +1025,7 @@ export async function confirmTranscriptForAnalysis({
       start_timestamp: "00:00",
       end_timestamp: "00:00",
       starting_mu_number: index * 100 + 1,
-      status: "Needs review",
+      status: "Needs review" as const,
       text: segment.text
     }));
 
@@ -1304,7 +1578,7 @@ export async function autoSplitSegmentsFromTranscript({
       start_timestamp: "00:00",
       end_timestamp: "00:00",
       starting_mu_number: index * 100 + 1,
-      status: "Needs review",
+      status: "Needs review" as const,
       text: segment.text
     }));
 
@@ -1653,7 +1927,13 @@ function mapProject(row: Database["public"]["Tables"]["projects"]["Row"]) {
     protocol: row.protocol,
     lightInterpretation: row.light_interpretation,
     status: row.status,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    datasetType: row.dataset_type,
+    dataSource: row.data_source,
+    dataSuitabilityConfirmed: row.data_suitability_confirmed,
+    dataSuitabilityConfirmedAt: row.data_suitability_confirmed_at ?? undefined,
+    researcherNotes: row.researcher_notes,
+    metadata: isRecord(row.metadata) ? row.metadata : {}
   } satisfies Project;
 }
 
@@ -1673,7 +1953,12 @@ function flattenCategoryRows(
       name: category.name,
       definition: category.definition,
       included_unit_numbers: category.includedUnitIds,
-      sort_order: sortOrder
+      sort_order: sortOrder,
+      memo: category.memo ?? "",
+      source: category.source ?? "ai",
+      status: category.status ?? "ai_draft",
+      intentionally_uncategorised_unit_numbers:
+        category.intentionallyUncategorisedUnitIds ?? []
     };
 
     return [
@@ -1758,7 +2043,12 @@ async function createDefaultProject(projectId: string) {
       language: "English",
       protocol: "GDIQR",
       light_interpretation: false,
-      status: "Ready for local testing"
+      status: "Ready for local testing",
+      dataset_type: "open",
+      data_source: "other",
+      data_suitability_confirmed: false,
+      researcher_notes: "",
+      metadata: {}
     })
     .select()
     .single();
@@ -1987,8 +2277,198 @@ function mapAuditEvent(row: Database["public"]["Tables"]["audit_events"]["Row"])
     }),
     actor: row.actor,
     action: row.action,
-    target: row.target
+    target: row.target,
+    step: toWorkflowStep(row.step),
+    actionType: toAuditActionType(row.action_type),
+    targetType: toAuditTargetType(row.target_type),
+    targetId: row.target_id ?? undefined,
+    previousValue: row.previous_value ?? undefined,
+    newValue: row.new_value ?? undefined,
+    researcherNote: row.researcher_note ?? undefined
   } satisfies AuditEvent;
+}
+
+function mapEditLog(row: EditLogRow) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    step: toWorkflowStep(row.step) ?? "pre-analysis",
+    actor: row.actor,
+    actionType: toAuditActionType(row.action_type) ?? "other",
+    action: row.action,
+    targetType: toAuditTargetType(row.target_type) ?? "workspace",
+    targetId: row.target_id,
+    previousValue: row.previous_value ?? parseMaybeJson(row.before_value),
+    newValue: row.new_value ?? parseMaybeJson(row.after_value),
+    researcherNote: row.researcher_note ?? undefined,
+    createdAt: row.created_at
+  } satisfies EditLog;
+}
+
+function mapPreAnalysisNotes(row: PreAnalysisNotesRow) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    researchQuestion: row.research_question,
+    studyDescription: row.study_description,
+    researcherPosition: row.researcher_position,
+    contextualNotes: row.contextual_notes,
+    initialSensitisingConcepts: row.initial_sensitising_concepts,
+    dataFamiliarisationNotes: row.data_familiarisation_notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  } satisfies PreAnalysisNotes;
+}
+
+function mapIntegrationRelationship(row: IntegrationRelationshipRow) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    categorySystemId: row.category_system_id ?? undefined,
+    sourceCategoryId: row.source_category_id,
+    targetCategoryId: row.target_category_id,
+    label: row.relationship_label,
+    memo: row.memo,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  } satisfies IntegrationRelationship;
+}
+
+function mapIntegrityReviewItem(row: IntegrityReviewItemRow) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    checkKey: row.check_key,
+    prompt: row.prompt,
+    status: row.status,
+    response: row.response,
+    researcherNote: row.researcher_note,
+    generatedFromState: row.generated_from_state,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  } satisfies IntegrityReviewItem;
+}
+
+function mapExportRecord(row: ExportRow) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    format: row.format,
+    storageBucket: row.storage_bucket ?? undefined,
+    storagePath: row.storage_path ?? undefined,
+    generatedAt: row.generated_at
+  } satisfies ExportRecord;
+}
+
+function toWorkflowStep(value: string | null | undefined): WorkflowStep | undefined {
+  if (
+    value === "pre-analysis" ||
+    value === "understanding" ||
+    value === "categorizing" ||
+    value === "integrating" ||
+    value === "integrity" ||
+    value === "export"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function toAuditActionType(value: string | null | undefined): AuditActionType | undefined {
+  const allowed: AuditActionType[] = [
+    "project_created",
+    "project_updated",
+    "data_suitability_confirmed",
+    "transcript_uploaded",
+    "audio_uploaded",
+    "transcript_generated",
+    "transcript_edited",
+    "transcript_confirmed",
+    "pre_analysis_updated",
+    "meaning_units_generated",
+    "meaning_unit_created",
+    "meaning_unit_edited",
+    "meaning_unit_accepted",
+    "meaning_unit_excluded",
+    "meaning_unit_split",
+    "meaning_unit_merged",
+    "meaning_unit_deleted",
+    "category_system_generated",
+    "category_created",
+    "category_renamed",
+    "category_updated",
+    "category_deleted",
+    "meaning_unit_moved",
+    "relationship_created",
+    "relationship_updated",
+    "relationship_deleted",
+    "reviewer_issue_generated",
+    "reviewer_issue_resolved",
+    "integrity_review_updated",
+    "export_generated",
+    "workspace_cleared",
+    "other"
+  ];
+
+  return allowed.find((item) => item === value);
+}
+
+function toAuditTargetType(value: string | null | undefined): AuditTargetType | undefined {
+  const allowed: AuditTargetType[] = [
+    "project",
+    "transcript",
+    "audio_file",
+    "transcription_job",
+    "pre_analysis",
+    "segment",
+    "meaning_unit",
+    "category",
+    "category_system",
+    "integration_relationship",
+    "integrity_review",
+    "integrity_review_item",
+    "reviewer_comment",
+    "export",
+    "workspace"
+  ];
+
+  return allowed.find((item) => item === value);
+}
+
+function safeStringify(value: unknown) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function toJsonValue(value: unknown): Json | null {
+  if (value === undefined) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value)) as Json;
+  } catch {
+    return String(value);
+  }
+}
+
+function parseMaybeJson(value: string | null) {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function isRecord(value: Json): value is { [key: string]: Json | undefined } {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function buildCategoryTree(rows: CategoryRow[]) {
@@ -2000,6 +2480,10 @@ function buildCategoryTree(rows: CategoryRow[]) {
       name: row.name,
       definition: row.definition,
       includedUnitIds: row.included_unit_numbers,
+      intentionallyUncategorisedUnitIds: row.intentionally_uncategorised_unit_numbers,
+      memo: row.memo,
+      source: row.source,
+      status: row.status,
       subcategories: []
     });
   });

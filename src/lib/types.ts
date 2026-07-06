@@ -25,6 +25,62 @@ export type SegmentStatus =
   | "Needs Revision"
   | "Completed";
 
+export type DatasetType = "open" | "anonymised" | "identifiable_sensitive";
+export type ProjectDataSource = "SMARTEN" | "photovoice" | "interview" | "other";
+
+export type AuditActor = "AI" | "Researcher" | "Reviewer";
+
+export type AuditActionType =
+  | "project_created"
+  | "project_updated"
+  | "data_suitability_confirmed"
+  | "transcript_uploaded"
+  | "audio_uploaded"
+  | "transcript_generated"
+  | "transcript_edited"
+  | "transcript_confirmed"
+  | "pre_analysis_updated"
+  | "meaning_units_generated"
+  | "meaning_unit_created"
+  | "meaning_unit_edited"
+  | "meaning_unit_accepted"
+  | "meaning_unit_excluded"
+  | "meaning_unit_split"
+  | "meaning_unit_merged"
+  | "meaning_unit_deleted"
+  | "category_system_generated"
+  | "category_created"
+  | "category_renamed"
+  | "category_updated"
+  | "category_deleted"
+  | "meaning_unit_moved"
+  | "relationship_created"
+  | "relationship_updated"
+  | "relationship_deleted"
+  | "reviewer_issue_generated"
+  | "reviewer_issue_resolved"
+  | "integrity_review_updated"
+  | "export_generated"
+  | "workspace_cleared"
+  | "other";
+
+export type AuditTargetType =
+  | "project"
+  | "transcript"
+  | "audio_file"
+  | "transcription_job"
+  | "pre_analysis"
+  | "segment"
+  | "meaning_unit"
+  | "category"
+  | "category_system"
+  | "integration_relationship"
+  | "integrity_review"
+  | "integrity_review_item"
+  | "reviewer_comment"
+  | "export"
+  | "workspace";
+
 export interface Project {
   id: string;
   title: string;
@@ -36,6 +92,71 @@ export interface Project {
   lightInterpretation: boolean;
   status: string;
   updatedAt: string;
+  datasetType: DatasetType;
+  dataSource: ProjectDataSource;
+  dataSuitabilityConfirmed: boolean;
+  dataSuitabilityConfirmedAt?: string;
+  researcherNotes: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PreAnalysisNotes {
+  id: string;
+  projectId: string;
+  researchQuestion: string;
+  studyDescription: string;
+  researcherPosition: string;
+  contextualNotes: string;
+  initialSensitisingConcepts: string;
+  dataFamiliarisationNotes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type IntegrationRelationshipLabel =
+  | "contributes to"
+  | "contrasts with"
+  | "supports"
+  | "explains"
+  | "is part of"
+  | "leads to"
+  | "contextualises"
+  | "unclear relationship";
+
+export interface IntegrationRelationship {
+  id: string;
+  projectId: string;
+  categorySystemId?: string;
+  sourceCategoryId: string;
+  targetCategoryId: string;
+  label: IntegrationRelationshipLabel;
+  memo: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type IntegrityReviewItemStatus = "not_checked" | "pass" | "issue" | "resolved" | "dismissed";
+
+export interface IntegrityReviewItem {
+  id: string;
+  projectId: string;
+  checkKey: string;
+  prompt: string;
+  status: IntegrityReviewItemStatus;
+  response: string;
+  researcherNote: string;
+  generatedFromState: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExportRecord {
+  id: string;
+  projectId: string;
+  format: "json" | "docx" | "pdf";
+  storageBucket?: string;
+  storagePath?: string;
+  generatedAt: string;
 }
 
 export interface TranscriptSegment {
@@ -115,6 +236,8 @@ export interface CategoryNode {
     | "edited"
     | "confirmed"
     | "rejected";
+  memo?: string;
+  intentionallyUncategorisedUnitIds?: number[];
   subcategories?: CategoryNode[];
 }
 
@@ -146,7 +269,29 @@ export interface ReviewerComment {
 export interface AuditEvent {
   id: string;
   timestamp: string;
-  actor: "AI" | "Researcher" | "Reviewer";
+  actor: AuditActor;
   action: string;
   target: string;
+  step?: WorkflowStep;
+  actionType?: AuditActionType;
+  targetType?: AuditTargetType;
+  targetId?: string;
+  previousValue?: unknown;
+  newValue?: unknown;
+  researcherNote?: string;
+}
+
+export interface EditLog {
+  id: string;
+  projectId: string;
+  step: WorkflowStep;
+  actor: AuditActor;
+  actionType: AuditActionType;
+  action: string;
+  targetType: AuditTargetType;
+  targetId: string;
+  previousValue?: unknown;
+  newValue?: unknown;
+  researcherNote?: string;
+  createdAt: string;
 }
