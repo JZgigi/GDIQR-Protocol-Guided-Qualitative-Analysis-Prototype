@@ -39,6 +39,7 @@ export default async function Home(props: {
       segments={workspace.segments}
       supabaseConfigured={workspace.supabaseConfigured}
       transcript={workspace.transcript}
+      transcriptRecords={workspace.transcriptRecords}
       transcriptionJobs={workspace.transcriptionJobs}
       storageMode={storageMode}
     />

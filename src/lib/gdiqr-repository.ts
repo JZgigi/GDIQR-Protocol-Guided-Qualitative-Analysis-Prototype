@@ -18,6 +18,7 @@ import type {
   ReviewerComment,
   ReviewerIssueStatus,
   TranscriptionJobRecord,
+  TranscriptRecord,
   TranscriptSegment,
   WorkflowStep
 } from "@/lib/types";
@@ -29,6 +30,7 @@ type AudioFileRow = Database["public"]["Tables"]["audio_files"]["Row"];
 type CategoryRow = Database["public"]["Tables"]["categories"]["Row"];
 type TranscriptionJobRow =
   Database["public"]["Tables"]["transcription_jobs"]["Row"];
+type TranscriptRow = Database["public"]["Tables"]["transcripts"]["Row"];
 type EditLogRow = Database["public"]["Tables"]["edit_logs"]["Row"];
 type ExportRow = Database["public"]["Tables"]["exports"]["Row"];
 type IntegrityReviewItemRow =
@@ -41,6 +43,7 @@ type PreAnalysisNotesRow =
 export interface WorkspaceData {
   project: Project;
   transcript: string;
+  transcriptRecords: TranscriptRecord[];
   segments: TranscriptSegment[];
   audioFiles: AudioFileRecord[];
   transcriptionJobs: TranscriptionJobRecord[];
@@ -68,6 +71,10 @@ interface TranscriptPrivacyMetadata {
   reviewedBy?: string | null;
   sensitiveItems?: unknown[];
   sensitiveItemsReviewedAt?: string | null;
+  rawContent?: string | null;
+  cleanedContent?: string | null;
+  finalContent?: string | null;
+  status?: string;
 }
 
 function createEmptyPreAnalysisNotes(
@@ -108,6 +115,7 @@ export function getEmptyWorkspace(reason = "Supabase is not configured."): Works
       metadata: {}
     },
     transcript: "",
+    transcriptRecords: [],
     segments: [],
     audioFiles: [],
     transcriptionJobs: [],
@@ -154,7 +162,7 @@ export async function getWorkspace(
 
   const [
     projectResult,
-    transcriptResult,
+    transcriptsResult,
     segmentsResult,
     audioFilesResult,
     transcriptionJobsResult,
@@ -174,8 +182,7 @@ export async function getWorkspace(
       .select("*")
       .eq("project_id", projectId)
       .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+      .limit(20),
     supabase
       .from("segments")
       .select("*")
@@ -244,7 +251,7 @@ export async function getWorkspace(
 
   const firstError =
     projectResult.error ??
-    transcriptResult.error ??
+    transcriptsResult.error ??
     segmentsResult.error ??
     audioFilesResult.error ??
     transcriptionJobsResult.error ??
@@ -293,10 +300,13 @@ export async function getWorkspace(
   }
 
   const mappedProject = mapProject(projectResult.data);
+  const transcriptRows = (transcriptsResult.data ?? []) as TranscriptRow[];
+  const latestTranscript = transcriptRows[0];
 
   return {
     project: mappedProject,
-    transcript: transcriptResult.data?.content ?? "",
+    transcript: getResearcherVisibleTranscript(latestTranscript),
+    transcriptRecords: transcriptRows.map(mapTranscriptRecord),
     segments: (segmentsResult.data ?? []).map(mapSegment),
     audioFiles: (audioFilesResult.data ?? []).map(mapAudioFile),
     transcriptionJobs: (transcriptionJobsResult.data ?? []).map(
@@ -332,7 +342,7 @@ export async function saveTranscriptVersion({
   projectId = defaultProjectId,
   rawTranscriptRetained = false,
   sensitiveItems = [],
-  versionLabel = "Researcher saved version"
+  versionLabel = "Researcher edited transcript"
 }: {
   anonymisationStatus?: TranscriptPrivacyMetadata["anonymisationStatus"];
   content: string;
@@ -346,12 +356,24 @@ export async function saveTranscriptVersion({
     return { saved: false, reason: "Supabase is not configured." };
   }
 
+  const { data: previousTranscript } = await supabase
+    .from("transcripts")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   const { data, error } = await insertTranscriptWithOptionalPrivacyMetadata({
     anonymisationStatus,
+    cleanedContent: content,
     content,
+    finalContent: null,
     projectId,
+    rawContent: previousTranscript?.raw_content ?? null,
     rawTranscriptRetained,
     sensitiveItems,
+    status: "Reviewed",
     supabase,
     versionLabel
   });
@@ -360,14 +382,123 @@ export async function saveTranscriptVersion({
     throw new Error(error.message);
   }
 
-  await supabase.from("audit_events").insert({
-    project_id: projectId,
-    actor: "Researcher",
-    action: "Saved transcript version",
-    target: data.version_label
+  await Promise.all([
+    supabase
+      .from("projects")
+      .update({
+        status: "Transcript reviewed — not yet confirmed",
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", projectId),
+    recordEditLog({
+      action: "Saved edited transcript for researcher review",
+      actionType: "transcript_edited",
+      newValue: {
+        transcriptId: data.id,
+        versionLabel: data.version_label,
+        characterCount: content.length,
+        status: data.status ?? "Reviewed"
+      },
+      previousValue: previousTranscript
+        ? {
+            transcriptId: previousTranscript.id,
+            versionLabel: previousTranscript.version_label,
+            characterCount: getResearcherVisibleTranscript(previousTranscript).length,
+            status: previousTranscript.status
+          }
+        : undefined,
+      projectId,
+      step: "pre-analysis",
+      targetId: data.id,
+      targetType: "transcript"
+    })
+  ]);
+
+  return { saved: true, transcript: mapTranscriptRecord(data as TranscriptRow) };
+}
+
+export async function saveTranscriptReviewDraft({
+  anonymisationStatus = "reviewed",
+  language,
+  preparedTranscript,
+  projectId = defaultProjectId,
+  privacyFindings = [],
+  rawTranscript,
+  sourceLabel = "Uploaded transcript — review draft",
+  sourceType = "transcript"
+}: {
+  anonymisationStatus?: TranscriptPrivacyMetadata["anonymisationStatus"];
+  language: Project["language"];
+  preparedTranscript: string;
+  projectId?: string;
+  privacyFindings?: unknown[];
+  rawTranscript: string;
+  sourceLabel?: string;
+  sourceType?: "transcript" | "audio";
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  const versionLabel =
+    sourceType === "audio"
+      ? "Audio transcription draft — review required"
+      : sourceLabel;
+
+  const { data, error } = await insertTranscriptWithOptionalPrivacyMetadata({
+    anonymisationStatus,
+    cleanedContent: preparedTranscript,
+    content: preparedTranscript,
+    finalContent: null,
+    projectId,
+    rawContent: rawTranscript,
+    rawTranscriptRetained: true,
+    sensitiveItems: privacyFindings,
+    status: "Needs Review",
+    supabase,
+    versionLabel
   });
 
-  return { saved: true, transcript: data };
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const uploadedAt = new Date().toISOString();
+  await Promise.all([
+    supabase
+      .from("projects")
+      .update({
+        language,
+        status:
+          sourceType === "audio"
+            ? "Transcript generated from audio — needs researcher review"
+            : "Transcript uploaded — needs researcher review",
+        updated_at: uploadedAt
+      })
+      .eq("id", projectId),
+    recordEditLog({
+      action:
+        sourceType === "audio"
+          ? "Generated transcript from uploaded audio for researcher review"
+          : "Uploaded transcript and prepared editable review draft",
+      actionType: sourceType === "audio" ? "transcript_generated" : "transcript_uploaded",
+      actor: sourceType === "audio" ? "AI" : "Researcher",
+      newValue: {
+        transcriptId: data.id,
+        versionLabel: data.version_label,
+        rawCharacterCount: rawTranscript.length,
+        preparedCharacterCount: preparedTranscript.length,
+        status: data.status ?? "Needs Review"
+      },
+      projectId,
+      step: "pre-analysis",
+      targetId: data.id,
+      targetType: "transcript"
+    })
+  ]);
+
+  return { saved: true, transcript: mapTranscriptRecord(data as TranscriptRow) };
 }
 
 
@@ -799,11 +930,20 @@ export async function uploadAudioForTranscription({
     throw new Error(jobError.message);
   }
 
-  await supabase.from("audit_events").insert({
-    project_id: projectId,
-    actor: "Researcher",
-    action: "Uploaded audio for local transcription",
-    target: originalFilename
+  await recordEditLog({
+    action: "Uploaded audio file for transcription",
+    actionType: "audio_uploaded",
+    newValue: {
+      audioFileId: audioRow.id,
+      originalFilename,
+      sizeBytes,
+      contentType,
+      language
+    },
+    projectId,
+    step: "pre-analysis",
+    targetId: audioRow.id,
+    targetType: "audio_file"
   });
 
   return {
@@ -817,12 +957,14 @@ export async function completeTranscriptionJob({
   jobId,
   language,
   projectId = defaultProjectId,
+  rawTranscript,
   transcript,
   versionLabel
 }: {
   jobId: string;
   language: Project["language"];
   projectId?: string;
+  rawTranscript?: string;
   transcript: string;
   versionLabel: string;
 }) {
@@ -831,43 +973,33 @@ export async function completeTranscriptionJob({
     return { saved: false, reason: "Supabase is not configured." };
   }
 
-  const { data: transcriptRow, error: transcriptError } = await supabase
-    .from("transcripts")
-    .insert({
-      project_id: projectId,
-      content: transcript,
-      version_label: versionLabel
-    })
-    .select()
-    .single();
-
-  if (transcriptError) {
-    throw new Error(transcriptError.message);
-  }
-
   await Promise.all([
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase.from("integrity_reviews").delete().eq("project_id", projectId),
+    supabase.from("integration_relationships").delete().eq("project_id", projectId),
     supabase.from("category_systems").delete().eq("project_id", projectId)
   ]);
 
-  const segmentId = stableId("seg", projectId, Date.now());
-  const { error: segmentError } = await supabase.from("segments").insert({
-    id: segmentId,
-    project_id: projectId,
-    case_id: "CASE-001",
-    segment_id: "SEG-001",
-    speaker_info: "Auto-transcribed audio",
-    start_timestamp: "00:00",
-    end_timestamp: "00:00",
-    starting_mu_number: 1,
-    status: "Ready",
-    text: transcript
-  });
+  const { data: transcriptRow, error: transcriptError } =
+    await insertTranscriptWithOptionalPrivacyMetadata({
+      anonymisationStatus: "reviewed",
+      cleanedContent: transcript,
+      content: transcript,
+      finalContent: null,
+      projectId,
+      rawContent: rawTranscript ?? transcript,
+      rawTranscriptRetained: true,
+      sensitiveItems: [],
+      status: "Needs Review",
+      supabase,
+      versionLabel
+    });
 
-  if (segmentError) {
-    throw new Error(segmentError.message);
+  if (transcriptError) {
+    throw new Error(transcriptError.message);
   }
 
   const completedAt = new Date().toISOString();
@@ -892,24 +1024,35 @@ export async function completeTranscriptionJob({
       .from("projects")
       .update({
         language,
-        status: "Transcript imported from audio",
+        status: "Transcript generated from audio — needs researcher review",
         updated_at: completedAt
       })
       .eq("id", projectId),
-    supabase.from("audit_events").insert({
-      project_id: projectId,
+    recordEditLog({
+      action: "Generated transcript from audio and saved editable review draft",
+      actionType: "transcript_generated",
       actor: "AI",
-      action: "Completed local audio transcription",
-      target: transcriptRow.id
+      newValue: {
+        transcriptId: transcriptRow.id,
+        jobId,
+        rawCharacterCount: (rawTranscript ?? transcript).length,
+        preparedCharacterCount: transcript.length,
+        status: transcriptRow.status ?? "Needs Review"
+      },
+      projectId,
+      step: "pre-analysis",
+      targetId: transcriptRow.id,
+      targetType: "transcript"
     })
   ]);
 
   return {
     saved: true,
-    transcript: transcriptRow,
+    transcript: mapTranscriptRecord(transcriptRow as TranscriptRow),
     job: mapTranscriptionJob(jobRow)
   };
 }
+
 
 export async function importTranscriptForAnalysis({
   language,
@@ -945,6 +1088,9 @@ export async function importTranscriptForAnalysis({
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase.from("integrity_reviews").delete().eq("project_id", projectId),
+    supabase.from("integration_relationships").delete().eq("project_id", projectId),
     supabase.from("category_systems").delete().eq("project_id", projectId)
   ]);
 
@@ -986,7 +1132,7 @@ export async function importTranscriptForAnalysis({
 
   return {
     saved: true,
-    transcript: transcriptRow
+    transcript: mapTranscriptRecord(transcriptRow as TranscriptRow)
   };
 }
 
@@ -1050,10 +1196,14 @@ export async function clearProjectTranscriptData(projectId = defaultProjectId) {
 
 async function insertTranscriptWithOptionalPrivacyMetadata({
   anonymisationStatus,
+  cleanedContent,
   content,
+  finalContent,
   projectId,
+  rawContent,
   rawTranscriptRetained,
   sensitiveItems,
+  status,
   supabase,
   versionLabel
 }: TranscriptPrivacyMetadata & {
@@ -1062,6 +1212,7 @@ async function insertTranscriptWithOptionalPrivacyMetadata({
   supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>;
   versionLabel: string;
 }) {
+  const now = new Date().toISOString();
   const baseRow = {
     project_id: projectId,
     content,
@@ -1072,18 +1223,58 @@ async function insertTranscriptWithOptionalPrivacyMetadata({
     anonymisation_status: anonymisationStatus ?? "reviewed",
     raw_transcript_retained: rawTranscriptRetained ?? false,
     sensitive_items: sensitiveItems ?? [],
-    sensitive_items_reviewed_at: new Date().toISOString(),
+    sensitive_items_reviewed_at: now,
     reviewed_by: null
+  };
+  const reviewRow = {
+    ...privacyRow,
+    raw_content: rawContent ?? null,
+    cleaned_content: cleanedContent ?? content,
+    final_content: finalContent ?? null,
+    status: status ?? "Needs Review",
+    updated_at: now
   };
 
   const result = await supabase
     .from("transcripts")
-    .insert(privacyRow)
+    .insert(reviewRow)
     .select()
     .single();
 
   if (!result.error) {
     return result;
+  }
+
+  const missingReviewColumn =
+    result.error.message.includes("raw_content") ||
+    result.error.message.includes("cleaned_content") ||
+    result.error.message.includes("final_content") ||
+    result.error.message.includes("status") ||
+    result.error.message.includes("updated_at");
+
+  if (missingReviewColumn) {
+    const privacyResult = await supabase
+      .from("transcripts")
+      .insert(privacyRow)
+      .select()
+      .single();
+
+    if (!privacyResult.error) {
+      return privacyResult;
+    }
+
+    const missingPrivacyColumn =
+      privacyResult.error.message.includes("anonymisation_status") ||
+      privacyResult.error.message.includes("raw_transcript_retained") ||
+      privacyResult.error.message.includes("sensitive_items") ||
+      privacyResult.error.message.includes("sensitive_items_reviewed_at") ||
+      privacyResult.error.message.includes("reviewed_by");
+
+    if (!missingPrivacyColumn) {
+      return privacyResult;
+    }
+
+    return supabase.from("transcripts").insert(baseRow).select().single();
   }
 
   const missingPrivacyColumn =
@@ -1120,13 +1311,25 @@ export async function confirmTranscriptForAnalysis({
     return { saved: false, reason: "Supabase is not configured." };
   }
 
+  const { data: previousTranscript } = await supabase
+    .from("transcripts")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
   const { data: transcriptRow, error: transcriptError } =
     await insertTranscriptWithOptionalPrivacyMetadata({
       anonymisationStatus,
+      cleanedContent: previousTranscript?.cleaned_content ?? content,
       content,
+      finalContent: content,
       projectId,
+      rawContent: previousTranscript?.raw_content ?? null,
       rawTranscriptRetained,
       sensitiveItems,
+      status: "Confirmed",
       supabase,
       versionLabel: "Researcher-confirmed transcript"
     });
@@ -1139,6 +1342,9 @@ export async function confirmTranscriptForAnalysis({
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase.from("integrity_reviews").delete().eq("project_id", projectId),
+    supabase.from("integration_relationships").delete().eq("project_id", projectId),
     supabase.from("category_systems").delete().eq("project_id", projectId)
   ]);
 
@@ -1165,6 +1371,9 @@ export async function confirmTranscriptForAnalysis({
       project_id: projectId,
       case_id: "CASE-001",
       segment_id: `SEG-${String(index + 1).padStart(3, "0")}`,
+      transcript_id: transcriptRow.id,
+      segment_number: index + 1,
+      topic_label: segment.title || `Segment ${index + 1}`,
       speaker_info: segment.title || `Segment ${index + 1}`,
       start_timestamp: "00:00",
       end_timestamp: "00:00",
@@ -1197,17 +1406,33 @@ export async function confirmTranscriptForAnalysis({
     throw new Error(projectError.message);
   }
 
-  await supabase.from("audit_events").insert({
-    project_id: projectId,
-    actor: "Researcher",
-    action: `Confirmed transcript for analysis and created ${segmentRows.length} draft meaning-unit candidates`,
-    target: transcriptRow.id
+  await recordEditLog({
+    action: `Confirmed transcript for analysis and created ${segmentRows.length} draft meaning-unit candidate${segmentRows.length === 1 ? "" : "s"}`,
+    actionType: "transcript_confirmed",
+    newValue: {
+      transcriptId: transcriptRow.id,
+      segmentCount: segmentRows.length,
+      characterCount: content.length,
+      status: transcriptRow.status ?? "Confirmed"
+    },
+    previousValue: previousTranscript
+      ? {
+          transcriptId: previousTranscript.id,
+          versionLabel: previousTranscript.version_label,
+          status: previousTranscript.status,
+          characterCount: getResearcherVisibleTranscript(previousTranscript).length
+        }
+      : undefined,
+    projectId,
+    step: "pre-analysis",
+    targetId: transcriptRow.id,
+    targetType: "transcript"
   });
 
   return {
     saved: true,
     project: mapProject(projectRow),
-    transcript: transcriptRow
+    transcript: mapTranscriptRecord(transcriptRow as TranscriptRow)
   };
 }
 
@@ -1709,6 +1934,9 @@ export async function autoSplitSegmentsFromTranscript({
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase.from("integrity_reviews").delete().eq("project_id", projectId),
+    supabase.from("integration_relationships").delete().eq("project_id", projectId),
     supabase.from("category_systems").delete().eq("project_id", projectId)
   ]);
 
@@ -2214,6 +2442,34 @@ function sanitizeStorageFilename(filename: string) {
   return cleaned.length > 0 ? cleaned : "audio-upload";
 }
 
+function mapTranscriptRecord(row: TranscriptRow) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    content: row.content,
+    versionLabel: row.version_label,
+    anonymisationStatus: row.anonymisation_status,
+    rawTranscriptRetained: row.raw_transcript_retained,
+    sensitiveItems: row.sensitive_items ?? [],
+    sensitiveItemsReviewedAt: row.sensitive_items_reviewed_at ?? null,
+    reviewedBy: row.reviewed_by ?? null,
+    createdAt: row.created_at,
+    interviewId: row.interview_id ?? null,
+    status: row.status ?? undefined,
+    rawContent: row.raw_content ?? null,
+    cleanedContent: row.cleaned_content ?? null,
+    finalContent: row.final_content ?? null,
+    updatedAt: row.updated_at ?? undefined
+  } satisfies TranscriptRecord;
+}
+
+function getResearcherVisibleTranscript(row?: TranscriptRow | null) {
+  if (!row) {
+    return "";
+  }
+  return row.final_content ?? row.cleaned_content ?? row.content ?? "";
+}
+
 function mapAudioFile(row: AudioFileRow) {
   return {
     id: row.id,
@@ -2248,8 +2504,9 @@ function mapSegment(row: Database["public"]["Tables"]["segments"]["Row"]) {
     id: row.id,
     caseId: row.case_id,
     segmentId: row.segment_id,
-    segmentNumber: segmentNumberFromId(row.segment_id),
-    topicLabel: row.speaker_info || row.segment_id,
+    segmentNumber: row.segment_number ?? segmentNumberFromId(row.segment_id),
+    sourceTranscriptId: row.transcript_id ?? undefined,
+    topicLabel: row.topic_label || row.speaker_info || row.segment_id,
     speakerInfo: row.speaker_info,
     startTimestamp: row.start_timestamp,
     endTimestamp: row.end_timestamp,

@@ -118,8 +118,9 @@ export async function POST(request: NextRequest) {
       jobId: uploadResult.job.id,
       language,
       projectId,
+      rawTranscript: transcription.text,
       transcript: preparedTranscript.sanitizedTranscript,
-      versionLabel: "Local transcription + privacy review"
+      versionLabel: "Audio transcription draft — review required"
     });
     const workspace = await getWorkspace(projectId);
     finishRunLog(runId);

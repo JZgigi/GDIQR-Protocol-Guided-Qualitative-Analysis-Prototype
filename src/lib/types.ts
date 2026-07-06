@@ -203,6 +203,26 @@ export interface TranscriptionJobRecord {
   completedAt?: string;
 }
 
+
+export interface TranscriptRecord {
+  id: string;
+  projectId: string;
+  content: string;
+  versionLabel: string;
+  anonymisationStatus: "not_reviewed" | "reviewed" | "confirmed";
+  rawTranscriptRetained: boolean;
+  sensitiveItems: unknown[];
+  sensitiveItemsReviewedAt?: string | null;
+  reviewedBy?: string | null;
+  createdAt: string;
+  interviewId?: string | null;
+  status?: string;
+  rawContent?: string | null;
+  cleanedContent?: string | null;
+  finalContent?: string | null;
+  updatedAt?: string;
+}
+
 export interface MeaningUnit {
   aiExcerpt?: string;
   id: string;

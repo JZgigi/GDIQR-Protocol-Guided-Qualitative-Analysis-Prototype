@@ -32,6 +32,7 @@ import type {
   ReviewerWorkspace,
   SegmentStatus,
   TranscriptionJobRecord,
+  TranscriptRecord,
   TranscriptSegment,
   WorkflowStep
 } from "@/lib/types";
@@ -113,6 +114,7 @@ interface GdiqrWorkspaceProps {
   segments: TranscriptSegment[];
   audioFiles: AudioFileRecord[];
   transcriptionJobs: TranscriptionJobRecord[];
+  transcriptRecords?: TranscriptRecord[];
   meaningUnits: MeaningUnit[];
   categories: CategoryNode[];
   reviewerComments: ReviewerComment[];
@@ -131,6 +133,7 @@ export function GdiqrWorkspace({
   segments,
   audioFiles,
   transcriptionJobs,
+  transcriptRecords = [],
   meaningUnits,
   categories,
   reviewerComments,
@@ -209,6 +212,8 @@ export function GdiqrWorkspace({
   const [displayAudioFiles, setDisplayAudioFiles] = useState(audioFiles);
   const [displayTranscriptionJobs, setDisplayTranscriptionJobs] =
     useState(transcriptionJobs);
+  const [displayTranscriptRecords, setDisplayTranscriptRecords] =
+    useState(transcriptRecords);
   const [units, setUnits] = useState(meaningUnits);
   const [displayCategories, setDisplayCategories] = useState(categories);
   const [reviewerOutputs, setReviewerOutputs] = useState(reviewerComments);
@@ -295,40 +300,37 @@ export function GdiqrWorkspace({
   const meaningUnitAbortControllerRef = useRef<AbortController | null>(null);
 
   async function loadRunLogs() {
-  try {
-    const response = await fetch("/api/run-logs", { cache: "no-store" });
-    if (!response.ok) {
-      return;
-    }
-    const result = (await response.json().catch(() => ({}))) as {
-      logs?: RunLog[];
-    };
-    setRunLogs(result.logs ?? []);
-  } catch {
-    // Ignore transient polling failures during dev-server reloads,
-    // page navigation, or temporary browser fetch interruption.
-  }
-}
-
-async function clearFinishedRunLogs() {
-  try {
-    const response = await fetch("/api/run-logs", {
-      method: "DELETE"
-    });
-    const result = (await response.json().catch(() => ({}))) as {
-      logs?: RunLog[];
-    };
-    if (response.ok) {
+    try {
+      const response = await fetch("/api/run-logs", { cache: "no-store" });
+      if (!response.ok) {
+        return;
+      }
+      const result = (await response.json().catch(() => ({}))) as {
+        logs?: RunLog[];
+      };
       setRunLogs(result.logs ?? []);
+    } catch {
+      // Ignore transient polling failures during dev-server reloads or navigation.
     }
-  } catch (error) {
-    setApiStatus(
-      error instanceof Error
-        ? error.message
-        : "Could not clear run logs."
-    );
   }
-}
+
+  async function clearFinishedRunLogs() {
+    try {
+      const response = await fetch("/api/run-logs", {
+        method: "DELETE"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        logs?: RunLog[];
+      };
+      if (response.ok) {
+        setRunLogs(result.logs ?? []);
+      }
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error ? error.message : "Could not clear run logs."
+      );
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -666,6 +668,7 @@ async function clearFinishedRunLogs() {
     setDisplaySegments(workspace.segments);
     setDisplayAudioFiles(workspace.audioFiles);
     setDisplayTranscriptionJobs(workspace.transcriptionJobs);
+    setDisplayTranscriptRecords(workspace.transcriptRecords ?? []);
     setUnits(workspace.meaningUnits);
     setDisplayCategories(workspace.categories);
     setReviewerOutputs(workspace.reviewerComments);
@@ -959,6 +962,11 @@ async function clearFinishedRunLogs() {
         applyWorkspace(result.workspace);
       }
       setTranscriptConfirmed(false);
+      setTranscriptStorageStatus(
+        result.transcribed
+          ? "Audio transcript generated and saved as review draft"
+          : "Audio uploaded; transcription did not complete"
+      );
       setAiPrivacyFindings(
         result.privacyFindings?.length
           ? result.privacyFindings
@@ -1055,6 +1063,9 @@ async function clearFinishedRunLogs() {
         body: JSON.stringify({
           forceRuleBased,
           language: uploadLanguage,
+          projectId: currentProject.id,
+          saveReviewDraft: !isLocalOnlyMode,
+          sourceLabel: transcriptImportName || "Uploaded transcript — review draft",
           timeoutMs: 45000,
           transcript: transcriptImportText
         }),
@@ -1068,8 +1079,10 @@ async function clearFinishedRunLogs() {
         model?: string;
         prepared?: boolean;
         privacyFindings?: string[];
+        savedDraft?: boolean;
         speakerNotes?: string[];
         transcript?: string;
+        workspace?: WorkspaceData;
       };
 
       if (!response.ok || !result.prepared || !result.transcript) {
@@ -1077,10 +1090,17 @@ async function clearFinishedRunLogs() {
         return;
       }
 
+      if (result.workspace) {
+        applyWorkspace(result.workspace);
+      }
       const safePreparedTranscript = prepareTranscriptForStorage(result.transcript);
       setEditableTranscript(safePreparedTranscript);
       setTranscriptConfirmed(false);
-      setTranscriptStorageStatus("Not saved yet — local draft only");
+      setTranscriptStorageStatus(
+        result.savedDraft
+          ? "Original upload and prepared review draft saved"
+          : "Not saved yet — local draft only"
+      );
       setPrivacyOverrideAccepted(false);
       setAiPrivacyFindings(
         result.privacyFindings?.length
@@ -1095,7 +1115,7 @@ async function clearFinishedRunLogs() {
           : "AI-assisted transcript preparation completed. Please review before confirming."
       );
       setApiStatus(
-        `${result.fallbackUsed || forceRuleBased ? "Transcript prepared with quick local rules" : "Transcript prepared locally"} and not saved yet. Please review speaker labels, sensitive-information items, and wording before saving or confirming${
+        `${result.fallbackUsed || forceRuleBased ? "Transcript prepared with quick local rules" : "Transcript prepared locally"}${result.savedDraft ? " and saved as a review draft" : " and not saved yet"}. Please review speaker labels, sensitive-information items, and wording before saving or confirming${
           result.privacyFindings?.length
             ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
             : ""
@@ -1190,6 +1210,7 @@ async function clearFinishedRunLogs() {
       saved?: boolean;
       reason?: string;
       error?: string;
+      workspace?: WorkspaceData;
     };
     setApiStatus(
       result.saved
@@ -1197,8 +1218,11 @@ async function clearFinishedRunLogs() {
         : result.reason ?? result.error ?? "Transcript save failed"
     );
     if (result.saved) {
+      if (result.workspace) {
+        applyWorkspace(result.workspace);
+      }
       setEditableTranscript(transcriptForStorage);
-      setTranscriptStorageStatus("Anonymised version saved");
+      setTranscriptStorageStatus("Edited transcript version saved");
     }
   }
 
@@ -3342,9 +3366,15 @@ async function clearFinishedRunLogs() {
         researcherNotes: currentProject.researcherNotes
       },
       transcript: editableTranscript,
+      transcriptRecords: displayTranscriptRecords,
       segments: displaySegments,
       audioFiles: displayAudioFiles,
       transcriptionJobs: displayTranscriptionJobs,
+      transcriptReview: {
+        originalSaved: displayTranscriptRecords.some((item) => Boolean(item.rawContent)),
+        editedDraftSaved: displayTranscriptRecords.some((item) => Boolean(item.cleanedContent)),
+        confirmedSaved: displayTranscriptRecords.some((item) => item.status === "Confirmed" || Boolean(item.finalContent))
+      },
       meaningUnits: currentMeaningUnits,
       categories: displayCategories,
       methodologicalIntegrityIssues: reviewerOutputs,
@@ -3383,6 +3413,10 @@ async function clearFinishedRunLogs() {
       `Data source: ${currentProject.dataSource}`,
       `Data suitability confirmed: ${currentProject.dataSuitabilityConfirmed ? "Yes" : "No"}`,
       `Researcher notes: ${currentProject.researcherNotes || "Not set"}`,
+      `Transcript records: ${displayTranscriptRecords.length}`,
+      `Original transcript saved: ${displayTranscriptRecords.some((item) => Boolean(item.rawContent)) ? "Yes" : "No"}`,
+      `Edited transcript draft saved: ${displayTranscriptRecords.some((item) => Boolean(item.cleanedContent)) ? "Yes" : "No"}`,
+      `Confirmed transcript saved: ${displayTranscriptRecords.some((item) => item.status === "Confirmed" || Boolean(item.finalContent)) ? "Yes" : "No"}`,
       "",
       "Transcript",
       editableTranscript || "No transcript yet.",
@@ -4410,6 +4444,9 @@ async function clearFinishedRunLogs() {
                       </p>
                     </div>
                   )}
+                  <TranscriptReviewHistory
+                    transcriptRecords={displayTranscriptRecords}
+                  />
                   <button
                     className="button primary"
                     disabled={
@@ -5428,6 +5465,51 @@ async function clearFinishedRunLogs() {
           </section>
           <RunLogPanel logs={runLogs} onClear={clearFinishedRunLogs} />
         </main>
+      </div>
+    </div>
+  );
+}
+
+function TranscriptReviewHistory({
+  transcriptRecords
+}: {
+  transcriptRecords: TranscriptRecord[];
+}) {
+  if (transcriptRecords.length === 0) {
+    return (
+      <div className="mini-card soft">
+        <span className="label">Transcript review record</span>
+        <p className="small">
+          No transcript has been saved yet. Upload or paste a transcript, review
+          the prepared text, and confirm it before analysis.
+        </p>
+      </div>
+    );
+  }
+
+  const latest = transcriptRecords[0];
+  return (
+    <div className="mini-card soft">
+      <span className="label">Transcript review record</span>
+      <p className="small">
+        Original upload, edited review drafts, and confirmed transcript versions
+        are stored separately for audit and export. Latest: {latest.versionLabel}
+        {latest.status ? ` · ${latest.status}` : ""}.
+      </p>
+      <div className="timeline compact-timeline">
+        {transcriptRecords.slice(0, 5).map((record) => (
+          <div className="timeline-item" key={record.id}>
+            <span className="mono small">
+              {new Date(record.createdAt).toLocaleString()}
+            </span>
+            <div>
+              <strong>{record.versionLabel}</strong>
+              <p className="small">
+                {record.status ?? "Saved"} · raw {record.rawContent ? "saved" : "not saved"} · edited {record.cleanedContent ? "saved" : "not saved"} · confirmed {record.finalContent ? "saved" : "not saved"}
+              </p>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
