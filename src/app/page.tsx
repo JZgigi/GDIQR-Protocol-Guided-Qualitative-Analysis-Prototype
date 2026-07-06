@@ -34,6 +34,7 @@ export default async function Home(props: {
       integratedNarrative={workspace.integratedNarrative}
       meaningUnits={workspace.meaningUnits}
       project={workspace.project}
+      preAnalysisNotes={workspace.preAnalysisNotes}
       projectList={projectList}
       reviewerComments={workspace.reviewerComments}
       segments={workspace.segments}

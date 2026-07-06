@@ -770,6 +770,18 @@ export async function savePreAnalysisNotes({
     throw new Error(error.message);
   }
 
+  const { data: projectRow } = await supabase
+    .from("projects")
+    .update({
+      research_question: researchQuestion.trim(),
+      study_description: studyDescription.trim(),
+      status: "Step 1 pre-analysis saved",
+      updated_at: updatedAt
+    })
+    .eq("id", projectId)
+    .select()
+    .maybeSingle();
+
   await recordEditLog({
     action: "Updated Step 1 pre-analysis notes",
     actionType: "pre_analysis_updated",
@@ -781,7 +793,11 @@ export async function savePreAnalysisNotes({
     targetType: "pre_analysis"
   });
 
-  return { saved: true, preAnalysisNotes: mapPreAnalysisNotes(data) };
+  return {
+    saved: true,
+    preAnalysisNotes: mapPreAnalysisNotes(data),
+    project: projectRow ? mapProject(projectRow) : undefined
+  };
 }
 
 export async function recordEditLog({
