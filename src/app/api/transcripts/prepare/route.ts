@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { defaultProjectId, getWorkspace, saveTranscriptReviewDraft } from "@/lib/gdiqr-repository";
+import { isLocalStorageMode } from "@/lib/storage-mode";
 import {
   prepareTranscriptWithLocalRules,
   processTranscriptForPrivacyAndSpeakers
@@ -19,6 +21,9 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
     forceRuleBased?: boolean;
     language?: Project["language"];
+    projectId?: string;
+    saveReviewDraft?: boolean;
+    sourceLabel?: string;
     timeoutMs?: number;
     transcript?: string;
   };
@@ -94,6 +99,26 @@ export async function POST(request: NextRequest) {
       ms: Date.now() - startedAt,
       transcriptChars: processed.sanitizedTranscript.length
     });
+    let workspace;
+    let savedDraft = false;
+    let transcriptRecord;
+    if (body.saveReviewDraft && !isLocalStorageMode()) {
+      const projectId = body.projectId ?? defaultProjectId;
+      const saved = await saveTranscriptReviewDraft({
+        language,
+        preparedTranscript: processed.sanitizedTranscript,
+        privacyFindings: processed.privacyFindings,
+        projectId,
+        rawTranscript: transcript,
+        sourceLabel: body.sourceLabel?.trim() || "Uploaded transcript — review draft",
+        sourceType: "transcript"
+      });
+      savedDraft = Boolean(saved.saved);
+      transcriptRecord = saved.saved && "transcript" in saved ? saved.transcript : undefined;
+      workspace = await getWorkspace(projectId);
+      addRunEvent(runId, "Saved original and prepared transcript as a review draft");
+    }
+
     finishRunLog(runId);
 
     return NextResponse.json({
@@ -101,8 +126,11 @@ export async function POST(request: NextRequest) {
       model: processed.model,
       prepared: true,
       privacyFindings: processed.privacyFindings,
+      savedDraft,
       speakerNotes: processed.speakerNotes,
-      transcript: processed.sanitizedTranscript
+      transcript: processed.sanitizedTranscript,
+      transcriptRecord,
+      workspace
     });
   } catch (error) {
     const message =

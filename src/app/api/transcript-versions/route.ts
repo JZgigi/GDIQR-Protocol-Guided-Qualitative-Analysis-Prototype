@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   defaultProjectId,
+  getWorkspace,
   saveTranscriptVersion
 } from "@/lib/gdiqr-repository";
 import { isLocalStorageMode } from "@/lib/storage-mode";
@@ -32,16 +33,18 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const projectId = body.projectId ?? defaultProjectId;
     const result = await saveTranscriptVersion({
       anonymisationStatus: body.anonymisationStatus,
       content: body.content,
-      projectId: body.projectId ?? defaultProjectId,
+      projectId,
       rawTranscriptRetained: body.rawTranscriptRetained,
       sensitiveItems: body.sensitiveItems,
       versionLabel: body.versionLabel
     });
+    const workspace = await getWorkspace(projectId);
 
-    return NextResponse.json(result);
+    return NextResponse.json({ ...result, workspace });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Save failed." },
