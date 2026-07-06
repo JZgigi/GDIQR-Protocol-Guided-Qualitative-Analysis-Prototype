@@ -143,7 +143,12 @@ async function runMeaningUnitGeneration({
         status: "Local-only draft workspace",
         studyDescription: "",
         title: "Local-only prototype workspace",
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
+        datasetType: "open",
+        dataSource: "other",
+        dataSuitabilityConfirmed: false,
+        researcherNotes: "",
+        metadata: {},
       };
     addRunEvent(
       runId,
