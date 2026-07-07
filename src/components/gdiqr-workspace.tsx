@@ -26,6 +26,7 @@ import type {
   CategoryMode,
   CategoryNode,
   DatasetType,
+  ExportRecord,
   IntegrationRelationship as StoredIntegrationRelationship,
   IntegrityReviewItem,
   IntegrityReviewItemStatus,
@@ -55,6 +56,8 @@ const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
 const PRODUCT_SHORT_TITLE = "GDI-QR x AI Prototype";
 const METHODOLOGICAL_FRAME = "GDI-QR-informed";
+
+type AnalysisExportFormat = "json" | "csv" | "txt" | "docx" | "pdf";
 
 type SensitiveRiskLevel = "low" | "medium" | "high";
 type SensitiveReviewStatus = "pending" | "confirmed" | "ignored" | "edited";
@@ -130,6 +133,7 @@ interface GdiqrWorkspaceProps {
   integrationRelationships?: StoredIntegrationRelationship[];
   integrationMemo?: string;
   integrityReviewItems?: IntegrityReviewItem[];
+  exportRecords?: ExportRecord[];
   dataSource?: WorkspaceData["dataSource"];
   storageMode?: StorageMode;
   supabaseConfigured?: boolean;
@@ -153,6 +157,7 @@ export function GdiqrWorkspace({
   integrationRelationships: storedIntegrationRelationships = [],
   integrationMemo = "",
   integrityReviewItems = [],
+  exportRecords = [],
   dataSource = "unconfigured",
   storageMode = "local",
   supabaseConfigured = false
@@ -252,6 +257,7 @@ export function GdiqrWorkspace({
   const [displayCategories, setDisplayCategories] = useState(categories);
   const [reviewerOutputs, setReviewerOutputs] = useState(reviewerComments);
   const [displayAuditEvents, setDisplayAuditEvents] = useState(auditEvents);
+  const [displayExportRecords, setDisplayExportRecords] = useState(exportRecords);
   const [narrative, setNarrative] = useState(integratedNarrative);
   const [integrationReviewed, setIntegrationReviewed] = useState(false);
   const [integrationNote, setIntegrationNote] = useState(integrationMemo);
@@ -777,6 +783,7 @@ export function GdiqrWorkspace({
     setDisplayCategories(workspace.categories);
     setReviewerOutputs(workspace.reviewerComments);
     setDisplayAuditEvents(workspace.auditEvents);
+    setDisplayExportRecords(workspace.exportRecords ?? []);
     setNarrative(workspace.integratedNarrative);
     setIntegrationNote(workspace.integrationMemo ?? "");
     setDisplayIntegrityItems(workspace.integrityReviewItems ?? []);
@@ -3108,7 +3115,7 @@ export function GdiqrWorkspace({
     }
   }
 
-  async function recordExportEvent(format: "json" | "csv" | "txt") {
+  async function recordExportEvent(format: AnalysisExportFormat) {
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action: `Generated ${format.toUpperCase()} export locally`,
@@ -3127,6 +3134,15 @@ export function GdiqrWorkspace({
         method: "POST"
       });
       if (response.ok) {
+        const result = (await response.json().catch(() => ({}))) as {
+          exportRecord?: ExportRecord;
+        };
+        if (result.exportRecord) {
+          setDisplayExportRecords((current) => [
+            result.exportRecord as ExportRecord,
+            ...current.filter((item) => item.id !== result.exportRecord?.id)
+          ]);
+        }
         void refreshWorkspace();
       }
     } catch {
@@ -4260,37 +4276,56 @@ export function GdiqrWorkspace({
     setApiStatus("Audio preview loaded");
   }
 
-  function exportWorkspace(format: "json" | "csv" | "txt") {
+  function exportWorkspace(format: AnalysisExportFormat) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const safeProjectTitle = slugifyFilename(currentProject.title || "gdi-qr-project");
 
     if (format === "json") {
       downloadFile(
-        `gdi-qr-workspace-${timestamp}.json`,
+        `${safeProjectTitle}-analysis-record-${timestamp}.json`,
         JSON.stringify(buildExportPayload(), null, 2),
         "application/json"
       );
-      setApiStatus("JSON export downloaded");
+      setApiStatus("JSON backup export downloaded.");
       void recordExportEvent("json");
       return;
     }
 
     if (format === "csv") {
       downloadFile(
-        `gdi-qr-meaning-units-${timestamp}.csv`,
+        `${safeProjectTitle}-meaning-units-${timestamp}.csv`,
         buildMeaningUnitCsv(currentMeaningUnits),
         "text/csv"
       );
-      setApiStatus("CSV export downloaded");
+      setApiStatus("Meaning-unit CSV export downloaded.");
       void recordExportEvent("csv");
       return;
     }
 
+    if (format === "docx") {
+      const docxBlob = buildDocxBlobFromText(buildTextReport());
+      downloadBlob(
+        `${safeProjectTitle}-analysis-record-${timestamp}.docx`,
+        docxBlob
+      );
+      setApiStatus("DOCX analysis record downloaded.");
+      void recordExportEvent("docx");
+      return;
+    }
+
+    if (format === "pdf") {
+      openPrintableAnalysisRecord(buildTextReport());
+      setApiStatus("Printable analysis record opened. Use the browser print dialog to save as PDF.");
+      void recordExportEvent("pdf");
+      return;
+    }
+
     downloadFile(
-      `gdi-qr-draft-report-${timestamp}.txt`,
+      `${safeProjectTitle}-analysis-record-${timestamp}.txt`,
       buildTextReport(),
       "text/plain"
     );
-    setApiStatus("Text report downloaded");
+    setApiStatus("Text analysis record downloaded.");
     void recordExportEvent("txt");
   }
 
@@ -4341,7 +4376,8 @@ export function GdiqrWorkspace({
         note: integrationStructureNotice
       },
       auditTrail: displayAuditEvents,
-      auditEvents: displayAuditEvents
+      auditEvents: displayAuditEvents,
+      exportRecords: displayExportRecords
     };
   }
 
@@ -4424,6 +4460,16 @@ export function GdiqrWorkspace({
       "",
       "Summary Narrative",
       narrative || "No summary narrative yet.",
+      "",
+      "Export History",
+      displayExportRecords.length
+        ? displayExportRecords
+            .map(
+              (record) =>
+                `- ${record.generatedAt} | ${record.format.toUpperCase()} | ${record.storagePath || "local/download"}`
+            )
+            .join("\n")
+        : "No export records yet.",
       "",
       "Audit Trail",
       auditTrailText || "No audit events yet."
@@ -6447,19 +6493,19 @@ export function GdiqrWorkspace({
                       label: "CSV"
                     },
                     {
-                      description: "Readable analysis record for supervision.",
+                      description: "Plain-text analysis record for quick review.",
                       format: "txt" as const,
-                      label: "DOCX-style text"
+                      label: "TXT"
                     },
                     {
-                      description: "Formatted document export placeholder.",
+                      description: "Formatted Word document containing the complete analysis record.",
                       format: "docx" as const,
                       label: "DOCX"
                     },
                     {
-                      description: "PDF export placeholder for later version.",
+                      description: "Open a printable report that can be saved as PDF from the browser print dialog.",
                       format: "pdf" as const,
-                      label: "PDF"
+                      label: "PDF / print"
                     }
                   ].map((item) => (
                     <div className="mini-card" key={item.format}>
@@ -6468,23 +6514,13 @@ export function GdiqrWorkspace({
                       <p className="small">{item.description}</p>
                       <button
                         className="button"
-                        disabled={
-                          !canExport ||
-                          item.format === "docx" ||
-                          item.format === "pdf"
-                        }
-                        onClick={() =>
-                          item.format === "json" ||
-                          item.format === "csv" ||
-                          item.format === "txt"
-                            ? exportWorkspace(item.format)
-                            : undefined
-                        }
+                        disabled={!canExport}
+                        onClick={() => exportWorkspace(item.format)}
                         type="button"
                       >
                         <Download size={18} />
-                        {item.format === "docx" || item.format === "pdf"
-                          ? "Coming next"
+                        {item.format === "pdf"
+                          ? "Open printable report"
                           : `Download ${item.label}`}
                       </button>
                     </div>
@@ -6497,6 +6533,26 @@ export function GdiqrWorkspace({
                     against transcript evidence before using them in reports,
                     publications, supervision, or teaching materials.
                   </p>
+                  {displayExportRecords.length > 0 && (
+                    <div className="mini-card soft">
+                      <span className="label">Export history</span>
+                      <div className="timeline compact-timeline">
+                        {displayExportRecords.slice(0, 6).map((record) => (
+                          <div className="timeline-item" key={record.id}>
+                            <span className="mono small">
+                              {new Date(record.generatedAt).toLocaleString()}
+                            </span>
+                            <div>
+                              <strong>{record.format.toUpperCase()} export</strong>
+                              <p className="small">
+                                {record.storagePath || "Downloaded locally / generated from browser"}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {displayAuditEvents.length === 0 ? (
                     <EmptyState text="No review-trail records yet. Upload, save, or ask for optional assistant support to start the trail." />
                   ) : (
@@ -7016,7 +7072,7 @@ function mergeIntegrityReviewItems(
       response: stored.response || generated.response,
       researcherNote: stored.researcherNote,
       status:
-        stored.response || stored.researcherNote
+        stored.status === "resolved" || stored.status === "dismissed"
           ? stored.status
           : generated.status,
       createdAt: stored.createdAt || generated.createdAt,
@@ -8403,6 +8459,243 @@ async function fetchWithTimeout(
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+
+function slugifyFilename(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\u3400-\u9fff]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "gdi-qr-project";
+}
+
+function downloadBlob(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function openPrintableAnalysisRecord(reportText: string) {
+  const popup = window.open("", "_blank");
+  if (!popup) {
+    downloadFile("gdi-qr-analysis-record.txt", reportText, "text/plain");
+    return;
+  }
+
+  popup.document.write(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>GDI-QR Analysis Record</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 32px; color: #111827; line-height: 1.45; }
+    pre { white-space: pre-wrap; word-break: break-word; font-family: Arial, Helvetica, sans-serif; font-size: 11pt; }
+    .toolbar { position: sticky; top: 0; background: white; padding: 12px 0; border-bottom: 1px solid #e5e7eb; margin-bottom: 16px; }
+    button { padding: 8px 12px; border: 1px solid #9ca3af; border-radius: 8px; background: #f9fafb; cursor: pointer; }
+    @media print { .toolbar { display: none; } body { margin: 18mm; } }
+  </style>
+</head>
+<body>
+  <div class="toolbar"><button onclick="window.print()">Print / Save as PDF</button></div>
+  <pre>${escapeHtml(reportText)}</pre>
+</body>
+</html>`);
+  popup.document.close();
+  popup.focus();
+  window.setTimeout(() => popup.print(), 500);
+}
+
+function buildDocxBlobFromText(reportText: string) {
+  const documentXml = buildWordDocumentXml(reportText);
+  const files = [
+    {
+      name: "[Content_Types].xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`
+    },
+    {
+      name: "_rels/.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`
+    },
+    {
+      name: "word/document.xml",
+      content: documentXml
+    }
+  ];
+
+  return new Blob([createZipArchive(files)], {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  });
+}
+
+function buildWordDocumentXml(reportText: string) {
+  const sectionHeadings = new Set([
+    "Step 1 Pre-analysis",
+    "Transcript",
+    "Meaning Units",
+    "Categories",
+    "Methodological Integrity Review",
+    "Reviewer Issues",
+    "Step 4 Integration",
+    "Summary Narrative",
+    "Export History",
+    "Audit Trail"
+  ]);
+  const lines = reportText.split("\n");
+  const paragraphs = lines
+    .map((line, index) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        return `<w:p/>`;
+      }
+      const isTitle = index === 0;
+      const isHeading = sectionHeadings.has(trimmed);
+      return buildWordParagraphXml(trimmed, { isHeading, isTitle });
+    })
+    .join("");
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    ${paragraphs}
+    <w:sectPr>
+      <w:pgSz w:w="11906" w:h="16838"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+}
+
+function buildWordParagraphXml(
+  text: string,
+  options: { isHeading?: boolean; isTitle?: boolean } = {}
+) {
+  const size = options.isTitle ? "32" : options.isHeading ? "26" : "22";
+  const bold = options.isTitle || options.isHeading ? "<w:b/>" : "";
+  const spacing = options.isTitle || options.isHeading ? "<w:spacing w:before=\"240\" w:after=\"120\"/>" : "<w:spacing w:after=\"80\"/>";
+  return `<w:p>
+    <w:pPr>${spacing}</w:pPr>
+    <w:r>
+      <w:rPr>${bold}<w:sz w:val="${size}"/><w:szCs w:val="${size}"/></w:rPr>
+      <w:t xml:space="preserve">${escapeXml(text)}</w:t>
+    </w:r>
+  </w:p>`;
+}
+
+function createZipArchive(files: Array<{ name: string; content: string }>) {
+  const encoder = new TextEncoder();
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+
+  files.forEach((file) => {
+    const nameBytes = encoder.encode(file.name);
+    const data = encoder.encode(file.content);
+    const crc = crc32(data);
+    const localHeader = new Uint8Array(30 + nameBytes.length);
+    const localView = new DataView(localHeader.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, 0, true);
+    localView.setUint16(12, 0, true);
+    localView.setUint32(14, crc, true);
+    localView.setUint32(18, data.length, true);
+    localView.setUint32(22, data.length, true);
+    localView.setUint16(26, nameBytes.length, true);
+    localView.setUint16(28, 0, true);
+    localHeader.set(nameBytes, 30);
+    localParts.push(localHeader, data);
+
+    const centralHeader = new Uint8Array(46 + nameBytes.length);
+    const centralView = new DataView(centralHeader.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, 0, true);
+    centralView.setUint16(14, 0, true);
+    centralView.setUint32(16, crc, true);
+    centralView.setUint32(20, data.length, true);
+    centralView.setUint32(24, data.length, true);
+    centralView.setUint16(28, nameBytes.length, true);
+    centralView.setUint16(30, 0, true);
+    centralView.setUint16(32, 0, true);
+    centralView.setUint16(34, 0, true);
+    centralView.setUint16(36, 0, true);
+    centralView.setUint32(38, 0, true);
+    centralView.setUint32(42, offset, true);
+    centralHeader.set(nameBytes, 46);
+    centralParts.push(centralHeader);
+
+    offset += localHeader.length + data.length;
+  });
+
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const endRecord = new Uint8Array(22);
+  const endView = new DataView(endRecord.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, files.length, true);
+  endView.setUint16(10, files.length, true);
+  endView.setUint32(12, centralSize, true);
+  endView.setUint32(16, offset, true);
+
+  return concatUint8Arrays([...localParts, ...centralParts, endRecord]);
+}
+
+function concatUint8Arrays(parts: Uint8Array[]) {
+  const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  parts.forEach((part) => {
+    result.set(part, offset);
+    offset += part.length;
+  });
+  return result;
+}
+
+function crc32(data: Uint8Array) {
+  let crc = 0xffffffff;
+  for (let index = 0; index < data.length; index += 1) {
+    crc ^= data[index];
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function escapeXml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function downloadFile(filename: string, content: string, type: string) {

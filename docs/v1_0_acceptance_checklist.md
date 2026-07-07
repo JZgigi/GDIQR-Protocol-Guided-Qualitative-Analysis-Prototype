@@ -378,3 +378,44 @@ Smoke check：
 - Researcher 可以添加 response/note，并把 issue 标记为 resolved / dismissed。
 - Audit trail 在项目内可见，并在 export 中保留。
 - Researcher edits、AI suggestions、Reviewer checks 在 audit trail 中可以区分。
+
+## Ticket 11：Export analysis record
+
+Branch：`feature/v1-export-analysis-record`
+
+Smoke check：
+
+1. 打开一个已经完成 Step 1–5 的 project。
+2. 进入 Export 页面。
+3. 点击 **Download JSON**。
+4. 确认 JSON 文件可以下载，并包含：
+   - project metadata
+   - data suitability confirmation
+   - Step 1 pre-analysis notes
+   - transcript records
+   - confirmed transcript
+   - meaning units
+   - categories
+   - Step 4 integration relationships / narrative
+   - Step 5 methodological integrity review
+   - audit trail
+   - export records
+5. 点击 **Download CSV**，确认 meaning-unit table 可以下载。
+6. 点击 **Download TXT**，确认可读 analysis record 可以下载。
+7. 点击 **Download DOCX**，确认 Word document 可以下载并能被 Word / LibreOffice 打开。
+8. 点击 **Open printable report**，确认会打开 printable report，并可通过 browser print dialog 另存为 PDF。
+9. 每次导出后刷新页面，确认 export history / audit trail 中记录了 export action。
+10. 检查 Supabase `edit_logs` / `audit_events`，应出现 `export_generated`。
+
+预期 audit/edit-log events：
+
+- `export_generated`
+
+预期结果：
+
+- Researcher 可以导出完整 analysis record，而不只是临时页面内容。
+- JSON 可作为 project backup / audit backup。
+- DOCX / printable PDF report 适合 supervision、research documentation 和 comparison study archive。
+- Meaning-unit CSV 可用于 spreadsheet review。
+- Export 文件清楚提示 assistant-supported outputs 仍需 researcher review against transcript evidence。
+- Export action 会进入 audit trail。
