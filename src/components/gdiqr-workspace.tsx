@@ -26,6 +26,8 @@ import type {
   CategoryMode,
   CategoryNode,
   DatasetType,
+  IntegrationRelationship as StoredIntegrationRelationship,
+  IntegrationRelationshipLabel,
   MeaningUnit,
   Project,
   ProjectDataSource,
@@ -79,14 +81,14 @@ interface ReviewerIssueContext {
   text: string;
 }
 
-interface IntegrationRelationship {
+interface IntegrationRelationshipDraft {
   evidenceUnitNumbers: number[];
   id: string;
+  label: IntegrationRelationshipLabel;
   rationale: string;
   researcherNote: string;
   sourceCategoryId: string;
   targetCategoryId: string;
-  type: string;
 }
 
 interface IntegrationMapGroup {
@@ -123,6 +125,8 @@ interface GdiqrWorkspaceProps {
   reviewerComments: ReviewerComment[];
   auditEvents: AuditEvent[];
   integratedNarrative: string;
+  integrationRelationships?: StoredIntegrationRelationship[];
+  integrationMemo?: string;
   dataSource?: WorkspaceData["dataSource"];
   storageMode?: StorageMode;
   supabaseConfigured?: boolean;
@@ -143,6 +147,8 @@ export function GdiqrWorkspace({
   reviewerComments,
   auditEvents,
   integratedNarrative,
+  integrationRelationships: storedIntegrationRelationships = [],
+  integrationMemo = "",
   dataSource = "unconfigured",
   storageMode = "local",
   supabaseConfigured = false
@@ -244,10 +250,18 @@ export function GdiqrWorkspace({
   const [displayAuditEvents, setDisplayAuditEvents] = useState(auditEvents);
   const [narrative, setNarrative] = useState(integratedNarrative);
   const [integrationReviewed, setIntegrationReviewed] = useState(false);
-  const [integrationNote, setIntegrationNote] = useState("");
+  const [integrationNote, setIntegrationNote] = useState(integrationMemo);
   const [integrationRelationships, setIntegrationRelationships] = useState<
-    IntegrationRelationship[]
-  >([]);
+    IntegrationRelationshipDraft[]
+  >(() =>
+    buildIntegrationRelationshipDrafts({
+      categories,
+      storedRelationships: storedIntegrationRelationships,
+      units: meaningUnits
+    })
+  );
+  const [integrationSavedAt, setIntegrationSavedAt] = useState("");
+  const [isSavingIntegration, setIsSavingIntegration] = useState(false);
   const [integrationStructureExplanation, setIntegrationStructureExplanation] =
     useState("");
   const [integrationStructureNotice, setIntegrationStructureNotice] =
@@ -719,6 +733,15 @@ export function GdiqrWorkspace({
     setReviewerOutputs(workspace.reviewerComments);
     setDisplayAuditEvents(workspace.auditEvents);
     setNarrative(workspace.integratedNarrative);
+    setIntegrationNote(workspace.integrationMemo ?? "");
+    setIntegrationRelationships(
+      buildIntegrationRelationshipDrafts({
+        categories: workspace.categories,
+        storedRelationships: workspace.integrationRelationships ?? [],
+        units: workspace.meaningUnits
+      })
+    );
+    setIntegrationSavedAt("");
     setCategoryDraftNotice("");
     setCategoryDraftIsFallback(false);
     setApiDataSource(workspace.dataSource);
@@ -2334,7 +2357,7 @@ export function GdiqrWorkspace({
     }
   }
 
-  function generateIntegrationStructureDraft() {
+  async function generateIntegrationStructureDraft() {
     if (hasTemporaryFallbackCategories) {
       setApiStatus(
         "This category set is still a fallback draft. Review or regenerate categories before integrating."
@@ -2370,6 +2393,13 @@ export function GdiqrWorkspace({
     setApiStatus(
       "Provisional relationship structure, draft category map, and editable narrative created from reviewed categories."
     );
+    await persistIntegrationWorkspace({
+      action: "Generated provisional integration structure",
+      actionType: "relationship_created",
+      narrativeValue: draft.narrative,
+      noteValue: integrationNote,
+      relationships: draft.relationships
+    });
   }
 
   function addIntegrationRelationship() {
@@ -2380,7 +2410,7 @@ export function GdiqrWorkspace({
       return;
     }
     const [source, target] = reviewedIntegrationCategories;
-    const nextRelationship: IntegrationRelationship = {
+    const nextRelationship: IntegrationRelationshipDraft = {
       evidenceUnitNumbers: Array.from(
         new Set([
           ...source.includedUnitIds.filter((unitNumber) =>
@@ -2397,17 +2427,23 @@ export function GdiqrWorkspace({
       researcherNote: "",
       sourceCategoryId: source.id,
       targetCategoryId: target.id,
-      type: "co-occurs with"
+      label: "unclear relationship"
     };
-    setIntegrationRelationships((current) => [...current, nextRelationship]);
+    const nextRelationships = [...integrationRelationships, nextRelationship];
+    setIntegrationRelationships(nextRelationships);
     setIntegrationStructureNotice(
-      "Relationship added as an editable researcher draft."
+      "Relationship added as an editable researcher draft. Save the integration draft after editing rationale and evidence."
     );
+    void persistIntegrationWorkspace({
+      action: "Added integration relationship",
+      actionType: "relationship_created",
+      relationships: nextRelationships
+    });
   }
 
   function updateIntegrationRelationship(
     relationshipId: string,
-    updates: Partial<IntegrationRelationship>
+    updates: Partial<IntegrationRelationshipDraft>
   ) {
     const existingRelationship = integrationRelationships.find(
       (relationship) => relationship.id === relationshipId
@@ -2447,8 +2483,8 @@ export function GdiqrWorkspace({
       ) {
         auditActions.push("Edited relationship rationale");
       }
-      if (updates.type && updates.type !== existingRelationship.type) {
-        auditActions.push(`Changed relationship type to ${updates.type}`);
+      if (updates.label && updates.label !== existingRelationship.label) {
+        auditActions.push(`Changed relationship type to ${updates.label}`);
       }
       auditActions.forEach((action) =>
         recordLocalAuditEvent({
@@ -2457,17 +2493,123 @@ export function GdiqrWorkspace({
         })
       );
     }
+    setIntegrationStructureNotice(
+      "Relationship edited. Save the integration draft to persist rationale, type, and evidence changes."
+    );
     setIntegrationReviewed(false);
   }
 
   function removeIntegrationRelationship(relationshipId: string) {
-    setIntegrationRelationships((current) =>
-      current.filter((relationship) => relationship.id !== relationshipId)
+    const nextRelationships = integrationRelationships.filter(
+      (relationship) => relationship.id !== relationshipId
     );
+    setIntegrationRelationships(nextRelationships);
     setIntegrationStructureNotice(
-      "Relationship removed from the provisional structure."
+      "Relationship removed from the provisional structure. Save the integration draft to persist this change."
     );
     setIntegrationReviewed(false);
+    void persistIntegrationWorkspace({
+      action: "Removed integration relationship",
+      actionType: "relationship_deleted",
+      relationships: nextRelationships
+    });
+  }
+
+  async function saveIntegrationDraft() {
+    await persistIntegrationWorkspace({
+      action: "Saved Step 4 integration draft",
+      actionType: "relationship_updated"
+    });
+  }
+
+  async function persistIntegrationWorkspace({
+    action,
+    actionType = "relationship_updated",
+    narrativeValue = narrative,
+    noteValue = integrationNote,
+    relationships = integrationRelationships,
+    reviewed = false
+  }: {
+    action: string;
+    actionType?: AuditActionType;
+    narrativeValue?: string;
+    noteValue?: string;
+    relationships?: IntegrationRelationshipDraft[];
+    reviewed?: boolean;
+  }) {
+    setIsSavingIntegration(true);
+
+    if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action,
+        target: "Step 4 integration workspace"
+      });
+      setIntegrationSavedAt(new Date().toISOString());
+      setIntegrationReviewed(reviewed || integrationReviewed);
+      setApiStatus("Integration draft saved locally for this browser session.");
+      setIsSavingIntegration(false);
+      return true;
+    }
+
+    try {
+      const response = await fetch("/api/integration", {
+        body: JSON.stringify({
+          action,
+          actionType,
+          integratedNarrative: narrativeValue,
+          integrationMemo: noteValue,
+          projectId: currentProject.id,
+          relationships: relationships.map((relationship) => ({
+            evidenceUnitNumbers: relationship.evidenceUnitNumbers,
+            id: relationship.id,
+            label: relationship.label,
+            memo: encodeIntegrationRelationshipDraft(relationship),
+            rationale: relationship.rationale,
+            researcherNote: relationship.researcherNote,
+            sourceCategoryId: relationship.sourceCategoryId,
+            targetCategoryId: relationship.targetCategoryId
+          })),
+          reviewed
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        integrationMemo?: string;
+        integratedNarrative?: string;
+        relationships?: StoredIntegrationRelationship[];
+        saved?: boolean;
+      };
+
+      if (!response.ok || !result.saved) {
+        setApiStatus(result.error ?? "Integration draft could not be saved.");
+        return false;
+      }
+
+      setNarrative(result.integratedNarrative ?? narrativeValue);
+      setIntegrationNote(result.integrationMemo ?? noteValue);
+      setIntegrationRelationships(
+        buildIntegrationRelationshipDrafts({
+          categories: reviewedIntegrationCategories,
+          storedRelationships: result.relationships ?? [],
+          units: confirmedMeaningUnits
+        })
+      );
+      setIntegrationReviewed(reviewed || integrationReviewed);
+      setIntegrationSavedAt(new Date().toISOString());
+      setApiStatus(`${action} and saved to Supabase.`);
+      return true;
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error
+          ? error.message
+          : "Integration draft could not be saved."
+      );
+      return false;
+    } finally {
+      setIsSavingIntegration(false);
+    }
   }
 
   async function runReviewer(reviewerWorkspace: ReviewerWorkspace) {
@@ -2648,11 +2790,9 @@ export function GdiqrWorkspace({
       const withoutUnit = category.includedUnitIds.filter(
         (number) => number !== unitNumber
       );
-
       if (category.id !== categoryId) {
         return { ...category, includedUnitIds: withoutUnit };
       }
-
       return {
         ...category,
         includedUnitIds: Array.from(new Set([...withoutUnit, unitNumber])).sort(
@@ -4021,6 +4161,9 @@ export function GdiqrWorkspace({
         title: integrationStructureTitle,
         explanation: integrationStructureExplanation,
         relationships: integrationRelationships,
+        researcherNote: integrationNote,
+        reviewed: integrationReviewed,
+        savedAt: integrationSavedAt,
         note: integrationStructureNotice
       },
       auditEvents: displayAuditEvents
@@ -4083,6 +4226,11 @@ export function GdiqrWorkspace({
       "",
       "Methodological Integrity Checklist and Issues",
       reviewerText || "No methodological integrity issues yet.",
+      "",
+      "Step 4 Integration",
+      `Relationship count: ${integrationRelationships.length}`,
+      `Integration reviewed: ${integrationReviewed ? "Yes" : "No"}`,
+      `Integration researcher note: ${integrationNote || "Not set"}`,
       "",
       "Summary Narrative",
       narrative || "No summary narrative yet."
@@ -5805,7 +5953,7 @@ export function GdiqrWorkspace({
                       disabled={
                         !canGenerateIntegrationStructure || isRunningCategories
                       }
-                      onClick={generateIntegrationStructureDraft}
+                      onClick={() => void generateIntegrationStructureDraft()}
                       type="button"
                     >
                       <GitBranch size={18} />
@@ -5818,6 +5966,19 @@ export function GdiqrWorkspace({
                     >
                       Add relationship
                     </button>
+                    <button
+                      className="button primary"
+                      disabled={isSavingIntegration}
+                      onClick={() => void saveIntegrationDraft()}
+                      type="button"
+                    >
+                      {isSavingIntegration ? "Saving integration..." : "Save integration draft"}
+                    </button>
+                    {integrationSavedAt && (
+                      <span className="small">
+                        Last saved: {new Date(integrationSavedAt).toLocaleTimeString()}
+                      </span>
+                    )}
                   </div>
                   {integrationStructureNotice && (
                     <p className="small panel-note">{integrationStructureNotice}</p>
@@ -5921,7 +6082,11 @@ export function GdiqrWorkspace({
                         return;
                       }
                       setIntegrationReviewed(true);
-                      setApiStatus("Integrated findings marked as researcher-reviewed provisional synthesis.");
+                      void persistIntegrationWorkspace({
+                        action: "Confirmed researcher-reviewed integration narrative",
+                        actionType: "relationship_updated",
+                        reviewed: true
+                      });
                     }}
                     onNoteChange={setIntegrationNote}
                     units={confirmedMeaningUnits}
@@ -8932,17 +9097,119 @@ function UnassignedMeaningUnits({
   );
 }
 
-const relationshipTypeOptions = [
+const relationshipTypeOptions: IntegrationRelationshipLabel[] = [
   "supports",
   "contrasts with",
-  "develops into",
+  "contributes to",
+  "explains",
+  "is part of",
+  "leads to",
   "contextualises",
-  "overlaps with",
-  "tensions with",
-  "part of / contains",
-  "co-occurs with",
-  "unresolved relation"
+  "unclear relationship"
 ];
+
+function toIntegrationRelationshipLabel(
+  value: string
+): IntegrationRelationshipLabel {
+  if (relationshipTypeOptions.includes(value as IntegrationRelationshipLabel)) {
+    return value as IntegrationRelationshipLabel;
+  }
+  if (value === "develops into") {
+    return "leads to";
+  }
+  if (value === "part of / contains") {
+    return "is part of";
+  }
+  if (value === "overlaps with" || value === "co-occurs with") {
+    return "contributes to";
+  }
+  if (value === "tensions with") {
+    return "contrasts with";
+  }
+  return "unclear relationship";
+}
+
+function parseIntegrationMemoPayload(memo: string) {
+  try {
+    const parsed = JSON.parse(memo) as {
+      evidenceUnitNumbers?: unknown;
+      rationale?: unknown;
+      researcherNote?: unknown;
+    };
+    return {
+      evidenceUnitNumbers: Array.isArray(parsed.evidenceUnitNumbers)
+        ? parsed.evidenceUnitNumbers.filter(
+            (item): item is number => typeof item === "number"
+          )
+        : undefined,
+      rationale:
+        typeof parsed.rationale === "string" ? parsed.rationale : undefined,
+      researcherNote:
+        typeof parsed.researcherNote === "string"
+          ? parsed.researcherNote
+          : undefined
+    };
+  } catch {
+    return { rationale: memo };
+  }
+}
+
+function buildIntegrationRelationshipDrafts({
+  categories,
+  storedRelationships,
+  units
+}: {
+  categories: CategoryNode[];
+  storedRelationships: StoredIntegrationRelationship[];
+  units: MeaningUnit[];
+}): IntegrationRelationshipDraft[] {
+  const acceptedUnitNumbers = new Set(
+    units.filter(isConfirmedMeaningUnit).map((unit) => unit.number)
+  );
+
+  return storedRelationships
+    .filter((relationship) =>
+      categories.some((category) => category.id === relationship.sourceCategoryId) &&
+      categories.some((category) => category.id === relationship.targetCategoryId)
+    )
+    .map((relationship) => {
+      const payload = parseIntegrationMemoPayload(relationship.memo);
+      const source = categories.find(
+        (category) => category.id === relationship.sourceCategoryId
+      );
+      const target = categories.find(
+        (category) => category.id === relationship.targetCategoryId
+      );
+      const fallbackEvidence = [
+        ...(source?.includedUnitIds ?? []),
+        ...(target?.includedUnitIds ?? [])
+      ].filter(
+        (unitNumber, index, array) =>
+          acceptedUnitNumbers.has(unitNumber) && array.indexOf(unitNumber) === index
+      );
+
+      return {
+        evidenceUnitNumbers: payload.evidenceUnitNumbers ?? fallbackEvidence.slice(0, 6),
+        id: relationship.id,
+        label: relationship.label,
+        rationale:
+          payload.rationale ??
+          relationship.memo ??
+          "Review the category evidence before treating this as an analytic relationship.",
+        researcherNote: payload.researcherNote ?? "",
+        sourceCategoryId: relationship.sourceCategoryId,
+        targetCategoryId: relationship.targetCategoryId
+      };
+    });
+}
+
+function encodeIntegrationRelationshipDraft(relationship: IntegrationRelationshipDraft) {
+  return JSON.stringify({
+    evidenceUnitNumbers: relationship.evidenceUnitNumbers,
+    rationale: relationship.rationale,
+    researcherNote: relationship.researcherNote
+  });
+}
 
 function buildRelationshipEvidenceGroups({
   relationship,
@@ -8950,7 +9217,7 @@ function buildRelationshipEvidenceGroups({
   targetCategory,
   units
 }: {
-  relationship: IntegrationRelationship;
+  relationship: IntegrationRelationshipDraft;
   sourceCategory: CategoryNode | undefined;
   targetCategory: CategoryNode | undefined;
   units: MeaningUnit[];
@@ -9018,9 +9285,9 @@ function IntegrationRelationshipCard({
   onRemove: (relationshipId: string) => void;
   onUpdate: (
     relationshipId: string,
-    updates: Partial<IntegrationRelationship>
+    updates: Partial<IntegrationRelationshipDraft>
   ) => void;
-  relationship: IntegrationRelationship;
+  relationship: IntegrationRelationshipDraft;
   units: MeaningUnit[];
 }) {
   const sourceCategory = categories.find(
@@ -9082,9 +9349,9 @@ function IntegrationRelationshipCard({
           <select
             className="select"
             onChange={(event) =>
-              onUpdate(relationship.id, { type: event.target.value })
+              onUpdate(relationship.id, { label: event.target.value as IntegrationRelationshipLabel })
             }
-            value={relationship.type}
+            value={relationship.label}
           >
             {relationshipTypeOptions.map((option) => (
               <option key={option} value={option}>
@@ -9220,7 +9487,7 @@ function RelationshipFlowRow({
   units
 }: {
   categories: CategoryNode[];
-  relationship: IntegrationRelationship;
+  relationship: IntegrationRelationshipDraft;
   units: MeaningUnit[];
 }) {
   const sourceCategory = categories.find(
@@ -9241,7 +9508,7 @@ function RelationshipFlowRow({
       </div>
       <div className="relationship-map-link">
         <span className="relationship-flow-type">
-          Possible relationship · {relationship.type}
+          Possible relationship · {relationship.label}
         </span>
         <span className="relationship-arrow-inline">--&gt;</span>
       </div>
@@ -9460,7 +9727,7 @@ function buildIntegrationStructureDraft({
   const representativeByGroup = new Map(
     mapGroups.map((group) => [group.label, group.categories[0]])
   );
-  const relationships: IntegrationRelationship[] = [];
+  const relationships: IntegrationRelationshipDraft[] = [];
 
   const addRelationship = (
     source: CategoryNode | undefined,
@@ -9476,7 +9743,7 @@ function buildIntegrationStructureDraft({
         (relationship) =>
           relationship.sourceCategoryId === source.id &&
           relationship.targetCategoryId === target.id &&
-          relationship.type === type
+          relationship.label === toIntegrationRelationshipLabel(type)
       )
     ) {
       return;
@@ -9494,7 +9761,7 @@ function buildIntegrationStructureDraft({
       researcherNote: "",
       sourceCategoryId: source.id,
       targetCategoryId: target.id,
-      type
+      label: toIntegrationRelationshipLabel(type)
     });
   };
 
