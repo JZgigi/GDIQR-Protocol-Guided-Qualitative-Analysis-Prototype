@@ -17,12 +17,16 @@ import type {
   ProjectDataSource,
   ReviewerComment,
   ReviewerIssueStatus,
+  SegmentSpeakerRole,
   TranscriptionJobRecord,
   TranscriptRecord,
   TranscriptSegment,
-  WorkflowStep
+  WorkflowStep,
 } from "@/lib/types";
-import { createSupabaseServerClient, hasSupabaseConfig } from "./supabase/server";
+import {
+  createSupabaseServerClient,
+  hasSupabaseConfig,
+} from "./supabase/server";
 import type { Database, Json } from "./supabase/database.types";
 import { autoSplitTranscript, type AutoSegmentMode } from "./auto-segmenter";
 
@@ -39,6 +43,115 @@ type IntegrationRelationshipRow =
   Database["public"]["Tables"]["integration_relationships"]["Row"];
 type PreAnalysisNotesRow =
   Database["public"]["Tables"]["pre_analysis_notes"]["Row"];
+
+const segmentRolePrefixPattern = /^\[(interviewer|participant|unclear)\]\s*/i;
+
+function normalizeSegmentSpeakerRole(value: unknown): SegmentSpeakerRole {
+  return value === "interviewer" ||
+    value === "participant" ||
+    value === "unclear"
+    ? value
+    : "unclear";
+}
+
+function inferSegmentSpeakerRole(labelOrText: string): SegmentSpeakerRole {
+  const firstLabel = labelOrText.split(/[:：]/)[0].trim().toLowerCase();
+
+  if (
+    /^(interviewer|interview|researcher|moderator|facilitator|q|i|主持人|访谈者|研究者|采访者)$/.test(
+      firstLabel,
+    )
+  ) {
+    return "interviewer";
+  }
+
+  if (
+    /^(participant|interviewee|student|p|a|受访者|参与者|学生)$/.test(
+      firstLabel,
+    )
+  ) {
+    return "participant";
+  }
+
+  return "unclear";
+}
+
+function encodeSegmentSpeakerInfo(label: string, role?: SegmentSpeakerRole) {
+  const cleanedLabel = stripSegmentSpeakerRolePrefix(label).trim();
+  const normalizedRole = normalizeSegmentSpeakerRole(role);
+  const fallbackLabel =
+    normalizedRole === "interviewer"
+      ? "Interviewer"
+      : normalizedRole === "participant"
+        ? "Participant"
+        : "Unclear speaker";
+  return `[${normalizedRole}] ${cleanedLabel || fallbackLabel}`;
+}
+
+function stripSegmentSpeakerRolePrefix(value: string) {
+  return value.replace(segmentRolePrefixPattern, "").trim();
+}
+
+function speakerRoleFromStoredInfo(value: string): SegmentSpeakerRole {
+  const explicit = value.match(segmentRolePrefixPattern)?.[1]?.toLowerCase();
+  if (
+    explicit === "interviewer" ||
+    explicit === "participant" ||
+    explicit === "unclear"
+  ) {
+    return explicit;
+  }
+  return inferSegmentSpeakerRole(value);
+}
+
+function splitTranscriptBySpeakerLabels(transcript: string) {
+  const lines = transcript
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const turns: Array<{
+    label: string;
+    role: SegmentSpeakerRole;
+    text: string;
+  }> = [];
+
+  for (const line of lines) {
+    const match = line.match(/^([^:：\n]{1,48})[:：]\s*(.*)$/u);
+    if (match) {
+      const label = match[1].trim();
+      const role = inferSegmentSpeakerRole(label);
+      const content = match[2].trim();
+      turns.push({
+        label,
+        role,
+        text: content ? `${label}: ${content}` : `${label}:`,
+      });
+      continue;
+    }
+
+    if (turns.length > 0) {
+      turns[turns.length - 1].text =
+        `${turns[turns.length - 1].text}\n${line}`.trim();
+    } else {
+      turns.push({ label: "Unclear speaker", role: "unclear", text: line });
+    }
+  }
+
+  const hasSpeakerLabels =
+    turns.length >= 2 && turns.some((turn) => turn.role !== "unclear");
+  if (!hasSpeakerLabels) {
+    return [
+      {
+        label: "Unclear speaker segment",
+        role: "unclear" as const,
+        text: transcript.trim(),
+      },
+    ].filter((turn) => turn.text);
+  }
+
+  return turns.filter((turn) => turn.text.trim());
+}
 
 export interface WorkspaceData {
   project: Project;
@@ -79,7 +192,7 @@ interface TranscriptPrivacyMetadata {
 
 function createEmptyPreAnalysisNotes(
   projectId = defaultProjectId,
-  project?: Pick<Project, "researchQuestion" | "studyDescription">
+  project?: Pick<Project, "researchQuestion" | "studyDescription">,
 ): PreAnalysisNotes {
   const now = new Date().toISOString();
   return {
@@ -92,11 +205,13 @@ function createEmptyPreAnalysisNotes(
     initialSensitisingConcepts: "",
     dataFamiliarisationNotes: "",
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 }
 
-export function getEmptyWorkspace(reason = "Supabase is not configured."): WorkspaceData {
+export function getEmptyWorkspace(
+  reason = "Supabase is not configured.",
+): WorkspaceData {
   return {
     project: {
       id: defaultProjectId,
@@ -112,7 +227,7 @@ export function getEmptyWorkspace(reason = "Supabase is not configured."): Works
       dataSource: "other",
       dataSuitabilityConfirmed: false,
       researcherNotes: "",
-      metadata: {}
+      metadata: {},
     },
     transcript: "",
     transcriptRecords: [],
@@ -131,28 +246,28 @@ export function getEmptyWorkspace(reason = "Supabase is not configured."): Works
     integratedNarrative: "",
     integrationMemo: "",
     dataSource: "unconfigured",
-    supabaseConfigured: hasSupabaseConfig()
+    supabaseConfigured: hasSupabaseConfig(),
   };
 }
 
 export function getLocalWorkspace(): WorkspaceData {
   return {
     ...getEmptyWorkspace(
-      "Local-only mode: transcript data is processed and stored within the local environment."
+      "Local-only mode: transcript data is processed and stored within the local environment.",
     ),
     dataSource: "local",
     project: {
       ...getEmptyWorkspace().project,
       status: "Local-only draft workspace",
       studyDescription:
-        "Local-only mode: transcript data is processed and stored within the local environment."
+        "Local-only mode: transcript data is processed and stored within the local environment.",
     },
-    supabaseConfigured: false
+    supabaseConfigured: false,
   };
 }
 
 export async function getWorkspace(
-  projectId = defaultProjectId
+  projectId = defaultProjectId,
 ): Promise<WorkspaceData> {
   const supabase = createSupabaseServerClient();
 
@@ -174,7 +289,7 @@ export async function getWorkspace(
     integrationRelationshipsResult,
     integrityReviewItemsResult,
     editLogsResult,
-    exportRecordsResult
+    exportRecordsResult,
   ] = await Promise.all([
     supabase.from("projects").select("*").eq("id", projectId).maybeSingle(),
     supabase
@@ -246,7 +361,7 @@ export async function getWorkspace(
       .from("exports")
       .select("*")
       .eq("project_id", projectId)
-      .order("generated_at", { ascending: false })
+      .order("generated_at", { ascending: false }),
   ]);
 
   const firstError =
@@ -280,7 +395,7 @@ export async function getWorkspace(
       ...getEmptyWorkspace(),
       project: mapProject(createdProject),
       dataSource: "supabase",
-      supabaseConfigured: true
+      supabaseConfigured: true,
     };
   }
 
@@ -310,12 +425,12 @@ export async function getWorkspace(
     segments: (segmentsResult.data ?? []).map(mapSegment),
     audioFiles: (audioFilesResult.data ?? []).map(mapAudioFile),
     transcriptionJobs: (transcriptionJobsResult.data ?? []).map(
-      mapTranscriptionJob
+      mapTranscriptionJob,
     ),
     meaningUnits: (meaningUnitsResult.data ?? []).map(mapMeaningUnit),
     categories: buildCategoryTree(categoryRows),
     reviewerComments: (reviewerCommentsResult.data ?? []).map(
-      mapReviewerComment
+      mapReviewerComment,
     ),
     auditEvents: (auditEventsResult.data ?? []).map(mapAuditEvent),
     editLogs: (editLogsResult.data ?? []).map(mapEditLog),
@@ -323,16 +438,16 @@ export async function getWorkspace(
       ? mapPreAnalysisNotes(preAnalysisResult.data)
       : createEmptyPreAnalysisNotes(projectId, mappedProject),
     integrationRelationships: (integrationRelationshipsResult.data ?? []).map(
-      mapIntegrationRelationship
+      mapIntegrationRelationship,
     ),
     integrityReviewItems: (integrityReviewItemsResult.data ?? []).map(
-      mapIntegrityReviewItem
+      mapIntegrityReviewItem,
     ),
     exportRecords: (exportRecordsResult.data ?? []).map(mapExportRecord),
     integratedNarrative: categorySystemResult.data?.integrated_narrative ?? "",
     integrationMemo: categorySystemResult.data?.integration_memo ?? "",
     dataSource: "supabase",
-    supabaseConfigured: true
+    supabaseConfigured: true,
   };
 }
 
@@ -342,7 +457,7 @@ export async function saveTranscriptVersion({
   projectId = defaultProjectId,
   rawTranscriptRetained = false,
   sensitiveItems = [],
-  versionLabel = "Researcher edited transcript"
+  versionLabel = "Researcher edited transcript",
 }: {
   anonymisationStatus?: TranscriptPrivacyMetadata["anonymisationStatus"];
   content: string;
@@ -375,7 +490,7 @@ export async function saveTranscriptVersion({
     sensitiveItems,
     status: "Reviewed",
     supabase,
-    versionLabel
+    versionLabel,
   });
 
   if (error) {
@@ -387,7 +502,7 @@ export async function saveTranscriptVersion({
       .from("projects")
       .update({
         status: "Transcript reviewed — not yet confirmed",
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       })
       .eq("id", projectId),
     recordEditLog({
@@ -397,24 +512,28 @@ export async function saveTranscriptVersion({
         transcriptId: data.id,
         versionLabel: data.version_label,
         characterCount: content.length,
-        status: data.status ?? "Reviewed"
+        status: data.status ?? "Reviewed",
       },
       previousValue: previousTranscript
         ? {
             transcriptId: previousTranscript.id,
             versionLabel: previousTranscript.version_label,
-            characterCount: getResearcherVisibleTranscript(previousTranscript).length,
-            status: previousTranscript.status
+            characterCount:
+              getResearcherVisibleTranscript(previousTranscript).length,
+            status: previousTranscript.status,
           }
         : undefined,
       projectId,
       step: "pre-analysis",
       targetId: data.id,
-      targetType: "transcript"
-    })
+      targetType: "transcript",
+    }),
   ]);
 
-  return { saved: true, transcript: mapTranscriptRecord(data as TranscriptRow) };
+  return {
+    saved: true,
+    transcript: mapTranscriptRecord(data as TranscriptRow),
+  };
 }
 
 export async function saveTranscriptReviewDraft({
@@ -425,7 +544,7 @@ export async function saveTranscriptReviewDraft({
   privacyFindings = [],
   rawTranscript,
   sourceLabel = "Uploaded transcript — review draft",
-  sourceType = "transcript"
+  sourceType = "transcript",
 }: {
   anonymisationStatus?: TranscriptPrivacyMetadata["anonymisationStatus"];
   language: Project["language"];
@@ -457,7 +576,7 @@ export async function saveTranscriptReviewDraft({
     sensitiveItems: privacyFindings,
     status: "Needs Review",
     supabase,
-    versionLabel
+    versionLabel,
   });
 
   if (error) {
@@ -474,7 +593,7 @@ export async function saveTranscriptReviewDraft({
           sourceType === "audio"
             ? "Transcript generated from audio — needs researcher review"
             : "Transcript uploaded — needs researcher review",
-        updated_at: uploadedAt
+        updated_at: uploadedAt,
       })
       .eq("id", projectId),
     recordEditLog({
@@ -482,25 +601,28 @@ export async function saveTranscriptReviewDraft({
         sourceType === "audio"
           ? "Generated transcript from uploaded audio for researcher review"
           : "Uploaded transcript and prepared editable review draft",
-      actionType: sourceType === "audio" ? "transcript_generated" : "transcript_uploaded",
+      actionType:
+        sourceType === "audio" ? "transcript_generated" : "transcript_uploaded",
       actor: sourceType === "audio" ? "AI" : "Researcher",
       newValue: {
         transcriptId: data.id,
         versionLabel: data.version_label,
         rawCharacterCount: rawTranscript.length,
         preparedCharacterCount: preparedTranscript.length,
-        status: data.status ?? "Needs Review"
+        status: data.status ?? "Needs Review",
       },
       projectId,
       step: "pre-analysis",
       targetId: data.id,
-      targetType: "transcript"
-    })
+      targetType: "transcript",
+    }),
   ]);
 
-  return { saved: true, transcript: mapTranscriptRecord(data as TranscriptRow) };
+  return {
+    saved: true,
+    transcript: mapTranscriptRecord(data as TranscriptRow),
+  };
 }
-
 
 export async function listProjects(): Promise<Project[]> {
   const supabase = createSupabaseServerClient();
@@ -530,7 +652,7 @@ export async function createProject({
   researcherNotes,
   researchQuestion,
   studyDescription,
-  title
+  title,
 }: {
   dataSource: ProjectDataSource;
   dataSuitabilityConfirmed: boolean;
@@ -574,8 +696,8 @@ export async function createProject({
       metadata: {
         release: "v1.0 research release",
         data_suitability_notice:
-          "This research release is intended for open, public, or anonymised datasets only. Please do not upload identifiable or highly sensitive data unless an approved secure/local deployment is in place."
-      }
+          "This research release is intended for open, public, or anonymised datasets only. Please do not upload identifiable or highly sensitive data unless an approved secure/local deployment is in place.",
+      },
     })
     .select()
     .single();
@@ -593,9 +715,9 @@ export async function createProject({
       contextual_notes: "",
       initial_sensitising_concepts: "",
       data_familiarisation_notes: "",
-      updated_at: createdAt
+      updated_at: createdAt,
     },
-    { onConflict: "project_id" }
+    { onConflict: "project_id" },
   );
 
   await recordEditLog({
@@ -606,7 +728,7 @@ export async function createProject({
     researcherNote: researcherNotes.trim() || undefined,
     step: "pre-analysis",
     targetId: projectId,
-    targetType: "project"
+    targetType: "project",
   });
 
   if (dataSuitabilityConfirmed) {
@@ -617,13 +739,13 @@ export async function createProject({
         dataSource,
         datasetType,
         dataSuitabilityConfirmed: true,
-        dataSuitabilityConfirmedAt: data.data_suitability_confirmed_at
+        dataSuitabilityConfirmedAt: data.data_suitability_confirmed_at,
       },
       projectId,
       researcherNote: researcherNotes.trim() || undefined,
       step: "pre-analysis",
       targetId: projectId,
-      targetType: "project"
+      targetType: "project",
     });
   }
 
@@ -640,7 +762,7 @@ export async function updateProjectSettings({
   researcherNotes,
   researchQuestion,
   studyDescription,
-  title
+  title,
 }: {
   dataSource?: ProjectDataSource;
   dataSuitabilityConfirmed?: boolean;
@@ -673,7 +795,7 @@ export async function updateProjectSettings({
     protocol: "GDIQR",
     light_interpretation: lightInterpretation,
     status: "Ready for local testing",
-    updated_at: updatedAt
+    updated_at: updatedAt,
   };
 
   if (datasetType !== undefined) {
@@ -704,11 +826,13 @@ export async function updateProjectSettings({
 
   await recordEditLog({
     action:
-      !previousProject?.data_suitability_confirmed && data.data_suitability_confirmed
+      !previousProject?.data_suitability_confirmed &&
+      data.data_suitability_confirmed
         ? "Updated project setup and confirmed data suitability notice"
         : "Updated project setup",
     actionType:
-      !previousProject?.data_suitability_confirmed && data.data_suitability_confirmed
+      !previousProject?.data_suitability_confirmed &&
+      data.data_suitability_confirmed
         ? "data_suitability_confirmed"
         : "project_updated",
     newValue: data,
@@ -716,7 +840,7 @@ export async function updateProjectSettings({
     projectId,
     step: "pre-analysis",
     targetId: projectId,
-    targetType: "project"
+    targetType: "project",
   });
 
   return { saved: true, project: mapProject(data) };
@@ -729,7 +853,7 @@ export async function savePreAnalysisNotes({
   projectId = defaultProjectId,
   researcherPosition,
   researchQuestion,
-  studyDescription
+  studyDescription,
 }: {
   contextualNotes: string;
   dataFamiliarisationNotes: string;
@@ -753,16 +877,19 @@ export async function savePreAnalysisNotes({
 
   const { data, error } = await supabase
     .from("pre_analysis_notes")
-    .upsert({
-      project_id: projectId,
-      research_question: researchQuestion.trim(),
-      study_description: studyDescription.trim(),
-      researcher_position: researcherPosition.trim(),
-      contextual_notes: contextualNotes.trim(),
-      initial_sensitising_concepts: initialSensitisingConcepts.trim(),
-      data_familiarisation_notes: dataFamiliarisationNotes.trim(),
-      updated_at: updatedAt
-    }, { onConflict: "project_id" })
+    .upsert(
+      {
+        project_id: projectId,
+        research_question: researchQuestion.trim(),
+        study_description: studyDescription.trim(),
+        researcher_position: researcherPosition.trim(),
+        contextual_notes: contextualNotes.trim(),
+        initial_sensitising_concepts: initialSensitisingConcepts.trim(),
+        data_familiarisation_notes: dataFamiliarisationNotes.trim(),
+        updated_at: updatedAt,
+      },
+      { onConflict: "project_id" },
+    )
     .select()
     .single();
 
@@ -776,7 +903,7 @@ export async function savePreAnalysisNotes({
       research_question: researchQuestion.trim(),
       study_description: studyDescription.trim(),
       status: "Step 1 pre-analysis saved",
-      updated_at: updatedAt
+      updated_at: updatedAt,
     })
     .eq("id", projectId)
     .select()
@@ -790,13 +917,13 @@ export async function savePreAnalysisNotes({
     projectId,
     step: "pre-analysis",
     targetId: data.id,
-    targetType: "pre_analysis"
+    targetType: "pre_analysis",
   });
 
   return {
     saved: true,
     preAnalysisNotes: mapPreAnalysisNotes(data),
-    project: projectRow ? mapProject(projectRow) : undefined
+    project: projectRow ? mapProject(projectRow) : undefined,
   };
 }
 
@@ -810,7 +937,7 @@ export async function recordEditLog({
   researcherNote,
   step,
   targetId,
-  targetType
+  targetType,
 }: {
   action: string;
   actionType?: AuditActionType;
@@ -847,8 +974,9 @@ export async function recordEditLog({
           previous_value: previousJson,
           new_value: newJson,
           researcher_note: researcherNote ?? null,
-          before_value: previousValue === undefined ? null : safeStringify(previousValue),
-          after_value: newValue === undefined ? null : safeStringify(newValue)
+          before_value:
+            previousValue === undefined ? null : safeStringify(previousValue),
+          after_value: newValue === undefined ? null : safeStringify(newValue),
         })
         .select()
         .single(),
@@ -863,8 +991,8 @@ export async function recordEditLog({
         target_id: targetId,
         previous_value: previousJson,
         new_value: newJson,
-        researcher_note: researcherNote ?? null
-      })
+        researcher_note: researcherNote ?? null,
+      }),
     ]);
 
   if (editLogError) {
@@ -883,7 +1011,7 @@ export async function uploadAudioForTranscription({
   language,
   originalFilename,
   projectId = defaultProjectId,
-  sizeBytes
+  sizeBytes,
 }: {
   bytes: ArrayBuffer;
   contentType: string;
@@ -905,7 +1033,7 @@ export async function uploadAudioForTranscription({
     .from(bucket)
     .upload(storagePath, bytes, {
       contentType,
-      upsert: false
+      upsert: false,
     });
 
   if (uploadError) {
@@ -921,7 +1049,7 @@ export async function uploadAudioForTranscription({
       original_filename: originalFilename,
       content_type: contentType,
       size_bytes: sizeBytes,
-      language
+      language,
     })
     .select()
     .single();
@@ -937,7 +1065,7 @@ export async function uploadAudioForTranscription({
       audio_file_id: audioRow.id,
       status: "processing",
       provider: "local-faster-whisper",
-      language
+      language,
     })
     .select()
     .single();
@@ -954,18 +1082,18 @@ export async function uploadAudioForTranscription({
       originalFilename,
       sizeBytes,
       contentType,
-      language
+      language,
     },
     projectId,
     step: "pre-analysis",
     targetId: audioRow.id,
-    targetType: "audio_file"
+    targetType: "audio_file",
   });
 
   return {
     uploaded: true,
     audioFile: mapAudioFile(audioRow),
-    job: mapTranscriptionJob(jobRow)
+    job: mapTranscriptionJob(jobRow),
   };
 }
 
@@ -975,7 +1103,7 @@ export async function completeTranscriptionJob({
   projectId = defaultProjectId,
   rawTranscript,
   transcript,
-  versionLabel
+  versionLabel,
 }: {
   jobId: string;
   language: Project["language"];
@@ -993,10 +1121,16 @@ export async function completeTranscriptionJob({
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
-    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase
+      .from("integrity_review_items")
+      .delete()
+      .eq("project_id", projectId),
     supabase.from("integrity_reviews").delete().eq("project_id", projectId),
-    supabase.from("integration_relationships").delete().eq("project_id", projectId),
-    supabase.from("category_systems").delete().eq("project_id", projectId)
+    supabase
+      .from("integration_relationships")
+      .delete()
+      .eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId),
   ]);
 
   const { data: transcriptRow, error: transcriptError } =
@@ -1011,7 +1145,7 @@ export async function completeTranscriptionJob({
       sensitiveItems: [],
       status: "Needs Review",
       supabase,
-      versionLabel
+      versionLabel,
     });
 
   if (transcriptError) {
@@ -1025,7 +1159,7 @@ export async function completeTranscriptionJob({
       status: "completed",
       transcript_id: transcriptRow.id,
       error_message: null,
-      completed_at: completedAt
+      completed_at: completedAt,
     })
     .eq("id", jobId)
     .select()
@@ -1041,7 +1175,7 @@ export async function completeTranscriptionJob({
       .update({
         language,
         status: "Transcript generated from audio — needs researcher review",
-        updated_at: completedAt
+        updated_at: completedAt,
       })
       .eq("id", projectId),
     recordEditLog({
@@ -1053,28 +1187,27 @@ export async function completeTranscriptionJob({
         jobId,
         rawCharacterCount: (rawTranscript ?? transcript).length,
         preparedCharacterCount: transcript.length,
-        status: transcriptRow.status ?? "Needs Review"
+        status: transcriptRow.status ?? "Needs Review",
       },
       projectId,
       step: "pre-analysis",
       targetId: transcriptRow.id,
-      targetType: "transcript"
-    })
+      targetType: "transcript",
+    }),
   ]);
 
   return {
     saved: true,
     transcript: mapTranscriptRecord(transcriptRow as TranscriptRow),
-    job: mapTranscriptionJob(jobRow)
+    job: mapTranscriptionJob(jobRow),
   };
 }
-
 
 export async function importTranscriptForAnalysis({
   language,
   projectId = defaultProjectId,
   sourceLabel,
-  transcript
+  transcript,
 }: {
   language: Project["language"];
   projectId?: string;
@@ -1091,7 +1224,7 @@ export async function importTranscriptForAnalysis({
     .insert({
       project_id: projectId,
       content: transcript,
-      version_label: sourceLabel
+      version_label: sourceLabel,
     })
     .select()
     .single();
@@ -1104,10 +1237,16 @@ export async function importTranscriptForAnalysis({
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
-    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase
+      .from("integrity_review_items")
+      .delete()
+      .eq("project_id", projectId),
     supabase.from("integrity_reviews").delete().eq("project_id", projectId),
-    supabase.from("integration_relationships").delete().eq("project_id", projectId),
-    supabase.from("category_systems").delete().eq("project_id", projectId)
+    supabase
+      .from("integration_relationships")
+      .delete()
+      .eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId),
   ]);
 
   const segmentId = stableId("seg", projectId, Date.now());
@@ -1121,7 +1260,7 @@ export async function importTranscriptForAnalysis({
     end_timestamp: "00:00",
     starting_mu_number: 1,
     status: "Ready",
-    text: transcript
+    text: transcript,
   });
 
   if (segmentError) {
@@ -1135,20 +1274,20 @@ export async function importTranscriptForAnalysis({
       .update({
         language,
         status: "Transcript imported",
-        updated_at: importedAt
+        updated_at: importedAt,
       })
       .eq("id", projectId),
     supabase.from("audit_events").insert({
       project_id: projectId,
       actor: "Researcher",
       action: "Imported transcript for analysis",
-      target: transcriptRow.id
-    })
+      target: transcriptRow.id,
+    }),
   ]);
 
   return {
     saved: true,
-    transcript: mapTranscriptRecord(transcriptRow as TranscriptRow)
+    transcript: mapTranscriptRecord(transcriptRow as TranscriptRow),
   };
 }
 
@@ -1172,31 +1311,37 @@ export async function clearProjectTranscriptData(projectId = defaultProjectId) {
 
   await Promise.all(
     Array.from(storageByBucket.entries()).map(([bucket, paths]) =>
-      supabase.storage.from(bucket).remove(paths)
-    )
+      supabase.storage.from(bucket).remove(paths),
+    ),
   );
 
   await Promise.all([
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
-    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase
+      .from("integrity_review_items")
+      .delete()
+      .eq("project_id", projectId),
     supabase.from("integrity_reviews").delete().eq("project_id", projectId),
     supabase.from("exports").delete().eq("project_id", projectId),
     supabase.from("edit_logs").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
-    supabase.from("integration_relationships").delete().eq("project_id", projectId),
+    supabase
+      .from("integration_relationships")
+      .delete()
+      .eq("project_id", projectId),
     supabase.from("category_systems").delete().eq("project_id", projectId),
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("transcription_jobs").delete().eq("project_id", projectId),
     supabase.from("audio_files").delete().eq("project_id", projectId),
     supabase.from("transcripts").delete().eq("project_id", projectId),
-    supabase.from("audit_events").delete().eq("project_id", projectId)
+    supabase.from("audit_events").delete().eq("project_id", projectId),
   ]);
 
   await supabase
     .from("projects")
     .update({
       status: "Ready for local testing",
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     })
     .eq("id", projectId);
 
@@ -1204,7 +1349,7 @@ export async function clearProjectTranscriptData(projectId = defaultProjectId) {
     project_id: projectId,
     actor: "Researcher",
     action: "Deleted transcript, uploads, and derived outputs",
-    target: "Project data minimisation"
+    target: "Project data minimisation",
   });
 
   return { cleared: true };
@@ -1221,7 +1366,7 @@ async function insertTranscriptWithOptionalPrivacyMetadata({
   sensitiveItems,
   status,
   supabase,
-  versionLabel
+  versionLabel,
 }: TranscriptPrivacyMetadata & {
   content: string;
   projectId: string;
@@ -1232,7 +1377,7 @@ async function insertTranscriptWithOptionalPrivacyMetadata({
   const baseRow = {
     project_id: projectId,
     content,
-    version_label: versionLabel
+    version_label: versionLabel,
   };
   const privacyRow = {
     ...baseRow,
@@ -1240,7 +1385,7 @@ async function insertTranscriptWithOptionalPrivacyMetadata({
     raw_transcript_retained: rawTranscriptRetained ?? false,
     sensitive_items: sensitiveItems ?? [],
     sensitive_items_reviewed_at: now,
-    reviewed_by: null
+    reviewed_by: null,
   };
   const reviewRow = {
     ...privacyRow,
@@ -1248,7 +1393,7 @@ async function insertTranscriptWithOptionalPrivacyMetadata({
     cleaned_content: cleanedContent ?? content,
     final_content: finalContent ?? null,
     status: status ?? "Needs Review",
-    updated_at: now
+    updated_at: now,
   };
 
   const result = await supabase
@@ -1313,7 +1458,7 @@ export async function confirmTranscriptForAnalysis({
   language,
   projectId = defaultProjectId,
   rawTranscriptRetained = false,
-  sensitiveItems = []
+  sensitiveItems = [],
 }: {
   anonymisationStatus?: TranscriptPrivacyMetadata["anonymisationStatus"];
   content: string;
@@ -1347,7 +1492,7 @@ export async function confirmTranscriptForAnalysis({
       sensitiveItems,
       status: "Confirmed",
       supabase,
-      versionLabel: "Researcher-confirmed transcript"
+      versionLabel: "Researcher-confirmed transcript",
     });
 
   if (transcriptError) {
@@ -1358,30 +1503,37 @@ export async function confirmTranscriptForAnalysis({
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
-    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase
+      .from("integrity_review_items")
+      .delete()
+      .eq("project_id", projectId),
     supabase.from("integrity_reviews").delete().eq("project_id", projectId),
-    supabase.from("integration_relationships").delete().eq("project_id", projectId),
-    supabase.from("category_systems").delete().eq("project_id", projectId)
+    supabase
+      .from("integration_relationships")
+      .delete()
+      .eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId),
   ]);
 
   const splitResult = autoSplitTranscript(content, {
     mode: "balanced",
-    sourceTranscriptId: transcriptRow.id
+    sourceTranscriptId: transcriptRow.id,
   });
   const splitStartedAt = Date.now();
   const segmentRows: Array<Database["public"]["Tables"]["segments"]["Insert"]> =
-    (splitResult.segments.length > 0
-      ? splitResult.segments
-      : [
-          {
-            createdBy: "auto" as const,
-            sourceTranscriptId: transcriptRow.id,
-            splittingMode: "balanced" as const,
-            text: content,
-            title: "Researcher-confirmed transcript",
-            wordCount: content.length
-          }
-        ]
+    (
+      splitResult.segments.length > 0
+        ? splitResult.segments
+        : [
+            {
+              createdBy: "auto" as const,
+              sourceTranscriptId: transcriptRow.id,
+              splittingMode: "balanced" as const,
+              text: content,
+              title: "Researcher-confirmed transcript",
+              wordCount: content.length,
+            },
+          ]
     ).map((segment, index) => ({
       id: stableId("seg", `${projectId}_${splitStartedAt}`, index + 1),
       project_id: projectId,
@@ -1390,12 +1542,15 @@ export async function confirmTranscriptForAnalysis({
       transcript_id: transcriptRow.id,
       segment_number: index + 1,
       topic_label: segment.title || `Segment ${index + 1}`,
-      speaker_info: segment.title || `Segment ${index + 1}`,
+      speaker_info: encodeSegmentSpeakerInfo(
+        segment.title || `Segment ${index + 1}`,
+        "unclear",
+      ),
       start_timestamp: "00:00",
       end_timestamp: "00:00",
       starting_mu_number: index * 100 + 1,
       status: "Needs review" as const,
-      text: segment.text
+      text: segment.text,
     }));
 
   const { error: segmentError } = await supabase
@@ -1412,7 +1567,7 @@ export async function confirmTranscriptForAnalysis({
     .update({
       language,
       status: "Transcript confirmed for analysis",
-      updated_at: confirmedAt
+      updated_at: confirmedAt,
     })
     .eq("id", projectId)
     .select()
@@ -1429,33 +1584,34 @@ export async function confirmTranscriptForAnalysis({
       transcriptId: transcriptRow.id,
       segmentCount: segmentRows.length,
       characterCount: content.length,
-      status: transcriptRow.status ?? "Confirmed"
+      status: transcriptRow.status ?? "Confirmed",
     },
     previousValue: previousTranscript
       ? {
           transcriptId: previousTranscript.id,
           versionLabel: previousTranscript.version_label,
           status: previousTranscript.status,
-          characterCount: getResearcherVisibleTranscript(previousTranscript).length
+          characterCount:
+            getResearcherVisibleTranscript(previousTranscript).length,
         }
       : undefined,
     projectId,
     step: "pre-analysis",
     targetId: transcriptRow.id,
-    targetType: "transcript"
+    targetType: "transcript",
   });
 
   return {
     saved: true,
     project: mapProject(projectRow),
-    transcript: mapTranscriptRecord(transcriptRow as TranscriptRow)
+    transcript: mapTranscriptRecord(transcriptRow as TranscriptRow),
   };
 }
 
 export async function failTranscriptionJob({
   errorMessage,
   jobId,
-  projectId = defaultProjectId
+  projectId = defaultProjectId,
 }: {
   errorMessage: string;
   jobId: string;
@@ -1471,7 +1627,7 @@ export async function failTranscriptionJob({
     .update({
       status: "failed",
       error_message: errorMessage,
-      completed_at: new Date().toISOString()
+      completed_at: new Date().toISOString(),
     })
     .eq("id", jobId)
     .select()
@@ -1485,7 +1641,7 @@ export async function failTranscriptionJob({
     project_id: projectId,
     actor: "AI",
     action: "Local transcription failed",
-    target: errorMessage.slice(0, 180)
+    target: errorMessage.slice(0, 180),
   });
 
   return { saved: true, job: mapTranscriptionJob(data) };
@@ -1493,7 +1649,7 @@ export async function failTranscriptionJob({
 
 export async function createAudioPreviewUrl({
   audioFileId,
-  projectId = defaultProjectId
+  projectId = defaultProjectId,
 }: {
   audioFileId: string;
   projectId?: string;
@@ -1525,7 +1681,7 @@ export async function createAudioPreviewUrl({
   return {
     ok: true,
     audioFile: mapAudioFile(audioFile),
-    signedUrl: data.signedUrl
+    signedUrl: data.signedUrl,
   };
 }
 
@@ -1536,7 +1692,7 @@ export async function updateMeaningUnit({
   humanStatus,
   humanSummary,
   speaker,
-  unitId
+  unitId,
 }: {
   analysisExcluded?: boolean;
   excerpt?: string;
@@ -1561,7 +1717,7 @@ export async function updateMeaningUnit({
   }
 
   const updates: Database["public"]["Tables"]["meaning_units"]["Update"] = {
-    updated_at: new Date().toISOString()
+    updated_at: new Date().toISOString(),
   };
   if (humanStatus) {
     updates.human_status = humanStatus;
@@ -1579,7 +1735,7 @@ export async function updateMeaningUnit({
     updates.analysis_excluded = analysisExcluded;
     updates.human_status = analysisExcluded ? "Excluded" : "Needs review";
     updates.exclusion_reason = analysisExcluded
-      ? exclusionReason ?? "Excluded from analysis by researcher"
+      ? (exclusionReason ?? "Excluded from analysis by researcher")
       : null;
   } else if (exclusionReason !== undefined) {
     updates.exclusion_reason = exclusionReason;
@@ -1630,13 +1786,15 @@ export async function updateMeaningUnit({
     researcherNote: data.exclusion_reason ?? undefined,
     step: "understanding",
     targetId: data.id,
-    targetType: "meaning_unit"
+    targetType: "meaning_unit",
   });
 
   const shouldClearDerivedWork =
     analysisExcluded !== undefined ||
     (humanStatus !== "Accepted" &&
-      (excerpt !== undefined || humanSummary !== undefined || speaker !== undefined));
+      (excerpt !== undefined ||
+        humanSummary !== undefined ||
+        speaker !== undefined));
 
   if (shouldClearDerivedWork) {
     await clearDerivedCategoryWork(data.project_id);
@@ -1652,7 +1810,7 @@ export async function createManualMeaningUnit({
   projectId = defaultProjectId,
   researcherNote,
   segmentId = "SEG-001",
-  speaker = "Participant"
+  speaker = "Participant",
 }: {
   caseId?: string;
   excerpt: string;
@@ -1685,7 +1843,7 @@ export async function createManualMeaningUnit({
     human_status: "Needs review",
     reviewer_status: "Not run",
     analysis_excluded: false,
-    exclusion_reason: null
+    exclusion_reason: null,
   };
 
   const { data, error } = await supabase
@@ -1706,13 +1864,13 @@ export async function createManualMeaningUnit({
     researcherNote,
     step: "understanding",
     targetId: data.id,
-    targetType: "meaning_unit"
+    targetType: "meaning_unit",
   });
 
   return {
     saved: true,
     meaningUnit: mapMeaningUnit(data),
-    units: await loadMeaningUnits(projectId)
+    units: await loadMeaningUnits(projectId),
   };
 }
 
@@ -1723,7 +1881,7 @@ export async function splitMeaningUnit({
   researcherNote,
   secondExcerpt,
   secondSummary = "",
-  unitId
+  unitId,
 }: {
   firstExcerpt: string;
   firstSummary?: string;
@@ -1764,8 +1922,8 @@ export async function splitMeaningUnit({
       supabase
         .from("meaning_units")
         .update({ unit_number: unit.unit_number + 10000, updated_at: now })
-        .eq("id", unit.id)
-    )
+        .eq("id", unit.id),
+    ),
   );
   const secondRow: Database["public"]["Tables"]["meaning_units"]["Insert"] = {
     id: stableId("mu", `${projectId}_split_${Date.now()}`, secondNumber),
@@ -1783,7 +1941,7 @@ export async function splitMeaningUnit({
     reviewer_status: "Not run",
     analysis_excluded: false,
     exclusion_reason: null,
-    updated_at: now
+    updated_at: now,
   };
 
   const { data: firstRow, error: updateError } = await supabase
@@ -1794,7 +1952,7 @@ export async function splitMeaningUnit({
       human_status: "Needs review",
       analysis_excluded: false,
       exclusion_reason: null,
-      updated_at: now
+      updated_at: now,
     })
     .eq("id", unitId)
     .select()
@@ -1819,14 +1977,14 @@ export async function splitMeaningUnit({
     actionType: "meaning_unit_split",
     newValue: {
       first: mapMeaningUnit(firstRow),
-      second: mapMeaningUnit(insertedSecond)
+      second: mapMeaningUnit(insertedSecond),
     },
     previousValue: mapMeaningUnit(before),
     projectId,
     researcherNote,
     step: "understanding",
     targetId: before.id,
-    targetType: "meaning_unit"
+    targetType: "meaning_unit",
   });
 
   return { saved: true, units: await loadMeaningUnits(projectId) };
@@ -1838,7 +1996,7 @@ export async function mergeMeaningUnits({
   projectId = defaultProjectId,
   researcherNote,
   sourceUnitId,
-  targetUnitId
+  targetUnitId,
 }: {
   mergedExcerpt?: string;
   mergedSummary?: string;
@@ -1861,18 +2019,23 @@ export async function mergeMeaningUnits({
     throw new Error(loadError.message);
   }
   if (!rows || rows.length !== 2) {
-    return { saved: false, reason: "Could not find both meaning units to merge." };
+    return {
+      saved: false,
+      reason: "Could not find both meaning units to merge.",
+    };
   }
 
   const [first, second] = [...rows].sort(
-    (left, right) => left.unit_number - right.unit_number
+    (left, right) => left.unit_number - right.unit_number,
   );
   const mergedText =
-    mergedExcerpt?.trim() || `${first.excerpt.trim()}\n\n${second.excerpt.trim()}`.trim();
+    mergedExcerpt?.trim() ||
+    `${first.excerpt.trim()}\n\n${second.excerpt.trim()}`.trim();
   const firstSummary = first.human_summary || first.ai_summary || "";
   const secondSummary = second.human_summary || second.ai_summary || "";
   const mergedHumanSummary =
-    mergedSummary?.trim() || [firstSummary, secondSummary].filter(Boolean).join(" / ");
+    mergedSummary?.trim() ||
+    [firstSummary, secondSummary].filter(Boolean).join(" / ");
 
   const { data: mergedRow, error: updateError } = await supabase
     .from("meaning_units")
@@ -1882,7 +2045,7 @@ export async function mergeMeaningUnits({
       human_status: "Needs review",
       analysis_excluded: false,
       exclusion_reason: null,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     })
     .eq("id", first.id)
     .select()
@@ -1910,17 +2073,13 @@ export async function mergeMeaningUnits({
     researcherNote,
     step: "understanding",
     targetId: mergedRow.id,
-    targetType: "meaning_unit"
+    targetType: "meaning_unit",
   });
 
   return { saved: true, units: await loadMeaningUnits(projectId) };
 }
 
-export async function deleteMeaningUnit({
-  unitId
-}: {
-  unitId: string;
-}) {
+export async function deleteMeaningUnit({ unitId }: { unitId: string }) {
   const supabase = createSupabaseServerClient();
   if (!supabase) {
     return { deleted: false, reason: "Supabase is not configured." };
@@ -1946,13 +2105,13 @@ export async function deleteMeaningUnit({
     projectId: data.project_id,
     step: "understanding",
     targetId: data.id,
-    targetType: "meaning_unit"
+    targetType: "meaning_unit",
   });
 
   return {
     deleted: true,
     meaningUnit: mapMeaningUnit(data),
-    units: await loadMeaningUnits(data.project_id)
+    units: await loadMeaningUnits(data.project_id),
   };
 }
 
@@ -1964,22 +2123,30 @@ async function clearDerivedCategoryWork(projectId: string) {
 
   await Promise.all([
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
-    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase
+      .from("integrity_review_items")
+      .delete()
+      .eq("project_id", projectId),
     supabase.from("integrity_reviews").delete().eq("project_id", projectId),
-    supabase.from("integration_relationships").delete().eq("project_id", projectId),
-    supabase.from("category_systems").delete().eq("project_id", projectId)
+    supabase
+      .from("integration_relationships")
+      .delete()
+      .eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId),
   ]);
 }
 
 export async function updateSegment({
   projectId = defaultProjectId,
   segmentId,
+  speakerRole,
   status,
   text,
-  topicLabel
+  topicLabel,
 }: {
   projectId?: string;
   segmentId: string;
+  speakerRole?: SegmentSpeakerRole;
   status?: TranscriptSegment["status"];
   text?: string;
   topicLabel?: string;
@@ -1993,8 +2160,11 @@ export async function updateSegment({
   if (text !== undefined) {
     updates.text = text;
   }
-  if (topicLabel !== undefined) {
-    updates.speaker_info = topicLabel;
+  if (topicLabel !== undefined || speakerRole !== undefined) {
+    updates.speaker_info = encodeSegmentSpeakerInfo(
+      topicLabel ?? "Segment",
+      normalizeSegmentSpeakerRole(speakerRole),
+    );
   }
   if (status !== undefined) {
     updates.status = toStoredSegmentStatus(status);
@@ -2016,7 +2186,18 @@ export async function updateSegment({
     project_id: projectId,
     actor: "Researcher",
     action: `Updated segment ${data.segment_id}`,
-    target: data.id
+    target: data.id,
+  });
+  await recordEditLog({
+    action: `Updated segment ${data.segment_id}`,
+    actionType: speakerRole
+      ? "segment_speaker_role_updated"
+      : "segment_updated",
+    newValue: mapSegment(data),
+    projectId,
+    step: "understanding",
+    targetId: data.id,
+    targetType: "segment",
   });
 
   return { saved: true, segment: mapSegment(data) };
@@ -2026,7 +2207,7 @@ export async function splitSegment({
   afterText,
   beforeText,
   projectId = defaultProjectId,
-  segmentId
+  segmentId,
 }: {
   afterText: string;
   beforeText: string;
@@ -2065,26 +2246,31 @@ export async function splitSegment({
     project_id: projectId,
     case_id: segment.case_id,
     segment_id: `SEG-${String(insertIndex + 1).padStart(3, "0")}`,
-    speaker_info: `${segment.speaker_info || segment.segment_id} (continued)`,
+    speaker_info: encodeSegmentSpeakerInfo(
+      `${stripSegmentSpeakerRolePrefix(segment.speaker_info || segment.segment_id)} (continued)`,
+      speakerRoleFromStoredInfo(segment.speaker_info || ""),
+    ),
     start_timestamp: segment.start_timestamp,
     end_timestamp: segment.end_timestamp,
     starting_mu_number: segment.starting_mu_number,
     status: "Needs review" as const,
-    text: afterText.trim()
+    text: afterText.trim(),
   };
 
   const { error: updateError } = await supabase
     .from("segments")
     .update({
       status: "Needs review",
-      text: beforeText.trim()
+      text: beforeText.trim(),
     })
     .eq("id", segmentId);
   if (updateError) {
     throw new Error(updateError.message);
   }
 
-  const { error: insertError } = await supabase.from("segments").insert(newSegment);
+  const { error: insertError } = await supabase
+    .from("segments")
+    .insert(newSegment);
   if (insertError) {
     throw new Error(insertError.message);
   }
@@ -2094,7 +2280,7 @@ export async function splitSegment({
     project_id: projectId,
     actor: "Researcher",
     action: `Split segment ${segment.segment_id}`,
-    target: segment.id
+    target: segment.id,
   });
 
   return { saved: true, segments: await loadSegments(projectId) };
@@ -2103,7 +2289,7 @@ export async function splitSegment({
 export async function mergeSegment({
   direction,
   projectId = defaultProjectId,
-  segmentId
+  segmentId,
 }: {
   direction: "previous" | "next";
   projectId?: string;
@@ -2133,9 +2319,12 @@ export async function mergeSegment({
   const { error: updateError } = await supabase
     .from("segments")
     .update({
-      speaker_info: target.speaker_info || target.segment_id,
+      speaker_info: encodeSegmentSpeakerInfo(
+        stripSegmentSpeakerRolePrefix(target.speaker_info || target.segment_id),
+        speakerRoleFromStoredInfo(target.speaker_info || ""),
+      ),
       status: "Needs review",
-      text: mergedText
+      text: mergedText,
     })
     .eq("id", target.id);
   if (updateError) {
@@ -2155,7 +2344,7 @@ export async function mergeSegment({
     project_id: projectId,
     actor: "Researcher",
     action: `Merged segment ${segment.segment_id}`,
-    target: target.id
+    target: target.id,
   });
 
   return { saved: true, segments: await loadSegments(projectId) };
@@ -2163,7 +2352,7 @@ export async function mergeSegment({
 
 export async function deleteSegment({
   projectId = defaultProjectId,
-  segmentId
+  segmentId,
 }: {
   projectId?: string;
   segmentId: string;
@@ -2187,7 +2376,7 @@ export async function deleteSegment({
     project_id: projectId,
     actor: "Researcher",
     action: "Deleted segment",
-    target: segmentId
+    target: segmentId,
   });
 
   return { saved: true, segments: await loadSegments(projectId) };
@@ -2196,7 +2385,7 @@ export async function deleteSegment({
 export async function moveSegment({
   direction,
   projectId = defaultProjectId,
-  segmentId
+  segmentId,
 }: {
   direction: "up" | "down";
   projectId?: string;
@@ -2212,7 +2401,10 @@ export async function moveSegment({
   const reordered = [...segments];
   const [moved] = reordered.splice(index, 1);
   reordered.splice(targetIndex, 0, moved);
-  await renumberSegments(projectId, reordered.map((segment) => segment.id));
+  await renumberSegments(
+    projectId,
+    reordered.map((segment) => segment.id),
+  );
 
   return { saved: true, segments: await loadSegments(projectId) };
 }
@@ -2222,7 +2414,7 @@ export async function autoSplitSegmentsFromTranscript({
   projectId = defaultProjectId,
   researchQuestion,
   splittingMode = "balanced",
-  transcript
+  transcript,
 }: {
   caseId?: string;
   projectId?: string;
@@ -2232,7 +2424,11 @@ export async function autoSplitSegmentsFromTranscript({
 }) {
   const supabase = createSupabaseServerClient();
   if (!supabase) {
-    return { saved: false, reason: "Supabase is not configured.", segments: [] };
+    return {
+      saved: false,
+      reason: "Supabase is not configured.",
+      segments: [],
+    };
   }
 
   const trimmedTranscript = transcript.trim();
@@ -2241,14 +2437,14 @@ export async function autoSplitSegmentsFromTranscript({
       saved: false,
       reason:
         "No transcript text found. Please confirm or edit the transcript before auto-splitting.",
-      segments: []
+      segments: [],
     };
   }
 
   const splitResult = autoSplitTranscript(trimmedTranscript, {
     mode: splittingMode,
     researchQuestion,
-    sourceTranscriptId: projectId
+    sourceTranscriptId: projectId,
   });
   const now = Date.now();
 
@@ -2256,10 +2452,16 @@ export async function autoSplitSegmentsFromTranscript({
     supabase.from("segments").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
     supabase.from("reviewer_comments").delete().eq("project_id", projectId),
-    supabase.from("integrity_review_items").delete().eq("project_id", projectId),
+    supabase
+      .from("integrity_review_items")
+      .delete()
+      .eq("project_id", projectId),
     supabase.from("integrity_reviews").delete().eq("project_id", projectId),
-    supabase.from("integration_relationships").delete().eq("project_id", projectId),
-    supabase.from("category_systems").delete().eq("project_id", projectId)
+    supabase
+      .from("integration_relationships")
+      .delete()
+      .eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId),
   ]);
 
   const rows: Array<Database["public"]["Tables"]["segments"]["Insert"]> =
@@ -2268,12 +2470,12 @@ export async function autoSplitSegmentsFromTranscript({
       project_id: projectId,
       case_id: caseId,
       segment_id: `SEG-${String(index + 1).padStart(3, "0")}`,
-      speaker_info: segment.title,
+      speaker_info: encodeSegmentSpeakerInfo(segment.title, "unclear"),
       start_timestamp: "00:00",
       end_timestamp: "00:00",
       starting_mu_number: index * 100 + 1,
       status: "Needs review" as const,
-      text: segment.text
+      text: segment.text,
     }));
 
   const { error } = await supabase.from("segments").insert(rows);
@@ -2285,20 +2487,141 @@ export async function autoSplitSegmentsFromTranscript({
     project_id: projectId,
     actor: "Researcher",
     action: `Auto-split transcript into ${rows.length} segment${rows.length === 1 ? "" : "s"}`,
-    target: "Segment Manager"
+    target: "Segment Manager",
   });
 
   return {
     notice: splitResult.notice,
     saved: true,
-    segments: await loadSegments(projectId)
+    segments: await loadSegments(projectId),
   };
+}
+
+export async function speakerSplitSegmentsFromTranscript({
+  caseId = "CASE-001",
+  projectId = defaultProjectId,
+  transcript,
+}: {
+  caseId?: string;
+  projectId?: string;
+  transcript: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return {
+      saved: false,
+      reason: "Supabase is not configured.",
+      segments: [],
+    };
+  }
+
+  const turns = splitTranscriptBySpeakerLabels(transcript);
+  if (turns.length === 0) {
+    return {
+      saved: false,
+      reason:
+        "No transcript text found. Confirm or edit a transcript before speaker splitting.",
+      segments: [],
+    };
+  }
+
+  const now = Date.now();
+  await Promise.all([
+    supabase.from("segments").delete().eq("project_id", projectId),
+    supabase.from("meaning_units").delete().eq("project_id", projectId),
+    supabase.from("reviewer_comments").delete().eq("project_id", projectId),
+    supabase
+      .from("integrity_review_items")
+      .delete()
+      .eq("project_id", projectId),
+    supabase.from("integrity_reviews").delete().eq("project_id", projectId),
+    supabase
+      .from("integration_relationships")
+      .delete()
+      .eq("project_id", projectId),
+    supabase.from("category_systems").delete().eq("project_id", projectId),
+  ]);
+
+  const rows: Array<Database["public"]["Tables"]["segments"]["Insert"]> =
+    turns.map((turn, index) => ({
+      id: stableId("seg", `${projectId}_${now}_speaker`, index + 1),
+      project_id: projectId,
+      case_id: caseId,
+      segment_id: `SEG-${String(index + 1).padStart(3, "0")}`,
+      speaker_info: encodeSegmentSpeakerInfo(turn.label, turn.role),
+      start_timestamp: "00:00",
+      end_timestamp: "00:00",
+      starting_mu_number: index * 100 + 1,
+      status:
+        turn.role === "interviewer"
+          ? ("Needs review" as const)
+          : ("Ready" as const),
+      text: turn.text,
+    }));
+
+  const { error } = await supabase.from("segments").insert(rows);
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  await recordEditLog({
+    action: `Split transcript into ${rows.length} speaker segment${rows.length === 1 ? "" : "s"}`,
+    actionType: "segment_updated",
+    actor: "Researcher",
+    newValue: rows.map((row) => ({
+      segmentId: row.segment_id,
+      speakerInfo: row.speaker_info,
+      status: row.status,
+    })),
+    projectId,
+    step: "understanding",
+    targetId: "speaker-segmentation",
+    targetType: "segment",
+  });
+
+  return {
+    notice:
+      "Speaker-labelled segments created. Interviewer-only segments are kept for context and ignored by default when generating meaning-unit drafts.",
+    saved: true,
+    segments: await loadSegments(projectId),
+  };
+}
+
+export async function saveGuidanceMemo({
+  answer,
+  projectId = defaultProjectId,
+  question,
+  step,
+}: {
+  answer: string;
+  projectId?: string;
+  question: string;
+  step: WorkflowStep;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  await recordEditLog({
+    action: `Saved methodological guidance memo for ${step}`,
+    actionType: "guidance_memo_saved",
+    actor: "Researcher",
+    newValue: { answer, question, step },
+    projectId,
+    researcherNote: question,
+    step,
+    targetId: `guidance_${Date.now()}`,
+    targetType: "workspace",
+  });
+
+  return { saved: true };
 }
 
 export async function replaceMeaningUnitsForSegment({
   projectId = defaultProjectId,
   segmentId,
-  units
+  units,
 }: {
   projectId?: string;
   segmentId: string;
@@ -2337,7 +2660,7 @@ export async function replaceMeaningUnitsForSegment({
       human_status: unit.humanStatus,
       reviewer_status: unit.reviewerStatus,
       analysis_excluded: unit.analysisExcluded,
-      exclusion_reason: unit.exclusionReason ?? null
+      exclusion_reason: unit.exclusionReason ?? null,
     }));
 
   const { data, error } = await supabase
@@ -2364,18 +2687,18 @@ export async function replaceMeaningUnitsForSegment({
     projectId,
     step: "understanding",
     targetId: segmentId,
-    targetType: "meaning_unit"
+    targetType: "meaning_unit",
   });
 
   return {
     saved: true,
-    units: (data ?? []).map(mapMeaningUnit)
+    units: (data ?? []).map(mapMeaningUnit),
   };
 }
 
 export async function replaceMeaningUnitsFromAi({
   projectId = defaultProjectId,
-  units
+  units,
 }: {
   projectId?: string;
   units: MeaningUnit[];
@@ -2392,7 +2715,7 @@ export async function replaceMeaningUnitsFromAi({
 
   await Promise.all([
     supabase.from("meaning_units").delete().eq("project_id", projectId),
-    clearDerivedCategoryWork(projectId)
+    clearDerivedCategoryWork(projectId),
   ]);
 
   if (units.length === 0) {
@@ -2405,7 +2728,7 @@ export async function replaceMeaningUnitsFromAi({
       projectId,
       step: "understanding",
       targetId: projectId,
-      targetType: "meaning_unit"
+      targetType: "meaning_unit",
     });
     return { saved: true, units: [] };
   }
@@ -2426,7 +2749,7 @@ export async function replaceMeaningUnitsFromAi({
       human_status: unit.humanStatus,
       reviewer_status: unit.reviewerStatus,
       analysis_excluded: unit.analysisExcluded,
-      exclusion_reason: unit.exclusionReason ?? null
+      exclusion_reason: unit.exclusionReason ?? null,
     }));
 
   const { data, error } = await supabase
@@ -2448,12 +2771,12 @@ export async function replaceMeaningUnitsFromAi({
     projectId,
     step: "understanding",
     targetId: projectId,
-    targetType: "meaning_unit"
+    targetType: "meaning_unit",
   });
 
   return {
     saved: true,
-    units: (data ?? []).map(mapMeaningUnit)
+    units: (data ?? []).map(mapMeaningUnit),
   };
 }
 
@@ -2461,7 +2784,7 @@ export async function saveCategorySystemFromAi({
   categories,
   integratedNarrative,
   mode,
-  projectId = defaultProjectId
+  projectId = defaultProjectId,
 }: {
   categories: CategoryNode[];
   integratedNarrative: string;
@@ -2474,7 +2797,7 @@ export async function saveCategorySystemFromAi({
       saved: false,
       reason: "Supabase is not configured.",
       categories,
-      integratedNarrative
+      integratedNarrative,
     };
   }
 
@@ -2483,7 +2806,7 @@ export async function saveCategorySystemFromAi({
     .insert({
       project_id: projectId,
       mode,
-      integrated_narrative: integratedNarrative
+      integrated_narrative: integratedNarrative,
     })
     .select()
     .single();
@@ -2504,16 +2827,15 @@ export async function saveCategorySystemFromAi({
     project_id: projectId,
     actor: "AI",
     action: `Generated local AI category system Mode ${mode}`,
-    target: system.id
+    target: system.id,
   });
 
   return {
     saved: true,
     categories,
-    integratedNarrative
+    integratedNarrative,
   };
 }
-
 
 export async function saveCategorySystemFromResearcher({
   action = "Updated researcher category system",
@@ -2523,7 +2845,7 @@ export async function saveCategorySystemFromResearcher({
   mode = "A",
   previousCategories,
   projectId = defaultProjectId,
-  researcherNote
+  researcherNote,
 }: {
   action?: string;
   actionType?: AuditActionType;
@@ -2540,7 +2862,7 @@ export async function saveCategorySystemFromResearcher({
       saved: false,
       reason: "Supabase is not configured.",
       categories,
-      integratedNarrative
+      integratedNarrative,
     };
   }
 
@@ -2549,7 +2871,7 @@ export async function saveCategorySystemFromResearcher({
     .insert({
       project_id: projectId,
       mode,
-      integrated_narrative: integratedNarrative
+      integrated_narrative: integratedNarrative,
     })
     .select()
     .single();
@@ -2576,13 +2898,13 @@ export async function saveCategorySystemFromResearcher({
     researcherNote,
     step: "categorizing",
     targetId: system.id,
-    targetType: "category_system"
+    targetType: "category_system",
   });
 
   return {
     saved: true,
     categories,
-    integratedNarrative
+    integratedNarrative,
   };
 }
 
@@ -2598,7 +2920,7 @@ export interface IntegrationRelationshipDraftForSave {
 }
 
 function encodeIntegrationRelationshipMemo(
-  relationship: IntegrationRelationshipDraftForSave
+  relationship: IntegrationRelationshipDraftForSave,
 ) {
   if (relationship.memo) {
     return relationship.memo;
@@ -2607,7 +2929,7 @@ function encodeIntegrationRelationshipMemo(
   return JSON.stringify({
     evidenceUnitNumbers: relationship.evidenceUnitNumbers ?? [],
     rationale: relationship.rationale ?? "",
-    researcherNote: relationship.researcherNote ?? ""
+    researcherNote: relationship.researcherNote ?? "",
   });
 }
 
@@ -2618,7 +2940,7 @@ export async function saveIntegrationWorkspace({
   integrationMemo = "",
   projectId = defaultProjectId,
   relationships,
-  reviewed = false
+  reviewed = false,
 }: {
   action?: string;
   actionType?: AuditActionType;
@@ -2635,7 +2957,7 @@ export async function saveIntegrationWorkspace({
       reason: "Supabase is not configured.",
       integratedNarrative,
       integrationMemo,
-      relationships: [] as IntegrationRelationship[]
+      relationships: [] as IntegrationRelationship[],
     };
   }
 
@@ -2668,7 +2990,7 @@ export async function saveIntegrationWorkspace({
       .from("category_systems")
       .update({
         integrated_narrative: integratedNarrative,
-        integration_memo: integrationMemo
+        integration_memo: integrationMemo,
       })
       .eq("id", categorySystemId);
 
@@ -2682,7 +3004,7 @@ export async function saveIntegrationWorkspace({
         project_id: projectId,
         mode: "A",
         integrated_narrative: integratedNarrative,
-        integration_memo: integrationMemo
+        integration_memo: integrationMemo,
       })
       .select()
       .single();
@@ -2710,14 +3032,14 @@ export async function saveIntegrationWorkspace({
       id: stableId(
         "rel",
         `${projectId}_${relationship.sourceCategoryId}_${relationship.targetCategoryId}_${index}`,
-        index + 1
+        index + 1,
       ),
       project_id: projectId,
       category_system_id: categorySystemId ?? null,
       source_category_id: relationship.sourceCategoryId,
       target_category_id: relationship.targetCategoryId,
       relationship_label: relationship.label,
-      memo: encodeIntegrationRelationshipMemo(relationship)
+      memo: encodeIntegrationRelationshipMemo(relationship),
     }));
 
     const { data, error } = await supabase
@@ -2740,33 +3062,34 @@ export async function saveIntegrationWorkspace({
       integratedNarrative,
       integrationMemo,
       relationships: savedRelationships,
-      reviewed
+      reviewed,
     },
     previousValue: {
       integratedNarrative: previousSystem?.integrated_narrative ?? "",
       integrationMemo: previousSystem?.integration_memo ?? "",
-      relationships: (previousRelationships ?? []).map(mapIntegrationRelationship)
+      relationships: (previousRelationships ?? []).map(
+        mapIntegrationRelationship,
+      ),
     },
     projectId,
     step: "integrating",
     targetId: categorySystemId ?? projectId,
-    targetType: "integration_relationship"
+    targetType: "integration_relationship",
   });
 
   return {
     saved: true,
     integratedNarrative,
     integrationMemo,
-    relationships: savedRelationships
+    relationships: savedRelationships,
   };
 }
-
 
 export async function saveIntegrityReviewItems({
   action = "Updated methodological integrity review",
   items,
   projectId = defaultProjectId,
-  researcherNote
+  researcherNote,
 }: {
   action?: string;
   items: IntegrityReviewItem[];
@@ -2792,14 +3115,16 @@ export async function saveIntegrityReviewItems({
   const rows: Array<
     Database["public"]["Tables"]["integrity_review_items"]["Insert"]
   > = items.map((item, index) => ({
-    id: item.id || stableId("integrity", `${projectId}_${item.checkKey}`, index + 1),
+    id:
+      item.id ||
+      stableId("integrity", `${projectId}_${item.checkKey}`, index + 1),
     project_id: projectId,
     check_key: item.checkKey,
     prompt: item.prompt,
     status: item.status,
     response: item.response,
     researcher_note: item.researcherNote,
-    generated_from_state: item.generatedFromState
+    generated_from_state: item.generatedFromState,
   }));
 
   const { data, error } = await supabase
@@ -2822,7 +3147,7 @@ export async function saveIntegrityReviewItems({
     researcherNote,
     step: "integrity",
     targetId: projectId,
-    targetType: "integrity_review"
+    targetType: "integrity_review",
   });
 
   return { saved: true, items: savedItems };
@@ -2830,7 +3155,7 @@ export async function saveIntegrityReviewItems({
 
 export async function recordExportGenerated({
   format,
-  projectId = defaultProjectId
+  projectId = defaultProjectId,
 }: {
   format: "json" | "csv" | "txt" | "docx" | "pdf";
   projectId?: string;
@@ -2848,7 +3173,7 @@ export async function recordExportGenerated({
         project_id: projectId,
         format,
         storage_bucket: null,
-        storage_path: null
+        storage_path: null,
       })
       .select()
       .single();
@@ -2864,12 +3189,12 @@ export async function recordExportGenerated({
     actor: "Researcher",
     newValue: {
       exportRecord,
-      format
+      format,
     },
     projectId,
     step: "export",
     targetId: exportRecord?.id ?? `${projectId}-${format}-${Date.now()}`,
-    targetType: "export"
+    targetType: "export",
   });
 
   return { saved: true, exportRecord };
@@ -2878,7 +3203,7 @@ export async function recordExportGenerated({
 export async function replaceReviewerCommentsFromAi({
   comments,
   projectId = defaultProjectId,
-  workspace
+  workspace,
 }: {
   comments: ReviewerComment[];
   projectId?: string;
@@ -2897,7 +3222,7 @@ export async function replaceReviewerCommentsFromAi({
       "agent",
       workspace === "categories"
         ? ["GDIQR Category Review", "GDI-QR Category Review"]
-        : ["GDIQR Meaning Units Review", "GDI-QR Meaning Units Review"]
+        : ["GDIQR Meaning Units Review", "GDI-QR Meaning Units Review"],
     );
 
   if (comments.length === 0) {
@@ -2910,7 +3235,7 @@ export async function replaceReviewerCommentsFromAi({
     id: stableId(
       "rev",
       `${projectId}_${comment.workspace}_${Date.now()}`,
-      index + 1
+      index + 1,
     ),
     project_id: projectId,
     agent: comment.agent,
@@ -2918,7 +3243,7 @@ export async function replaceReviewerCommentsFromAi({
     severity: toStoredReviewerSeverity(comment.severity),
     comment: comment.comment,
     suggested_action: encodeReviewerPayload(comment),
-    resolved: comment.resolved
+    resolved: comment.resolved,
   }));
 
   const { data, error } = await supabase
@@ -2939,12 +3264,12 @@ export async function replaceReviewerCommentsFromAi({
     projectId,
     step: "integrity",
     targetId: workspace ?? "reviewer-checks",
-    targetType: "reviewer_comment"
+    targetType: "reviewer_comment",
   });
 
   return {
     saved: true,
-    comments: (data ?? []).map(mapReviewerComment)
+    comments: (data ?? []).map(mapReviewerComment),
   };
 }
 
@@ -2952,7 +3277,7 @@ export async function updateReviewerComment({
   commentId,
   memo,
   projectId = defaultProjectId,
-  status
+  status,
 }: {
   commentId: string;
   memo?: string;
@@ -2984,14 +3309,14 @@ export async function updateReviewerComment({
       nextStatus === "resolved" || nextStatus === "dismissed"
         ? new Date().toISOString()
         : undefined,
-    status: nextStatus
+    status: nextStatus,
   };
 
   const { data, error } = await supabase
     .from("reviewer_comments")
     .update({
       resolved: nextComment.resolved,
-      suggested_action: encodeReviewerPayload(nextComment)
+      suggested_action: encodeReviewerPayload(nextComment),
     })
     .eq("project_id", projectId)
     .eq("id", commentId)
@@ -3011,7 +3336,7 @@ export async function updateReviewerComment({
     researcherNote: memo,
     step: "integrity",
     targetId: commentId,
-    targetType: "reviewer_comment"
+    targetType: "reviewer_comment",
   });
 
   return { saved: true, comment: mapReviewerComment(data) };
@@ -3033,7 +3358,7 @@ function mapProject(row: Database["public"]["Tables"]["projects"]["Row"]) {
     dataSuitabilityConfirmed: row.data_suitability_confirmed,
     dataSuitabilityConfirmedAt: row.data_suitability_confirmed_at ?? undefined,
     researcherNotes: row.researcher_notes,
-    metadata: isRecord(row.metadata) ? row.metadata : {}
+    metadata: isRecord(row.metadata) ? row.metadata : {},
   } satisfies Project;
 }
 
@@ -3041,7 +3366,7 @@ function flattenCategoryRows(
   categories: CategoryNode[],
   categorySystemId: string,
   parentId: string | null = null,
-  offset = 0
+  offset = 0,
 ): Array<Database["public"]["Tables"]["categories"]["Insert"]> {
   return categories.flatMap((category, index) => {
     const sortOrder = offset + index + 1;
@@ -3058,7 +3383,7 @@ function flattenCategoryRows(
       source: category.source ?? "ai",
       status: category.status ?? "ai_draft",
       intentionally_uncategorised_unit_numbers:
-        category.intentionallyUncategorisedUnitIds ?? []
+        category.intentionallyUncategorisedUnitIds ?? [],
     };
 
     return [
@@ -3067,15 +3392,15 @@ function flattenCategoryRows(
         category.subcategories ?? [],
         categorySystemId,
         id,
-        sortOrder * 100
-      )
+        sortOrder * 100,
+      ),
     ];
   });
 }
 
 function stableId(prefix: string, scope: string, number: number) {
   return `${prefix}_${scope.replace(/[^a-zA-Z0-9]/g, "_")}_${String(
-    number
+    number,
   ).padStart(3, "0")}`;
 }
 
@@ -3134,9 +3459,12 @@ async function renumberMeaningUnits(projectId: string) {
     units.map((unit, index) =>
       supabase
         .from("meaning_units")
-        .update({ unit_number: index + 1, updated_at: new Date().toISOString() })
-        .eq("id", unit.id)
-    )
+        .update({
+          unit_number: index + 1,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", unit.id),
+    ),
   );
 }
 
@@ -3150,7 +3478,9 @@ async function renumberSegments(projectId: string, orderedIds?: string[]) {
   const ordered = orderedIds
     ? orderedIds
         .map((id) => segments.find((segment) => segment.id === id))
-        .filter((segment): segment is NonNullable<typeof segment> => Boolean(segment))
+        .filter((segment): segment is NonNullable<typeof segment> =>
+          Boolean(segment),
+        )
     : segments;
 
   await Promise.all(
@@ -3159,10 +3489,10 @@ async function renumberSegments(projectId: string, orderedIds?: string[]) {
         .from("segments")
         .update({
           segment_id: `SEG-${String(index + 1).padStart(3, "0")}`,
-          starting_mu_number: index * 100 + 1
+          starting_mu_number: index * 100 + 1,
         })
-        .eq("id", segment.id)
-    )
+        .eq("id", segment.id),
+    ),
   );
 }
 
@@ -3187,7 +3517,7 @@ async function createDefaultProject(projectId: string) {
       data_source: "other",
       data_suitability_confirmed: false,
       researcher_notes: "",
-      metadata: {}
+      metadata: {},
     })
     .select()
     .single();
@@ -3226,7 +3556,7 @@ function mapTranscriptRecord(row: TranscriptRow) {
     rawContent: row.raw_content ?? null,
     cleanedContent: row.cleaned_content ?? null,
     finalContent: row.final_content ?? null,
-    updatedAt: row.updated_at ?? undefined
+    updatedAt: row.updated_at ?? undefined,
   } satisfies TranscriptRecord;
 }
 
@@ -3247,7 +3577,7 @@ function mapAudioFile(row: AudioFileRow) {
     contentType: row.content_type,
     sizeBytes: row.size_bytes,
     language: row.language,
-    uploadedAt: row.uploaded_at
+    uploadedAt: row.uploaded_at,
   } satisfies AudioFileRecord;
 }
 
@@ -3262,24 +3592,28 @@ function mapTranscriptionJob(row: TranscriptionJobRow) {
     transcriptId: row.transcript_id ?? undefined,
     errorMessage: row.error_message ?? undefined,
     createdAt: row.created_at,
-    completedAt: row.completed_at ?? undefined
+    completedAt: row.completed_at ?? undefined,
   } satisfies TranscriptionJobRecord;
 }
 
 function mapSegment(row: Database["public"]["Tables"]["segments"]["Row"]) {
+  const speakerRole = speakerRoleFromStoredInfo(row.speaker_info ?? "");
+  const speakerInfo = stripSegmentSpeakerRolePrefix(row.speaker_info ?? "");
+
   return {
     id: row.id,
     caseId: row.case_id,
     segmentId: row.segment_id,
     segmentNumber: row.segment_number ?? segmentNumberFromId(row.segment_id),
     sourceTranscriptId: row.transcript_id ?? undefined,
-    topicLabel: row.topic_label || row.speaker_info || row.segment_id,
-    speakerInfo: row.speaker_info,
+    topicLabel: row.topic_label || speakerInfo || row.segment_id,
+    speakerInfo: speakerInfo || row.segment_id,
+    speakerRole,
     startTimestamp: row.start_timestamp,
     endTimestamp: row.end_timestamp,
     startingMuNumber: row.starting_mu_number,
     status: mapStoredSegmentStatus(row.status),
-    text: row.text
+    text: row.text,
   } satisfies TranscriptSegment;
 }
 
@@ -3289,7 +3623,7 @@ function segmentNumberFromId(segmentId: string) {
 }
 
 function mapStoredSegmentStatus(
-  status: Database["public"]["Tables"]["segments"]["Row"]["status"]
+  status: Database["public"]["Tables"]["segments"]["Row"]["status"],
 ): TranscriptSegment["status"] {
   if (status === "Processed") {
     return "Analysed";
@@ -3301,19 +3635,23 @@ function mapStoredSegmentStatus(
 }
 
 function toStoredSegmentStatus(
-  status: TranscriptSegment["status"]
+  status: TranscriptSegment["status"],
 ): Database["public"]["Tables"]["segments"]["Row"]["status"] {
   if (status === "Analysed" || status === "Completed") {
     return "Processed";
   }
-  if (status === "Draft" || status === "Needs Review" || status === "Needs Revision") {
+  if (
+    status === "Draft" ||
+    status === "Needs Review" ||
+    status === "Needs Revision"
+  ) {
     return "Needs review";
   }
   return "Ready";
 }
 
 function mapMeaningUnit(
-  row: Database["public"]["Tables"]["meaning_units"]["Row"]
+  row: Database["public"]["Tables"]["meaning_units"]["Row"],
 ) {
   return {
     id: row.id,
@@ -3330,17 +3668,15 @@ function mapMeaningUnit(
     humanStatus: row.human_status,
     reviewerStatus: row.reviewer_status,
     analysisExcluded: row.analysis_excluded ?? false,
-    exclusionReason: row.exclusion_reason ?? undefined
+    exclusionReason: row.exclusion_reason ?? undefined,
   } satisfies MeaningUnit;
 }
 
 function mapReviewerComment(
-  row: Database["public"]["Tables"]["reviewer_comments"]["Row"]
+  row: Database["public"]["Tables"]["reviewer_comments"]["Row"],
 ) {
   const payload = parseReviewerPayload(row.suggested_action);
-  const status =
-    payload.status ??
-    (row.resolved ? "resolved" : "unresolved");
+  const status = payload.status ?? (row.resolved ? "resolved" : "unresolved");
   const targetType = payload.targetType ?? targetTypeFromTarget(row.target);
   const targetId = payload.targetId ?? targetIdFromTarget(row.target);
 
@@ -3363,7 +3699,7 @@ function mapReviewerComment(
     resolved: status === "resolved" || status === "dismissed",
     createdAt: row.created_at,
     resolvedAt: payload.resolvedAt,
-    researcherMemo: payload.researcherMemo
+    researcherMemo: payload.researcherMemo,
   } satisfies ReviewerComment;
 }
 
@@ -3377,7 +3713,7 @@ function encodeReviewerPayload(comment: ReviewerComment) {
     suggestedAction: comment.suggestedAction,
     targetId: comment.targetId,
     targetType: comment.targetType,
-    workspace: comment.workspace
+    workspace: comment.workspace,
   });
 }
 
@@ -3403,7 +3739,9 @@ function toStoredReviewerSeverity(severity: ReviewerComment["severity"]) {
   return "Pass";
 }
 
-function fromStoredReviewerSeverity(severity: string): ReviewerComment["severity"] {
+function fromStoredReviewerSeverity(
+  severity: string,
+): ReviewerComment["severity"] {
   if (severity === "Major issue") {
     return "major";
   }
@@ -3433,7 +3771,9 @@ function targetIdFromTarget(target: string) {
   return target.includes(":") ? target.split(":").slice(1).join(":") : target;
 }
 
-function mapAuditEvent(row: Database["public"]["Tables"]["audit_events"]["Row"]) {
+function mapAuditEvent(
+  row: Database["public"]["Tables"]["audit_events"]["Row"],
+) {
   return {
     id: row.id,
     timestamp: new Date(row.event_timestamp).toLocaleString("sv-SE", {
@@ -3441,7 +3781,7 @@ function mapAuditEvent(row: Database["public"]["Tables"]["audit_events"]["Row"])
       minute: "2-digit",
       year: "numeric",
       month: "2-digit",
-      day: "2-digit"
+      day: "2-digit",
     }),
     actor: row.actor,
     action: row.action,
@@ -3452,7 +3792,7 @@ function mapAuditEvent(row: Database["public"]["Tables"]["audit_events"]["Row"])
     targetId: row.target_id ?? undefined,
     previousValue: row.previous_value ?? undefined,
     newValue: row.new_value ?? undefined,
-    researcherNote: row.researcher_note ?? undefined
+    researcherNote: row.researcher_note ?? undefined,
   } satisfies AuditEvent;
 }
 
@@ -3469,7 +3809,7 @@ function mapEditLog(row: EditLogRow) {
     previousValue: row.previous_value ?? parseMaybeJson(row.before_value),
     newValue: row.new_value ?? parseMaybeJson(row.after_value),
     researcherNote: row.researcher_note ?? undefined,
-    createdAt: row.created_at
+    createdAt: row.created_at,
   } satisfies EditLog;
 }
 
@@ -3484,7 +3824,7 @@ function mapPreAnalysisNotes(row: PreAnalysisNotesRow) {
     initialSensitisingConcepts: row.initial_sensitising_concepts,
     dataFamiliarisationNotes: row.data_familiarisation_notes,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
   } satisfies PreAnalysisNotes;
 }
 
@@ -3498,7 +3838,7 @@ function mapIntegrationRelationship(row: IntegrationRelationshipRow) {
     label: row.relationship_label,
     memo: row.memo,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
   } satisfies IntegrationRelationship;
 }
 
@@ -3513,7 +3853,7 @@ function mapIntegrityReviewItem(row: IntegrityReviewItemRow) {
     researcherNote: row.researcher_note,
     generatedFromState: row.generated_from_state,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
   } satisfies IntegrityReviewItem;
 }
 
@@ -3524,11 +3864,13 @@ function mapExportRecord(row: ExportRow) {
     format: row.format,
     storageBucket: row.storage_bucket ?? undefined,
     storagePath: row.storage_path ?? undefined,
-    generatedAt: row.generated_at
+    generatedAt: row.generated_at,
   } satisfies ExportRecord;
 }
 
-function toWorkflowStep(value: string | null | undefined): WorkflowStep | undefined {
+function toWorkflowStep(
+  value: string | null | undefined,
+): WorkflowStep | undefined {
   if (
     value === "pre-analysis" ||
     value === "understanding" ||
@@ -3542,7 +3884,9 @@ function toWorkflowStep(value: string | null | undefined): WorkflowStep | undefi
   return undefined;
 }
 
-function toAuditActionType(value: string | null | undefined): AuditActionType | undefined {
+function toAuditActionType(
+  value: string | null | undefined,
+): AuditActionType | undefined {
   const allowed: AuditActionType[] = [
     "project_created",
     "project_updated",
@@ -3575,13 +3919,15 @@ function toAuditActionType(value: string | null | undefined): AuditActionType | 
     "integrity_review_updated",
     "export_generated",
     "workspace_cleared",
-    "other"
+    "other",
   ];
 
   return allowed.find((item) => item === value);
 }
 
-function toAuditTargetType(value: string | null | undefined): AuditTargetType | undefined {
+function toAuditTargetType(
+  value: string | null | undefined,
+): AuditTargetType | undefined {
   const allowed: AuditTargetType[] = [
     "project",
     "transcript",
@@ -3597,7 +3943,7 @@ function toAuditTargetType(value: string | null | undefined): AuditTargetType | 
     "integrity_review_item",
     "reviewer_comment",
     "export",
-    "workspace"
+    "workspace",
   ];
 
   return allowed.find((item) => item === value);
@@ -3648,11 +3994,12 @@ function buildCategoryTree(rows: CategoryRow[]) {
       name: row.name,
       definition: row.definition,
       includedUnitIds: row.included_unit_numbers,
-      intentionallyUncategorisedUnitIds: row.intentionally_uncategorised_unit_numbers,
+      intentionallyUncategorisedUnitIds:
+        row.intentionally_uncategorised_unit_numbers,
       memo: row.memo,
       source: row.source,
       status: row.status,
-      subcategories: []
+      subcategories: [],
     });
   });
 
@@ -3671,6 +4018,6 @@ function buildCategoryTree(rows: CategoryRow[]) {
   });
 
   return roots.map((node) =>
-    node.subcategories?.length ? node : { ...node, subcategories: undefined }
+    node.subcategories?.length ? node : { ...node, subcategories: undefined },
   );
 }

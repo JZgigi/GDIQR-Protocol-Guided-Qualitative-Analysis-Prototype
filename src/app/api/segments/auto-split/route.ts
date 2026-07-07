@@ -1,69 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  autoSplitSegmentsFromTranscript,
-  defaultProjectId
+  defaultProjectId,
+  speakerSplitSegmentsFromTranscript,
 } from "@/lib/gdiqr-repository";
-import { autoSplitTranscript } from "@/lib/auto-segmenter";
 import { getStorageMode } from "@/lib/storage-mode";
-import type { AutoSegmentMode } from "@/lib/auto-segmenter";
-import type { TranscriptSegment } from "@/lib/types";
+import type { SegmentSpeakerRole, TranscriptSegment } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
     caseId?: string;
     projectId?: string;
-    researchQuestion?: string;
-    splittingMode?: AutoSegmentMode;
     transcript?: string;
   };
 
   try {
     if (getStorageMode() === "local") {
-      const result = autoSplitTranscript(body.transcript ?? "", {
-        mode: normalizeSplitMode(body.splittingMode),
-        researchQuestion: body.researchQuestion,
-        sourceTranscriptId: body.projectId ?? "active-transcript"
-      });
-      const now = Date.now();
-      const segments: TranscriptSegment[] = result.segments.map(
-        (segment, index) => ({
-          caseId: body.caseId ?? "CASE-001",
-          endTimestamp: "00:00",
-          endTurnIndex: segment.endTurnIndex,
-          id: `local-seg-${now}-${index + 1}`,
-          segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
-          segmentNumber: index + 1,
-          speakerInfo: "Local draft segment",
-          sourceTranscriptId: segment.sourceTranscriptId,
-          splittingMode: segment.splittingMode,
-          startingMuNumber: index * 100 + 1,
-          startTimestamp: "00:00",
-          startTurnIndex: segment.startTurnIndex,
-          status: "Needs Review",
-          text: segment.text,
-          topicLabel: segment.title || `Segment ${index + 1}`
-        })
+      const segments = buildLocalSpeakerSegments(
+        body.transcript ?? "",
+        body.caseId,
       );
-
       return NextResponse.json(
         {
           notice:
-            result.notice ??
-            "Draft segments created locally. Review boundaries before analysis.",
+            "Speaker-labelled segments created locally. Interviewer-only segments are kept for context and ignored by default when generating meaning-unit drafts.",
           persisted: false,
           saved: true,
-          segments
+          segments,
         },
-        { status: 200 }
+        { status: 200 },
       );
     }
 
-    const result = await autoSplitSegmentsFromTranscript({
+    const result = await speakerSplitSegmentsFromTranscript({
       caseId: body.caseId,
       projectId: body.projectId ?? defaultProjectId,
-      researchQuestion: body.researchQuestion,
-      splittingMode: normalizeSplitMode(body.splittingMode),
-      transcript: body.transcript ?? ""
+      transcript: body.transcript ?? "",
     });
 
     return NextResponse.json(result, { status: result.saved ? 200 : 400 });
@@ -73,13 +44,96 @@ export async function POST(request: NextRequest) {
         error:
           error instanceof Error
             ? error.message
-            : "Auto-split transcript failed."
+            : "Speaker segmentation failed.",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
 
-function normalizeSplitMode(value: unknown): AutoSegmentMode {
-  return value === "conservative" || value === "detailed" ? value : "balanced";
+function buildLocalSpeakerSegments(
+  transcript: string,
+  caseId = "CASE-001",
+): TranscriptSegment[] {
+  const turns = splitTranscriptBySpeakerLabels(transcript);
+  const now = Date.now();
+  return turns.map((turn, index) => ({
+    caseId,
+    endTimestamp: "00:00",
+    id: `local-speaker-seg-${now}-${index + 1}`,
+    segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
+    segmentNumber: index + 1,
+    speakerInfo: turn.label,
+    speakerRole: turn.role,
+    sourceTranscriptId: "active-transcript",
+    startingMuNumber: index * 100 + 1,
+    startTimestamp: "00:00",
+    status:
+      turn.role === "interviewer" ? "Needs Review" : "Ready for MU Analysis",
+    text: turn.text,
+    topicLabel: turn.label,
+  }));
+}
+
+function splitTranscriptBySpeakerLabels(transcript: string) {
+  const lines = transcript
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const turns: Array<{
+    label: string;
+    role: SegmentSpeakerRole;
+    text: string;
+  }> = [];
+
+  for (const line of lines) {
+    const match = line.match(/^([^:：\n]{1,48})[:：]\s*(.*)$/u);
+    if (match) {
+      const label = match[1].trim();
+      const content = match[2].trim();
+      turns.push({
+        label,
+        role: inferRole(label),
+        text: content ? `${label}: ${content}` : `${label}:`,
+      });
+      continue;
+    }
+
+    if (turns.length > 0) {
+      turns[turns.length - 1].text =
+        `${turns[turns.length - 1].text}\n${line}`.trim();
+    } else {
+      turns.push({ label: "Unclear speaker", role: "unclear", text: line });
+    }
+  }
+
+  if (turns.length < 2 || turns.every((turn) => turn.role === "unclear")) {
+    return [
+      {
+        label: "Unclear speaker segment",
+        role: "unclear" as const,
+        text: transcript.trim(),
+      },
+    ].filter((turn) => turn.text);
+  }
+
+  return turns.filter((turn) => turn.text.trim());
+}
+
+function inferRole(label: string): SegmentSpeakerRole {
+  const value = label.trim().toLowerCase();
+  if (
+    /^(interviewer|interview|researcher|moderator|facilitator|q|i|主持人|访谈者|研究者|采访者)$/.test(
+      value,
+    )
+  ) {
+    return "interviewer";
+  }
+  if (
+    /^(participant|interviewee|student|p|a|受访者|参与者|学生)$/.test(value)
+  ) {
+    return "participant";
+  }
+  return "unclear";
 }

@@ -7,11 +7,7 @@ export type WorkflowStep =
   | "export";
 
 export type HumanStatus =
-  | "Draft"
-  | "Accepted"
-  | "Edited"
-  | "Needs review"
-  | "Excluded";
+  "Draft" | "Accepted" | "Edited" | "Needs review" | "Excluded";
 export type ReviewerStatus = "Not run" | "Pass" | "Warning" | "Major issue";
 export type CategoryMode = "A" | "B" | "C";
 export type ReviewerWorkspace = "meaning-units" | "categories";
@@ -25,8 +21,11 @@ export type SegmentStatus =
   | "Needs Revision"
   | "Completed";
 
+export type SegmentSpeakerRole = "interviewer" | "participant" | "unclear";
+
 export type DatasetType = "open" | "anonymised" | "identifiable_sensitive";
-export type ProjectDataSource = "SMARTEN" | "photovoice" | "interview" | "other";
+export type ProjectDataSource =
+  "SMARTEN" | "photovoice" | "interview" | "other";
 
 export type AuditActor = "AI" | "Researcher" | "Reviewer";
 
@@ -62,6 +61,9 @@ export type AuditActionType =
   | "integrity_review_updated"
   | "export_generated"
   | "workspace_cleared"
+  | "guidance_memo_saved"
+  | "segment_updated"
+  | "segment_speaker_role_updated"
   | "other";
 
 export type AuditTargetType =
@@ -135,7 +137,8 @@ export interface IntegrationRelationship {
   updatedAt: string;
 }
 
-export type IntegrityReviewItemStatus = "not_checked" | "pass" | "issue" | "resolved" | "dismissed";
+export type IntegrityReviewItemStatus =
+  "not_checked" | "pass" | "issue" | "resolved" | "dismissed";
 
 export interface IntegrityReviewItem {
   id: string;
@@ -171,6 +174,7 @@ export interface TranscriptSegment {
   startTurnIndex?: number;
   topicLabel: string;
   speakerInfo: string;
+  speakerRole?: SegmentSpeakerRole;
   startTimestamp: string;
   endTimestamp: string;
   startingMuNumber: number;
@@ -202,7 +206,6 @@ export interface TranscriptionJobRecord {
   createdAt: string;
   completedAt?: string;
 }
-
 
 export interface TranscriptRecord {
   id: string;

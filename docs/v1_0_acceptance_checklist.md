@@ -419,3 +419,55 @@ Smoke check：
 - Meaning-unit CSV 可用于 spreadsheet review。
 - Export 文件清楚提示 assistant-supported outputs 仍需 researcher review against transcript evidence。
 - Export action 会进入 audit trail。
+
+## P1 Ticket 12–14：Speaker/segment handling + guidance chat + loading/error states
+
+Branch：`feature/v1-p1-segments-guidance-loading`
+
+Smoke check：
+
+1. 打开一个已经完成 data suitability confirmation 和 transcript confirmation 的 project。
+2. 进入 Step 2：Understanding & Translating。
+3. 在 **Basic speaker / segment handling** 中点击 **Split transcript by speaker labels**。
+4. 如果 transcript 使用了 `Interviewer:` / `Participant:` / `Q:` / `P:` 等 speaker labels，确认系统会生成 speaker-level segments。
+5. 选择一个 segment，修改 **Segment type** 为：
+   - Participant
+   - Interviewer / prompt only
+   - Unclear / mixed
+6. 修改 segment label 和 segment text，点击 **Save segment edit**。
+7. 将 participant 或 unclear segment 标记为 **Ready for MU analysis**。
+8. 尝试把 interviewer-only segment 标记为 ready，确认 UI 会阻止或提示它主要作为 context 保留。
+9. 点击 **Assistant support: draft meaning units** 或 **Use rule-based draft MUs**。
+10. 确认 meaning-unit generation 会默认忽略标记为 interviewer-only 的 segments。
+11. 测试 **Split at cursor**、**Merge previous**、**Merge next** 和 **Delete segment**，确认页面不崩，并且后续 MU/category outputs 会被清空或要求重新生成。
+12. 刷新页面后，确认 Supabase mode 下 segment label、segment type 和 segment text 仍然存在。
+13. 打开 **Methodological guidance chat**。
+14. 在不同步骤分别提问，例如：
+    - “Is this meaning unit too interpretive?”
+    - “How should I name this category?”
+    - “What should I check before moving to Step 3?”
+15. 确认 guidance response 会根据当前 step 给出 reflective prompts，而不是直接声称完成 final coding / final interpretation。
+16. 点击 **Save useful guidance as memo**。
+17. 确认 saved memo count 增加，并且 Supabase audit/edit log 中出现 `guidance_memo_saved`。
+18. 测试 AI generation、speaker segmentation、export 等按钮：
+    - loading 时按钮应显示进行中状态
+    - 重复点击应被 disabled 或不会重复触发
+    - 如果发生错误，应显示 recoverable error panel
+    - 有 retry option 时可以点击 Retry
+19. 导出 JSON/TXT，确认包含 saved methodological guidance memos。
+
+预期 audit/edit-log events：
+
+- `segment_updated`
+- `segment_speaker_role_updated`
+- `guidance_memo_saved`
+- existing generation/export events，例如 `meaning_units_generated`、`export_generated`
+
+预期结果：
+
+- Transcript 可以按 speaker label 形成基本 segments。
+- Researcher 可以手动修正 segment text、label 和 speaker role。
+- Interviewer-only segments 会保留为 context，但默认不会进入 meaning-unit generation。
+- Guidance chat 是 methodological guide，不是 automatic coder。
+- 有用 guidance 可以保存为 memo，并进入 audit trail。
+- 关键操作有更清楚的 loading / error / retry 状态，并减少 repeated clicking 导致的重复 generation。

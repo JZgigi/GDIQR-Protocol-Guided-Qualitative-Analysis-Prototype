@@ -5,18 +5,19 @@ import {
   mergeSegment,
   moveSegment,
   splitSegment,
-  updateSegment
+  updateSegment,
 } from "@/lib/gdiqr-repository";
 import { isLocalStorageMode } from "@/lib/storage-mode";
-import type { SegmentStatus } from "@/lib/types";
+import type { SegmentSpeakerRole, SegmentStatus } from "@/lib/types";
 
 export async function PATCH(
   request: NextRequest,
-  context: { params: Promise<{ segmentId: string }> }
+  context: { params: Promise<{ segmentId: string }> },
 ) {
   const { segmentId } = await context.params;
   const body = (await request.json().catch(() => ({}))) as {
     projectId?: string;
+    speakerRole?: SegmentSpeakerRole;
     status?: SegmentStatus;
     text?: string;
     topicLabel?: string;
@@ -28,29 +29,33 @@ export async function PATCH(
         saved: false,
         persisted: false,
         reason:
-          "Local-only mode stores segment edits in browser state, not Supabase."
+          "Local-only mode stores segment edits in browser state, not Supabase.",
       });
     }
 
     const result = await updateSegment({
       projectId: body.projectId ?? defaultProjectId,
       segmentId,
+      speakerRole: body.speakerRole,
       status: body.status,
       text: body.text,
-      topicLabel: body.topicLabel
+      topicLabel: body.topicLabel,
     });
     return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Segment update failed." },
-      { status: 500 }
+      {
+        error:
+          error instanceof Error ? error.message : "Segment update failed.",
+      },
+      { status: 500 },
     );
   }
 }
 
 export async function POST(
   request: NextRequest,
-  context: { params: Promise<{ segmentId: string }> }
+  context: { params: Promise<{ segmentId: string }> },
 ) {
   const { segmentId } = await context.params;
   const body = (await request.json().catch(() => ({}))) as {
@@ -68,7 +73,7 @@ export async function POST(
         saved: false,
         persisted: false,
         reason:
-          "Local-only mode stores segment changes in browser state, not Supabase."
+          "Local-only mode stores segment changes in browser state, not Supabase.",
       });
     }
 
@@ -77,7 +82,7 @@ export async function POST(
         afterText: body.afterText ?? "",
         beforeText: body.beforeText ?? "",
         projectId,
-        segmentId
+        segmentId,
       });
       return NextResponse.json(result);
     }
@@ -86,7 +91,7 @@ export async function POST(
       const result = await mergeSegment({
         direction: body.direction === "previous" ? "previous" : "next",
         projectId,
-        segmentId
+        segmentId,
       });
       return NextResponse.json(result);
     }
@@ -95,23 +100,29 @@ export async function POST(
       const result = await moveSegment({
         direction: body.direction === "up" ? "up" : "down",
         projectId,
-        segmentId
+        segmentId,
       });
       return NextResponse.json(result);
     }
 
-    return NextResponse.json({ error: "Unknown segment action." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Unknown segment action." },
+      { status: 400 },
+    );
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Segment action failed." },
-      { status: 500 }
+      {
+        error:
+          error instanceof Error ? error.message : "Segment action failed.",
+      },
+      { status: 500 },
     );
   }
 }
 
 export async function DELETE(
   request: NextRequest,
-  context: { params: Promise<{ segmentId: string }> }
+  context: { params: Promise<{ segmentId: string }> },
 ) {
   const { segmentId } = await context.params;
   const projectId =
@@ -123,7 +134,7 @@ export async function DELETE(
         deleted: false,
         persisted: false,
         reason:
-          "Local-only mode deletes segments from browser state, not Supabase."
+          "Local-only mode deletes segments from browser state, not Supabase.",
       });
     }
 
@@ -131,8 +142,11 @@ export async function DELETE(
     return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Segment delete failed." },
-      { status: 500 }
+      {
+        error:
+          error instanceof Error ? error.message : "Segment delete failed.",
+      },
+      { status: 500 },
     );
   }
 }
