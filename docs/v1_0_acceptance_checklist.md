@@ -291,3 +291,43 @@ Smoke check：
 - Researcher 可以把 MUs 加入、移出或移动到不同 category。
 - Category memo / definition / confirmation decision 可以保存。
 - Category edits 刷新后仍然存在，并进入 audit/edit log。
+
+## Ticket 8：Integrating workflow
+
+Branch：`feature/v1-integrating-workflow`
+
+Smoke check：
+
+1. 打开一个已经有 accepted MUs 和 reviewed/confirmed categories 的 project。
+2. 进入 Step 4：Integrating。
+3. 勾选 **I confirm all meaning units in this transcript have been processed...**。
+4. 点击 **Optional assistant support: suggest relationship structure**。
+5. 确认页面生成：
+   - provisional relationship structure
+   - category map rows
+   - editable summary narrative
+6. 修改一个 relationship 的 source category、target category 或 relationship type。
+7. 修改 relationship rationale，并选择/取消选择 linked MU evidence。
+8. 点击 **Save integration draft**。
+9. 修改 summary narrative 和 researcher note。
+10. 点击 **I reviewed evidence and confirm this provisional draft**。
+11. 刷新页面后，确认 Step 4 的 narrative、researcher note、relationships 仍然存在。
+12. 导出 JSON/TXT，确认包含：
+    - integration relationships
+    - relationship evidence MU numbers
+    - integration researcher note
+    - integrated narrative
+    - reviewed status / saved timestamp
+
+预期 audit/edit-log events：
+
+- `relationship_created`
+- `relationship_updated`
+- `relationship_deleted`
+
+预期结果：
+
+- Step 4 不只是临时 UI state，而是可以保存和重新加载的 integration workspace。
+- Researcher 可以编辑 category relationships、rationale、evidence grounding 和 summary narrative。
+- Integration narrative 不会自动被视为 final finding，仍然需要 researcher review/confirmation。
+- Refresh 后 Step 4 关系结构和 narrative 不丢失。

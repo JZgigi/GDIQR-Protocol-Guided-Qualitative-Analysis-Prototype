@@ -2586,6 +2586,181 @@ export async function saveCategorySystemFromResearcher({
   };
 }
 
+export interface IntegrationRelationshipDraftForSave {
+  evidenceUnitNumbers?: number[];
+  id?: string;
+  label: IntegrationRelationship["label"];
+  memo?: string;
+  rationale?: string;
+  researcherNote?: string;
+  sourceCategoryId: string;
+  targetCategoryId: string;
+}
+
+function encodeIntegrationRelationshipMemo(
+  relationship: IntegrationRelationshipDraftForSave
+) {
+  if (relationship.memo) {
+    return relationship.memo;
+  }
+
+  return JSON.stringify({
+    evidenceUnitNumbers: relationship.evidenceUnitNumbers ?? [],
+    rationale: relationship.rationale ?? "",
+    researcherNote: relationship.researcherNote ?? ""
+  });
+}
+
+export async function saveIntegrationWorkspace({
+  action = "Updated Step 4 integration workspace",
+  actionType = "relationship_updated",
+  integratedNarrative = "",
+  integrationMemo = "",
+  projectId = defaultProjectId,
+  relationships,
+  reviewed = false
+}: {
+  action?: string;
+  actionType?: AuditActionType;
+  integratedNarrative?: string;
+  integrationMemo?: string;
+  projectId?: string;
+  relationships: IntegrationRelationshipDraftForSave[];
+  reviewed?: boolean;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return {
+      saved: false,
+      reason: "Supabase is not configured.",
+      integratedNarrative,
+      integrationMemo,
+      relationships: [] as IntegrationRelationship[]
+    };
+  }
+
+  const { data: previousSystem, error: previousSystemError } = await supabase
+    .from("category_systems")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (previousSystemError) {
+    throw new Error(previousSystemError.message);
+  }
+
+  const { data: previousRelationships, error: previousRelationshipsError } =
+    await supabase
+      .from("integration_relationships")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true });
+
+  if (previousRelationshipsError) {
+    throw new Error(previousRelationshipsError.message);
+  }
+
+  let categorySystemId = previousSystem?.id;
+  if (categorySystemId) {
+    const { error } = await supabase
+      .from("category_systems")
+      .update({
+        integrated_narrative: integratedNarrative,
+        integration_memo: integrationMemo
+      })
+      .eq("id", categorySystemId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+  } else {
+    const { data: createdSystem, error } = await supabase
+      .from("category_systems")
+      .insert({
+        project_id: projectId,
+        mode: "A",
+        integrated_narrative: integratedNarrative,
+        integration_memo: integrationMemo
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+    categorySystemId = createdSystem.id;
+  }
+
+  const { error: deleteError } = await supabase
+    .from("integration_relationships")
+    .delete()
+    .eq("project_id", projectId);
+
+  if (deleteError) {
+    throw new Error(deleteError.message);
+  }
+
+  let savedRelationships: IntegrationRelationship[] = [];
+  if (relationships.length > 0) {
+    const rows: Array<
+      Database["public"]["Tables"]["integration_relationships"]["Insert"]
+    > = relationships.map((relationship, index) => ({
+      id: stableId(
+        "rel",
+        `${projectId}_${relationship.sourceCategoryId}_${relationship.targetCategoryId}_${index}`,
+        index + 1
+      ),
+      project_id: projectId,
+      category_system_id: categorySystemId ?? null,
+      source_category_id: relationship.sourceCategoryId,
+      target_category_id: relationship.targetCategoryId,
+      relationship_label: relationship.label,
+      memo: encodeIntegrationRelationshipMemo(relationship)
+    }));
+
+    const { data, error } = await supabase
+      .from("integration_relationships")
+      .insert(rows)
+      .select()
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+    savedRelationships = (data ?? []).map(mapIntegrationRelationship);
+  }
+
+  await recordEditLog({
+    action,
+    actionType: reviewed ? "relationship_updated" : actionType,
+    actor: "Researcher",
+    newValue: {
+      integratedNarrative,
+      integrationMemo,
+      relationships: savedRelationships,
+      reviewed
+    },
+    previousValue: {
+      integratedNarrative: previousSystem?.integrated_narrative ?? "",
+      integrationMemo: previousSystem?.integration_memo ?? "",
+      relationships: (previousRelationships ?? []).map(mapIntegrationRelationship)
+    },
+    projectId,
+    step: "integrating",
+    targetId: categorySystemId ?? projectId,
+    targetType: "integration_relationship"
+  });
+
+  return {
+    saved: true,
+    integratedNarrative,
+    integrationMemo,
+    relationships: savedRelationships
+  };
+}
+
 export async function replaceReviewerCommentsFromAi({
   comments,
   projectId = defaultProjectId,
