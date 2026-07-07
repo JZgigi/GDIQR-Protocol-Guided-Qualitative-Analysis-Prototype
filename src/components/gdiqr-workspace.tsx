@@ -27,6 +27,7 @@ import type {
   CategoryNode,
   DatasetType,
   ExportRecord,
+  GuidanceMemo,
   IntegrationRelationship as StoredIntegrationRelationship,
   IntegrityReviewItem,
   IntegrityReviewItemStatus,
@@ -110,6 +111,7 @@ interface GuidanceMessage {
   answer: string;
   createdAt: string;
   id: string;
+  projectId?: string;
   question: string;
   saved?: boolean;
   step: WorkflowStep;
@@ -147,6 +149,7 @@ interface GdiqrWorkspaceProps {
   integrationMemo?: string;
   integrityReviewItems?: IntegrityReviewItem[];
   exportRecords?: ExportRecord[];
+  guidanceMemos?: GuidanceMemo[];
   dataSource?: WorkspaceData["dataSource"];
   storageMode?: StorageMode;
   supabaseConfigured?: boolean;
@@ -171,6 +174,7 @@ export function GdiqrWorkspace({
   integrationMemo = "",
   integrityReviewItems = [],
   exportRecords = [],
+  guidanceMemos = [],
   dataSource = "unconfigured",
   storageMode = "local",
   supabaseConfigured = false,
@@ -364,12 +368,12 @@ export function GdiqrWorkspace({
   const retryActionRef = useRef<(() => void) | null>(null);
   const [guidanceQuestion, setGuidanceQuestion] = useState("");
   const [guidanceMessages, setGuidanceMessages] = useState<GuidanceMessage[]>(
-    [],
+    () => guidanceMemos.map(guidanceMemoToMessage),
   );
   const [isGuidanceLoading, setIsGuidanceLoading] = useState(false);
   const [savedGuidanceMemos, setSavedGuidanceMemos] = useState<
     GuidanceMessage[]
-  >([]);
+  >(() => guidanceMemos.map(guidanceMemoToMessage));
   const [muReviewOpen, setMuReviewOpen] = useState(true);
   const [muIntegrityReviewRan, setMuIntegrityReviewRan] = useState(false);
   const [categoryReviewOpen, setCategoryReviewOpen] = useState(true);
@@ -846,6 +850,11 @@ export function GdiqrWorkspace({
     setNarrative(workspace.integratedNarrative);
     setIntegrationNote(workspace.integrationMemo ?? "");
     setDisplayIntegrityItems(workspace.integrityReviewItems ?? []);
+    const nextGuidanceMemos = (workspace.guidanceMemos ?? []).map(
+      guidanceMemoToMessage,
+    );
+    setGuidanceMessages(nextGuidanceMemos);
+    setSavedGuidanceMemos(nextGuidanceMemos);
     setIntegrationRelationships(
       buildIntegrationRelationshipDrafts({
         categories: workspace.categories,
@@ -1341,6 +1350,7 @@ export function GdiqrWorkspace({
     );
 
     try {
+      const transcriptPrepareTimeoutMs = getTranscriptPrepareRequestTimeoutMs();
       const response = await fetchWithTimeout("/api/transcripts/prepare", {
         body: JSON.stringify({
           forceRuleBased,
@@ -1349,12 +1359,12 @@ export function GdiqrWorkspace({
           saveReviewDraft: !isLocalOnlyMode,
           sourceLabel:
             transcriptImportName || "Uploaded transcript — review draft",
-          timeoutMs: 45000,
+          timeoutMs: transcriptPrepareTimeoutMs,
           transcript: transcriptImportText,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 75000,
+        timeoutMs: transcriptPrepareTimeoutMs + 30000,
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -1679,7 +1689,7 @@ export function GdiqrWorkspace({
   }
 
   async function clearTranscriptAndDerivedOutputs() {
-    const confirmed = window.confirm(
+    const confirmed = confirmWorkspaceAction(
       "Delete the current transcript, uploaded audio records, and all derived meaning units, categories, methodological integrity issues, and audit records for this project? This cannot be undone.",
     );
     if (!confirmed) {
@@ -2140,7 +2150,7 @@ export function GdiqrWorkspace({
       return;
     }
 
-    const confirmed = window.confirm(
+    const confirmed = confirmWorkspaceAction(
       "Auto-delineation will replace the current meaning unit list. Existing summaries linked to these units may need to be regenerated. Continue?",
     );
     if (!confirmed) {
@@ -2241,7 +2251,7 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    const confirmed = window.confirm(
+    const confirmed = confirmWorkspaceAction(
       "Speaker segmentation will replace the current segment list and clear existing meaning units, categories, reviewer issues, and integration outputs. Continue?",
     );
     if (!confirmed) {
@@ -2323,6 +2333,7 @@ export function GdiqrWorkspace({
         "Only project setup or metadata was detected. Add the interview transcript / participant account before generating meaning units.",
       );
     }
+    const meaningUnitTimeoutMs = getMeaningUnitRequestTimeoutMs();
     const response = await fetchWithTimeout("/api/ai/meaning-units", {
       body: JSON.stringify({
         background: false,
@@ -2331,13 +2342,13 @@ export function GdiqrWorkspace({
         lightInterpretation,
         projectId: currentProject.id,
         startingNumber: 1,
-        timeoutMs: 45000,
+        timeoutMs: meaningUnitTimeoutMs,
         transcript: cleanedSource.transcript,
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
       signal,
-      timeoutMs: 75000,
+      timeoutMs: meaningUnitTimeoutMs + 30000,
     });
 
     if (!response.ok) {
@@ -2407,7 +2418,7 @@ export function GdiqrWorkspace({
       return;
     }
     if (currentMeaningUnits.length > 0) {
-      const confirmed = window.confirm(
+      const confirmed = confirmWorkspaceAction(
         "Draft meaning units already exist. Redelineating will replace draft MU boundaries and clear later category/review outputs. Accepted/excluded decisions should be exported first if you need to preserve them. Continue?",
       );
       if (!confirmed) {
@@ -2597,7 +2608,7 @@ export function GdiqrWorkspace({
       return;
     }
 
-    const confirmed = window.confirm(
+    const confirmed = confirmWorkspaceAction(
       isLocalOnlyMode
         ? "This will mark the temporary fallback category draft as researcher-confirmed in this local browser session. Only continue if you have reviewed it and accept it for prototype testing."
         : "This will save the temporary fallback category draft to Supabase for prototype testing. Only continue if you have reviewed it and accept it as a researcher-confirmed draft.",
@@ -3061,7 +3072,7 @@ export function GdiqrWorkspace({
 
   async function addCategoryDraft(unitNumbers: number[] = []) {
     const name =
-      window.prompt("New category title:", "New draft category")?.trim() ||
+      promptWorkspaceText("New category title:", "New draft category")?.trim() ||
       "New draft category";
     const previousCategories = displayCategories;
     const nextCategory: CategoryNode = {
@@ -3152,7 +3163,7 @@ export function GdiqrWorkspace({
   async function deleteCategoryDraft(category: CategoryNode) {
     if (
       category.includedUnitIds.length > 0 &&
-      !window.confirm(
+      !confirmWorkspaceAction(
         `${category.name} contains ${category.includedUnitIds.length} MU(s). Delete it and move those MUs to Unassigned?`,
       )
     ) {
@@ -3176,7 +3187,7 @@ export function GdiqrWorkspace({
   }
 
   async function mergeCategoryDraft(category: CategoryNode) {
-    const targetId = window.prompt(
+    const targetId = promptWorkspaceText(
       `Merge "${category.name}" into which category ID? Available: ${displayCategories
         .filter((item) => item.id !== category.id)
         .map((item) => item.id)
@@ -3189,7 +3200,7 @@ export function GdiqrWorkspace({
     }
 
     const mergedName =
-      window.prompt("Merged category title:", target.name)?.trim() ||
+      promptWorkspaceText("Merged category title:", target.name)?.trim() ||
       target.name;
     const previousCategories = displayCategories;
     const nextCategories = previousCategories
@@ -3300,7 +3311,7 @@ export function GdiqrWorkspace({
 
   async function rejectCategoryDraft(category: CategoryNode) {
     if (
-      !window.confirm(
+      !confirmWorkspaceAction(
         `Reject "${category.name}"? Its meaning units will move to Unassigned.`,
       )
     ) {
@@ -3944,7 +3955,7 @@ export function GdiqrWorkspace({
     }
     const first = neighbor.number < unit.number ? neighbor : unit;
     const second = neighbor.number < unit.number ? unit : neighbor;
-    const confirmed = window.confirm(
+    const confirmed = confirmWorkspaceAction(
       `Merge MU #${first.number} and MU #${second.number}? This clears category and reviewer outputs because the accepted evidence base changes.`,
     );
     if (!confirmed) {
@@ -4189,7 +4200,7 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    const confirmed = window.confirm(
+    const confirmed = confirmWorkspaceAction(
       "Accept all visible, non-excluded meaning units? This records the current researcher-reviewed excerpts and summaries as accepted analytic material.",
     );
     if (!confirmed) {
@@ -4429,7 +4440,7 @@ export function GdiqrWorkspace({
   }
 
   async function deleteMeaningUnitFromWorkspace(unit: MeaningUnit) {
-    const confirmed = window.confirm(
+    const confirmed = confirmWorkspaceAction(
       `Delete MU #${unit.number}? This removes it from the workspace and clears existing categories because category results may reference it. Use Exclude instead if you want to keep an audit-visible record.`,
     );
     if (!confirmed) {
@@ -4559,6 +4570,7 @@ export function GdiqrWorkspace({
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
+        memo?: GuidanceMemo;
         saved?: boolean;
       };
       if (!response.ok || !result.saved) {
@@ -4569,7 +4581,9 @@ export function GdiqrWorkspace({
         return;
       }
 
-      const savedMessage = { ...message, saved: true };
+      const savedMessage = result.memo
+        ? guidanceMemoToMessage(result.memo)
+        : { ...message, saved: true };
       setGuidanceMessages((current) =>
         current.map((item) => (item.id === message.id ? savedMessage : item)),
       );
@@ -4653,7 +4667,7 @@ export function GdiqrWorkspace({
   }
 
   function editSensitiveReplacement(item: SensitiveReviewItem) {
-    const replacement = window.prompt(
+    const replacement = promptWorkspaceText(
       "Edit the anonymised replacement label:",
       item.replacementText,
     );
@@ -6736,7 +6750,7 @@ export function GdiqrWorkspace({
                     isRunning={isRunningReviewer}
                     noActiveText="No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
                     onAddMemo={(issue) => {
-                      const memo = window.prompt(
+                      const memo = promptWorkspaceText(
                         "Researcher note for this integrity issue:",
                         issue.researcherMemo ?? "",
                       );
@@ -6745,7 +6759,7 @@ export function GdiqrWorkspace({
                       }
                     }}
                     onDismiss={(issue) => {
-                      const memo = window.prompt(
+                      const memo = promptWorkspaceText(
                         "Dismissal memo: why is this not a Step 2 integrity concern?",
                         issue.researcherMemo ?? "",
                       );
@@ -7010,7 +7024,7 @@ export function GdiqrWorkspace({
                     issues={categoryReviewIssues}
                     isRunning={isRunningReviewer}
                     onAddMemo={(issue) => {
-                      const memo = window.prompt(
+                      const memo = promptWorkspaceText(
                         "Researcher note for this integrity issue:",
                         issue.researcherMemo ?? "",
                       );
@@ -7303,7 +7317,7 @@ export function GdiqrWorkspace({
                       isRunning={isRunningReviewer}
                       noActiveText="No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
                       onAddMemo={(issue) => {
-                        const memo = window.prompt(
+                        const memo = promptWorkspaceText(
                           "Researcher note for this integrity issue:",
                           issue.researcherMemo ?? "",
                         );
@@ -7312,7 +7326,7 @@ export function GdiqrWorkspace({
                         }
                       }}
                       onDismiss={(issue) => {
-                        const memo = window.prompt(
+                        const memo = promptWorkspaceText(
                           "Dismissal memo: why is this not a Step 2 integrity concern?",
                           issue.researcherMemo ?? "",
                         );
@@ -7351,7 +7365,7 @@ export function GdiqrWorkspace({
                       issues={categoryReviewIssues}
                       isRunning={isRunningReviewer}
                       onAddMemo={(issue) => {
-                        const memo = window.prompt(
+                        const memo = promptWorkspaceText(
                           "Researcher note for this integrity issue:",
                           issue.researcherMemo ?? "",
                         );
@@ -9655,6 +9669,57 @@ async function fetchWithTimeout(
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+function guidanceMemoToMessage(memo: GuidanceMemo): GuidanceMessage {
+  return {
+    answer: memo.answer,
+    createdAt: memo.createdAt,
+    id: memo.id,
+    projectId: memo.projectId,
+    question: memo.question,
+    saved: true,
+    step: memo.step,
+  };
+}
+
+function getMeaningUnitRequestTimeoutMs() {
+  return getClientConfiguredTimeoutMs(
+    process.env.NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS,
+    120000,
+    15000,
+    600000,
+  );
+}
+
+function getTranscriptPrepareRequestTimeoutMs() {
+  return getClientConfiguredTimeoutMs(
+    process.env.NEXT_PUBLIC_TRANSCRIPT_PREPARE_TIMEOUT_MS,
+    300000,
+    10000,
+    900000,
+  );
+}
+
+function getClientConfiguredTimeoutMs(
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+) {
+  const configured = Number(value ?? fallback);
+  if (!Number.isFinite(configured)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(configured, max));
+}
+
+function confirmWorkspaceAction(message: string) {
+  return window.confirm(message);
+}
+
+function promptWorkspaceText(message: string, defaultValue?: string) {
+  return window.prompt(message, defaultValue);
 }
 
 function slugifyFilename(value: string) {

@@ -567,7 +567,7 @@ export interface Database {
         Row: {
           id: string;
           project_id: string;
-          format: "json" | "docx" | "pdf";
+          format: "json" | "csv" | "txt" | "docx" | "pdf";
           storage_bucket: string | null;
           storage_path: string | null;
           generated_at: string;
@@ -575,12 +575,34 @@ export interface Database {
         Insert: {
           id?: string;
           project_id: string;
-          format: "json" | "docx" | "pdf";
+          format: "json" | "csv" | "txt" | "docx" | "pdf";
           storage_bucket?: string | null;
           storage_path?: string | null;
           generated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["exports"]["Insert"]>;
+        Relationships: [];
+      };
+      guidance_memos: {
+        Row: {
+          id: string;
+          project_id: string;
+          step: string;
+          question: string;
+          answer: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          project_id: string;
+          step: string;
+          question?: string;
+          answer?: string;
+          created_at?: string;
+        };
+        Update: Partial<
+          Database["public"]["Tables"]["guidance_memos"]["Insert"]
+        >;
         Relationships: [];
       };
     };

@@ -9,6 +9,7 @@ import type {
   DatasetType,
   EditLog,
   ExportRecord,
+  GuidanceMemo,
   IntegrityReviewItem,
   IntegrationRelationship,
   MeaningUnit,
@@ -37,6 +38,7 @@ type TranscriptionJobRow =
 type TranscriptRow = Database["public"]["Tables"]["transcripts"]["Row"];
 type EditLogRow = Database["public"]["Tables"]["edit_logs"]["Row"];
 type ExportRow = Database["public"]["Tables"]["exports"]["Row"];
+type GuidanceMemoRow = Database["public"]["Tables"]["guidance_memos"]["Row"];
 type IntegrityReviewItemRow =
   Database["public"]["Tables"]["integrity_review_items"]["Row"];
 type IntegrationRelationshipRow =
@@ -55,10 +57,10 @@ function normalizeSegmentSpeakerRole(value: unknown): SegmentSpeakerRole {
 }
 
 function inferSegmentSpeakerRole(labelOrText: string): SegmentSpeakerRole {
-  const firstLabel = labelOrText.split(/[:：]/)[0].trim().toLowerCase();
+  const firstLabel = labelOrText.split(/[:\uFF1A]/)[0].trim().toLowerCase();
 
   if (
-    /^(interviewer|interview|researcher|moderator|facilitator|q|i|主持人|访谈者|研究者|采访者)$/.test(
+    /^(interviewer|interview|researcher|moderator|facilitator|q|i|\u4E3B\u6301\u4EBA|\u8BBF\u8C08\u8005|\u7814\u7A76\u8005|\u91C7\u8BBF\u8005)$/.test(
       firstLabel,
     )
   ) {
@@ -66,7 +68,7 @@ function inferSegmentSpeakerRole(labelOrText: string): SegmentSpeakerRole {
   }
 
   if (
-    /^(participant|interviewee|student|p|a|受访者|参与者|学生)$/.test(
+    /^(participant|interviewee|student|p|a|\u53D7\u8BBF\u8005|\u53C2\u4E0E\u8005|\u5B66\u751F)$/.test(
       firstLabel,
     )
   ) {
@@ -117,7 +119,7 @@ function splitTranscriptBySpeakerLabels(transcript: string) {
   }> = [];
 
   for (const line of lines) {
-    const match = line.match(/^([^:：\n]{1,48})[:：]\s*(.*)$/u);
+    const match = line.match(/^([^:\uFF1A\n]{1,48})[:\uFF1A]\s*(.*)$/u);
     if (match) {
       const label = match[1].trim();
       const role = inferSegmentSpeakerRole(label);
@@ -169,6 +171,7 @@ export interface WorkspaceData {
   integrationRelationships: IntegrationRelationship[];
   integrityReviewItems: IntegrityReviewItem[];
   exportRecords: ExportRecord[];
+  guidanceMemos: GuidanceMemo[];
   integratedNarrative: string;
   integrationMemo: string;
   dataSource: "local" | "supabase" | "unconfigured";
@@ -243,6 +246,7 @@ export function getEmptyWorkspace(
     integrationRelationships: [],
     integrityReviewItems: [],
     exportRecords: [],
+    guidanceMemos: [],
     integratedNarrative: "",
     integrationMemo: "",
     dataSource: "unconfigured",
@@ -290,6 +294,7 @@ export async function getWorkspace(
     integrityReviewItemsResult,
     editLogsResult,
     exportRecordsResult,
+    guidanceMemosResult,
   ] = await Promise.all([
     supabase.from("projects").select("*").eq("id", projectId).maybeSingle(),
     supabase
@@ -362,6 +367,11 @@ export async function getWorkspace(
       .select("*")
       .eq("project_id", projectId)
       .order("generated_at", { ascending: false }),
+    supabase
+      .from("guidance_memos")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: false }),
   ]);
 
   const firstError =
@@ -378,7 +388,8 @@ export async function getWorkspace(
     integrationRelationshipsResult.error ??
     integrityReviewItemsResult.error ??
     editLogsResult.error ??
-    exportRecordsResult.error;
+    exportRecordsResult.error ??
+    guidanceMemosResult.error;
 
   if (firstError) {
     console.warn("Could not load Supabase workspace:", firstError.message);
@@ -444,6 +455,7 @@ export async function getWorkspace(
       mapIntegrityReviewItem,
     ),
     exportRecords: (exportRecordsResult.data ?? []).map(mapExportRecord),
+    guidanceMemos: (guidanceMemosResult.data ?? []).map(mapGuidanceMemo),
     integratedNarrative: categorySystemResult.data?.integrated_narrative ?? "",
     integrationMemo: categorySystemResult.data?.integration_memo ?? "",
     dataSource: "supabase",
@@ -1323,6 +1335,7 @@ export async function clearProjectTranscriptData(projectId = defaultProjectId) {
       .eq("project_id", projectId),
     supabase.from("integrity_reviews").delete().eq("project_id", projectId),
     supabase.from("exports").delete().eq("project_id", projectId),
+    supabase.from("guidance_memos").delete().eq("project_id", projectId),
     supabase.from("edit_logs").delete().eq("project_id", projectId),
     supabase.from("meaning_units").delete().eq("project_id", projectId),
     supabase
@@ -2603,19 +2616,34 @@ export async function saveGuidanceMemo({
     return { saved: false, reason: "Supabase is not configured." };
   }
 
+  const { data: memo, error } = await supabase
+    .from("guidance_memos")
+    .insert({
+      project_id: projectId,
+      step,
+      question: question.trim(),
+      answer: answer.trim(),
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
   await recordEditLog({
     action: `Saved methodological guidance memo for ${step}`,
     actionType: "guidance_memo_saved",
     actor: "Researcher",
-    newValue: { answer, question, step },
+    newValue: memo,
     projectId,
     researcherNote: question,
     step,
-    targetId: `guidance_${Date.now()}`,
+    targetId: memo.id,
     targetType: "workspace",
   });
 
-  return { saved: true };
+  return { memo: mapGuidanceMemo(memo), saved: true };
 }
 
 export async function replaceMeaningUnitsForSegment({
@@ -3165,23 +3193,20 @@ export async function recordExportGenerated({
     return { saved: false, reason: "Supabase is not configured." };
   }
 
-  let exportRecord: ExportRecord | undefined;
-  if (format === "json" || format === "docx" || format === "pdf") {
-    const { data, error } = await supabase
-      .from("exports")
-      .insert({
-        project_id: projectId,
-        format,
-        storage_bucket: null,
-        storage_path: null,
-      })
-      .select()
-      .single();
-    if (error) {
-      throw new Error(error.message);
-    }
-    exportRecord = mapExportRecord(data);
+  const { data, error } = await supabase
+    .from("exports")
+    .insert({
+      project_id: projectId,
+      format,
+      storage_bucket: null,
+      storage_path: null,
+    })
+    .select()
+    .single();
+  if (error) {
+    throw new Error(error.message);
   }
+  const exportRecord = mapExportRecord(data);
 
   await recordEditLog({
     action: `Generated ${format.toUpperCase()} export`,
@@ -3866,6 +3891,17 @@ function mapExportRecord(row: ExportRow) {
     storagePath: row.storage_path ?? undefined,
     generatedAt: row.generated_at,
   } satisfies ExportRecord;
+}
+
+function mapGuidanceMemo(row: GuidanceMemoRow) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    step: toWorkflowStep(row.step) ?? "pre-analysis",
+    question: row.question,
+    answer: row.answer,
+    createdAt: row.created_at,
+  } satisfies GuidanceMemo;
 }
 
 function toWorkflowStep(

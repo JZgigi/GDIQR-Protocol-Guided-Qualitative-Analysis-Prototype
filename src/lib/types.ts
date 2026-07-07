@@ -156,10 +156,19 @@ export interface IntegrityReviewItem {
 export interface ExportRecord {
   id: string;
   projectId: string;
-  format: "json" | "docx" | "pdf";
+  format: "json" | "csv" | "txt" | "docx" | "pdf";
   storageBucket?: string;
   storagePath?: string;
   generatedAt: string;
+}
+
+export interface GuidanceMemo {
+  id: string;
+  projectId: string;
+  step: WorkflowStep;
+  question: string;
+  answer: string;
+  createdAt: string;
 }
 
 export interface TranscriptSegment {

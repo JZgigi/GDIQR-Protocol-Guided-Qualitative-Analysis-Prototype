@@ -185,10 +185,27 @@ alter table public.edit_logs
 create table if not exists public.exports (
   id text primary key default ('export_' || replace(gen_random_uuid()::text, '-', '')),
   project_id text not null references public.projects(id) on delete cascade,
-  format text not null check (format in ('json', 'docx', 'pdf')),
+  format text not null check (format in ('json', 'csv', 'txt', 'docx', 'pdf')),
   storage_bucket text,
   storage_path text,
   generated_at timestamptz not null default now()
+);
+
+alter table public.exports
+  drop constraint if exists exports_format_check;
+
+alter table public.exports
+  add constraint exports_format_check
+  check (format in ('json', 'csv', 'txt', 'docx', 'pdf'));
+
+create table if not exists public.guidance_memos (
+  id text primary key default ('guide_' || replace(gen_random_uuid()::text, '-', '')),
+  project_id text not null references public.projects(id) on delete cascade,
+  step text not null,
+  question text not null default '',
+  answer text not null default '',
+  created_at timestamptz not null default now(),
+  check (step in ('pre-analysis', 'understanding', 'categorizing', 'integrating', 'integrity', 'export'))
 );
 
 -- ---------------------------------------------------------------------------
@@ -219,12 +236,16 @@ create index if not exists audit_events_project_action_idx
 create index if not exists exports_project_generated_idx
   on public.exports(project_id, generated_at desc);
 
+create index if not exists guidance_memos_project_created_idx
+  on public.guidance_memos(project_id, created_at desc);
+
 alter table public.pre_analysis_notes enable row level security;
 alter table public.integration_relationships enable row level security;
 alter table public.integrity_reviews enable row level security;
 alter table public.integrity_review_items enable row level security;
 alter table public.edit_logs enable row level security;
 alter table public.exports enable row level security;
+alter table public.guidance_memos enable row level security;
 
 grant select, insert, update, delete on
   public.pre_analysis_notes,
@@ -232,5 +253,6 @@ grant select, insert, update, delete on
   public.integrity_reviews,
   public.integrity_review_items,
   public.edit_logs,
-  public.exports
+  public.exports,
+  public.guidance_memos
 to service_role;

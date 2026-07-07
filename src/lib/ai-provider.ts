@@ -1188,12 +1188,12 @@ function getMeaningUnitChunkTimeoutMs() {
 function getTranscriptProcessTimeoutMs() {
   const configured = Number(
     process.env.OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS ??
-      Math.min(getOllamaTimeoutMs(), 45000)
+      getOllamaTimeoutMs()
   );
   if (!Number.isFinite(configured)) {
-    return 45000;
+    return Math.min(getOllamaTimeoutMs(), 300000);
   }
-  return Math.max(10000, Math.min(configured, 45000));
+  return Math.max(10000, Math.min(configured, 900000));
 }
 
 function assertOllamaConfigured() {

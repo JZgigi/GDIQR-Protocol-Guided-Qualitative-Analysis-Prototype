@@ -32,6 +32,7 @@ export default async function Home(props: {
       categories={workspace.categories}
       dataSource={workspace.dataSource}
       exportRecords={workspace.exportRecords}
+      guidanceMemos={workspace.guidanceMemos}
       integratedNarrative={workspace.integratedNarrative}
       integrationMemo={workspace.integrationMemo}
       integrationRelationships={workspace.integrationRelationships}

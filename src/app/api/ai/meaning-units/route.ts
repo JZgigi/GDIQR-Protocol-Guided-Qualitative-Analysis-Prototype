@@ -303,12 +303,15 @@ async function runMeaningUnitGeneration({
 
 function getMeaningUnitDemoTimeoutMs(requestedTimeoutMs?: number) {
   const configured = Number(
-    requestedTimeoutMs ?? process.env.MU_DEMO_AI_TIMEOUT_MS ?? 45000
+    requestedTimeoutMs ??
+      process.env.MU_DEMO_AI_TIMEOUT_MS ??
+      process.env.OLLAMA_MU_CHUNK_TIMEOUT_MS ??
+      120000
   );
   if (!Number.isFinite(configured)) {
-    return 45000;
+    return 120000;
   }
-  return Math.max(15000, Math.min(configured, 90000));
+  return Math.max(15000, Math.min(configured, 600000));
 }
 
 async function withTimeout<T>(
