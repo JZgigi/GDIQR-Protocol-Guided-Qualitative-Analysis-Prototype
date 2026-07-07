@@ -17,7 +17,7 @@ import {
   Settings2,
   ShieldCheck,
   Trash2,
-  Upload
+  Upload,
 } from "lucide-react";
 import type {
   AudioFileRecord,
@@ -37,19 +37,23 @@ import type {
   PreAnalysisNotes,
   ReviewerComment,
   ReviewerWorkspace,
+  SegmentSpeakerRole,
   SegmentStatus,
   TranscriptionJobRecord,
   TranscriptRecord,
   TranscriptSegment,
-  WorkflowStep
+  WorkflowStep,
 } from "@/lib/types";
 import type { WorkspaceData } from "@/lib/gdiqr-repository";
 import type { RunLog } from "@/lib/run-logs";
-import { autoSplitTranscript, type AutoSegmentMode } from "@/lib/auto-segmenter";
+import {
+  autoSplitTranscript,
+  type AutoSegmentMode,
+} from "@/lib/auto-segmenter";
 import type { StorageMode } from "@/lib/storage-mode";
 import {
   cleanTranscriptSourceForAnalysis,
-  containsNonTranscriptMaterial
+  containsNonTranscriptMaterial,
 } from "@/lib/transcript-source-cleaner";
 
 const PRODUCT_TITLE =
@@ -102,6 +106,15 @@ interface IntegrationMapGroup {
   label: string;
 }
 
+interface GuidanceMessage {
+  answer: string;
+  createdAt: string;
+  id: string;
+  question: string;
+  saved?: boolean;
+  step: WorkflowStep;
+}
+
 const steps: Array<{
   id: WorkflowStep;
   label: string;
@@ -112,7 +125,7 @@ const steps: Array<{
   { id: "categorizing", label: "Categorizing", icon: FolderKanban },
   { id: "integrating", label: "Integrating", icon: GitBranch },
   { id: "integrity", label: "Methodological Integrity", icon: ShieldCheck },
-  { id: "export", label: "Export", icon: Download }
+  { id: "export", label: "Export", icon: Download },
 ];
 
 interface GdiqrWorkspaceProps {
@@ -160,7 +173,7 @@ export function GdiqrWorkspace({
   exportRecords = [],
   dataSource = "unconfigured",
   storageMode = "local",
-  supabaseConfigured = false
+  supabaseConfigured = false,
 }: GdiqrWorkspaceProps) {
   const isLocalOnlyMode = storageMode === "local";
   const [activeStep, setActiveStep] = useState<WorkflowStep>(() =>
@@ -168,24 +181,26 @@ export function GdiqrWorkspace({
       categories,
       integratedNarrative,
       meaningUnits,
-      project
-    })
+      project,
+    }),
   );
   const [currentProject, setCurrentProject] = useState(project);
   const [availableProjects, setAvailableProjects] = useState(projectList);
   const [projectTitle, setProjectTitle] = useState(project.title);
-  const [datasetType, setDatasetType] =
-    useState<DatasetType>(project.datasetType);
-  const [projectDataSource, setProjectDataSource] =
-    useState<ProjectDataSource>(project.dataSource);
+  const [datasetType, setDatasetType] = useState<DatasetType>(
+    project.datasetType,
+  );
+  const [projectDataSource, setProjectDataSource] = useState<ProjectDataSource>(
+    project.dataSource,
+  );
   const [dataSuitabilityConfirmed, setDataSuitabilityConfirmed] = useState(
-    project.dataSuitabilityConfirmed
+    project.dataSuitabilityConfirmed,
   );
   const [projectResearcherNotes, setProjectResearcherNotes] = useState(
-    project.researcherNotes
+    project.researcherNotes,
   );
   const [createProjectExpanded, setCreateProjectExpanded] = useState(
-    !project.dataSuitabilityConfirmed && !isLocalOnlyMode
+    !project.dataSuitabilityConfirmed && !isLocalOnlyMode,
   );
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newResearchQuestion, setNewResearchQuestion] = useState("");
@@ -198,54 +213,61 @@ export function GdiqrWorkspace({
     useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [researchQuestion, setResearchQuestion] = useState(
-    preAnalysisNotes?.researchQuestion || project.researchQuestion
+    preAnalysisNotes?.researchQuestion || project.researchQuestion,
   );
   const [studyDescription, setStudyDescription] = useState(
     normaliseResearcherFacingText(
-      preAnalysisNotes?.studyDescription || project.studyDescription
-    )
+      preAnalysisNotes?.studyDescription || project.studyDescription,
+    ),
   );
   const [researcherExpectations, setResearcherExpectations] = useState(
-    preAnalysisNotes?.initialSensitisingConcepts ?? ""
+    preAnalysisNotes?.initialSensitisingConcepts ?? "",
   );
   const [researcherNotes, setResearcherNotes] = useState(
-    preAnalysisNotes?.contextualNotes ?? ""
+    preAnalysisNotes?.contextualNotes ?? "",
   );
-  const [researcherReflexivityNotes, setResearcherReflexivityNotes] =
-    useState(preAnalysisNotes?.researcherPosition ?? "");
+  const [researcherReflexivityNotes, setResearcherReflexivityNotes] = useState(
+    preAnalysisNotes?.researcherPosition ?? "",
+  );
   const [dataFamiliarisationNotes, setDataFamiliarisationNotes] = useState(
-    preAnalysisNotes?.dataFamiliarisationNotes ?? ""
+    preAnalysisNotes?.dataFamiliarisationNotes ?? "",
   );
   const [preAnalysisSavedAt, setPreAnalysisSavedAt] = useState(
-    preAnalysisNotes?.updatedAt ?? ""
+    preAnalysisNotes?.updatedAt ?? "",
   );
   const [isSavingPreAnalysis, setIsSavingPreAnalysis] = useState(false);
   const [relevanceGuideline, setRelevanceGuideline] = useState("");
   const [theoreticalFramework, setTheoreticalFramework] = useState("");
-  const [projectLanguage, setProjectLanguage] =
-    useState<Project["language"]>(project.language);
+  const [projectLanguage, setProjectLanguage] = useState<Project["language"]>(
+    project.language,
+  );
   const [mode, setMode] = useState<CategoryMode>("A");
   const [lightInterpretation, setLightInterpretation] = useState(
-    project.lightInterpretation
+    project.lightInterpretation,
   );
   const [projectSetupSavedAt, setProjectSetupSavedAt] = useState("");
   const [editableTranscript, setEditableTranscript] = useState(transcript);
   const [transcriptConfirmed, setTranscriptConfirmed] = useState(
-    isTranscriptConfirmed(project)
+    isTranscriptConfirmed(project),
   );
   const [aiPrivacyFindings, setAiPrivacyFindings] = useState<string[]>(
-    extractPrivacyReviewMarkers(transcript)
+    extractPrivacyReviewMarkers(transcript),
   );
   const [sensitiveReviewItems, setSensitiveReviewItems] = useState<
     SensitiveReviewItem[]
-  >(() => buildSensitiveReviewItems(transcript, extractPrivacyReviewMarkers(transcript)));
+  >(() =>
+    buildSensitiveReviewItems(
+      transcript,
+      extractPrivacyReviewMarkers(transcript),
+    ),
+  );
   const [privacyReviewExpanded, setPrivacyReviewExpanded] = useState(true);
   const [activeSensitiveItemId, setActiveSensitiveItemId] = useState("");
   const [privacyOverrideAccepted, setPrivacyOverrideAccepted] = useState(false);
   const [transcriptStorageStatus, setTranscriptStorageStatus] = useState(
     transcript.trim()
       ? "Anonymised version saved"
-      : "Not saved yet — local draft only"
+      : "Not saved yet — local draft only",
   );
   const [displaySegments, setDisplaySegments] = useState(segments);
   const [displayAudioFiles, setDisplayAudioFiles] = useState(audioFiles);
@@ -257,7 +279,8 @@ export function GdiqrWorkspace({
   const [displayCategories, setDisplayCategories] = useState(categories);
   const [reviewerOutputs, setReviewerOutputs] = useState(reviewerComments);
   const [displayAuditEvents, setDisplayAuditEvents] = useState(auditEvents);
-  const [displayExportRecords, setDisplayExportRecords] = useState(exportRecords);
+  const [displayExportRecords, setDisplayExportRecords] =
+    useState(exportRecords);
   const [narrative, setNarrative] = useState(integratedNarrative);
   const [integrationReviewed, setIntegrationReviewed] = useState(false);
   const [integrationNote, setIntegrationNote] = useState(integrationMemo);
@@ -267,8 +290,8 @@ export function GdiqrWorkspace({
     buildIntegrationRelationshipDrafts({
       categories,
       storedRelationships: storedIntegrationRelationships,
-      units: meaningUnits
-    })
+      units: meaningUnits,
+    }),
   );
   const [integrationSavedAt, setIntegrationSavedAt] = useState("");
   const [isSavingIntegration, setIsSavingIntegration] = useState(false);
@@ -291,14 +314,17 @@ export function GdiqrWorkspace({
     storageMode === "local"
       ? "Local-only mode ready. Import or paste a transcript to begin."
       : supabaseConfigured
-      ? "Workspace ready. Start by uploading audio or importing a transcript."
-      : "Supabase is not connected yet. Add your Supabase settings before testing with real data."
+        ? "Workspace ready. Start by uploading audio or importing a transcript."
+        : "Supabase is not connected yet. Add your Supabase settings before testing with real data.",
   );
   const [selectedAudioFile, setSelectedAudioFile] = useState<File | null>(null);
-  const [uploadLanguage, setUploadLanguage] =
-    useState<Project["language"]>(project.language);
+  const [uploadLanguage, setUploadLanguage] = useState<Project["language"]>(
+    project.language,
+  );
   const [isUploadingAudio, setIsUploadingAudio] = useState(false);
   const [isAutoSplittingTranscript, setIsAutoSplittingTranscript] =
+    useState(false);
+  const [isSpeakerSplittingTranscript, setIsSpeakerSplittingTranscript] =
     useState(false);
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [isGeneratingMeaningUnits, setIsGeneratingMeaningUnits] =
@@ -306,10 +332,11 @@ export function GdiqrWorkspace({
   const [isAcceptingMeaningUnits, setIsAcceptingMeaningUnits] = useState(false);
   const [isSavingMeaningUnitAction, setIsSavingMeaningUnitAction] =
     useState(false);
-  const [meaningUnitGenerationScope, setMeaningUnitGenerationScope] =
-    useState<"all" | "selected">("selected");
+  const [meaningUnitGenerationScope, setMeaningUnitGenerationScope] = useState<
+    "all" | "selected"
+  >("selected");
   const [meaningUnitSegmentId, setMeaningUnitSegmentId] = useState(
-    segments[0]?.id ?? ""
+    segments[0]?.id ?? "",
   );
   const [generationProgress, setGenerationProgress] = useState<{
     current: number;
@@ -323,7 +350,7 @@ export function GdiqrWorkspace({
   const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
   const [transcriptImportText, setTranscriptImportText] = useState("");
   const [transcriptImportName, setTranscriptImportName] = useState(
-    "Imported transcript"
+    "Imported transcript",
   );
   const [isImportingTranscript, setIsImportingTranscript] = useState(false);
   const [transcriptPreparationStage, setTranscriptPreparationStage] =
@@ -331,6 +358,18 @@ export function GdiqrWorkspace({
   const [isConfirmingTranscript, setIsConfirmingTranscript] = useState(false);
   const [activeMeaningUnitRunId, setActiveMeaningUnitRunId] = useState("");
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
+  const [isExportingFormat, setIsExportingFormat] =
+    useState<AnalysisExportFormat | null>(null);
+  const [workflowError, setWorkflowError] = useState("");
+  const retryActionRef = useRef<(() => void) | null>(null);
+  const [guidanceQuestion, setGuidanceQuestion] = useState("");
+  const [guidanceMessages, setGuidanceMessages] = useState<GuidanceMessage[]>(
+    [],
+  );
+  const [isGuidanceLoading, setIsGuidanceLoading] = useState(false);
+  const [savedGuidanceMemos, setSavedGuidanceMemos] = useState<
+    GuidanceMessage[]
+  >([]);
   const [muReviewOpen, setMuReviewOpen] = useState(true);
   const [muIntegrityReviewRan, setMuIntegrityReviewRan] = useState(false);
   const [categoryReviewOpen, setCategoryReviewOpen] = useState(true);
@@ -338,13 +377,16 @@ export function GdiqrWorkspace({
     string[]
   >([]);
   const [selectedSegmentId, setSelectedSegmentId] = useState(
-    segments[0]?.id ?? ""
+    segments[0]?.id ?? "",
   );
   const [segmentDraftTitle, setSegmentDraftTitle] = useState(
-    segments[0]?.topicLabel ?? ""
+    segments[0]?.topicLabel ?? "",
   );
   const [segmentDraftText, setSegmentDraftText] = useState(
-    segments[0]?.text ?? ""
+    segments[0]?.text ?? "",
+  );
+  const [segmentDraftRole, setSegmentDraftRole] = useState<SegmentSpeakerRole>(
+    segments[0]?.speakerRole ?? "unclear",
   );
   const [isSavingSegment, setIsSavingSegment] = useState(false);
   const [segmentSplitMode, setSegmentSplitMode] =
@@ -352,6 +394,17 @@ export function GdiqrWorkspace({
   const transcriptTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const segmentTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const meaningUnitAbortControllerRef = useRef<AbortController | null>(null);
+
+  function setRecoverableWorkflowError(message: string, retry?: () => void) {
+    retryActionRef.current = retry ?? null;
+    setWorkflowError(message);
+    setApiStatus(message);
+  }
+
+  function clearWorkflowError() {
+    retryActionRef.current = null;
+    setWorkflowError("");
+  }
 
   async function loadRunLogs() {
     try {
@@ -371,7 +424,7 @@ export function GdiqrWorkspace({
   async function clearFinishedRunLogs() {
     try {
       const response = await fetch("/api/run-logs", {
-        method: "DELETE"
+        method: "DELETE",
       });
       const result = (await response.json().catch(() => ({}))) as {
         logs?: RunLog[];
@@ -381,7 +434,7 @@ export function GdiqrWorkspace({
       }
     } catch (error) {
       setApiStatus(
-        error instanceof Error ? error.message : "Could not clear run logs."
+        error instanceof Error ? error.message : "Could not clear run logs.",
       );
     }
   }
@@ -417,7 +470,9 @@ export function GdiqrWorkspace({
     if (activeLog.status === "completed") {
       setIsGeneratingMeaningUnits(false);
       setActiveMeaningUnitRunId("");
-      setApiStatus("Meaning-unit job completed; refreshing Supabase workspace...");
+      setApiStatus(
+        "Meaning-unit job completed; refreshing Supabase workspace...",
+      );
       void refreshWorkspace();
       return;
     }
@@ -431,7 +486,7 @@ export function GdiqrWorkspace({
 
   useEffect(() => {
     setSensitiveReviewItems((current) =>
-      buildSensitiveReviewItems(editableTranscript, aiPrivacyFindings, current)
+      buildSensitiveReviewItems(editableTranscript, aiPrivacyFindings, current),
     );
   }, [aiPrivacyFindings, editableTranscript]);
 
@@ -452,6 +507,7 @@ export function GdiqrWorkspace({
     }
     setSegmentDraftTitle(segment.topicLabel || segment.speakerInfo);
     setSegmentDraftText(segment.text);
+    setSegmentDraftRole(segment.speakerRole ?? "unclear");
     if (!displaySegments.some((item) => item.id === meaningUnitSegmentId)) {
       const readySegment =
         displaySegments.find((item) => canRunMeaningUnitsForSegment(item)) ??
@@ -460,38 +516,35 @@ export function GdiqrWorkspace({
     }
   }, [displaySegments, meaningUnitSegmentId, selectedSegmentId]);
 
-  const completedSteps = useMemo(
-    () => {
-      const completed = new Set<WorkflowStep>(["pre-analysis"]);
-      if (units.length > 0) {
-        completed.add("understanding");
-      }
-      if (displayCategories.length > 0) {
-        completed.add("categorizing");
-      }
-      if (integrationReviewed || narrative.trim()) {
-        completed.add("integrating");
-      }
-      if (reviewerOutputs.length > 0) {
-        completed.add("integrity");
-      }
-      return completed;
-    },
-    [
-      displayCategories.length,
-      editableTranscript,
-      integrationReviewed,
-      narrative,
-      reviewerOutputs.length,
-      units.length
-    ]
-  );
+  const completedSteps = useMemo(() => {
+    const completed = new Set<WorkflowStep>(["pre-analysis"]);
+    if (units.length > 0) {
+      completed.add("understanding");
+    }
+    if (displayCategories.length > 0) {
+      completed.add("categorizing");
+    }
+    if (integrationReviewed || narrative.trim()) {
+      completed.add("integrating");
+    }
+    if (reviewerOutputs.length > 0) {
+      completed.add("integrity");
+    }
+    return completed;
+  }, [
+    displayCategories.length,
+    editableTranscript,
+    integrationReviewed,
+    narrative,
+    reviewerOutputs.length,
+    units.length,
+  ]);
 
   const selectedTitle = steps.find((step) => step.id === activeStep)?.label;
   const guidedSteps = steps.filter((step) => step.id !== "export");
   const currentStepIndex = Math.max(
     0,
-    steps.findIndex((step) => step.id === activeStep)
+    steps.findIndex((step) => step.id === activeStep),
   );
   const nextStep = steps[(currentStepIndex + 1) % steps.length];
   const latestAudioFile = displayAudioFiles[0];
@@ -499,9 +552,9 @@ export function GdiqrWorkspace({
   const pendingHighRiskItems = useMemo(
     () =>
       sensitiveReviewItems.filter(
-        (item) => item.riskLevel === "high" && item.status === "pending"
+        (item) => item.riskLevel === "high" && item.status === "pending",
       ),
-    [sensitiveReviewItems]
+    [sensitiveReviewItems],
   );
   const unresolvedHighRiskCount = pendingHighRiskItems.length;
   const canProceedWithTranscript =
@@ -518,7 +571,7 @@ export function GdiqrWorkspace({
     () =>
       displaySegments.find((segment) => segment.id === selectedSegmentId) ??
       displaySegments[0],
-    [displaySegments, selectedSegmentId]
+    [displaySegments, selectedSegmentId],
   );
   const selectedSegmentIndex = selectedSegment
     ? displaySegments.findIndex((segment) => segment.id === selectedSegment.id)
@@ -526,28 +579,29 @@ export function GdiqrWorkspace({
   const previousSegment =
     selectedSegmentIndex > 0 ? displaySegments[selectedSegmentIndex - 1] : null;
   const nextSegment =
-    selectedSegmentIndex >= 0 && selectedSegmentIndex < displaySegments.length - 1
+    selectedSegmentIndex >= 0 &&
+    selectedSegmentIndex < displaySegments.length - 1
       ? displaySegments[selectedSegmentIndex + 1]
       : null;
   const readySegments = useMemo(
     () =>
       displaySegments.filter((segment) =>
-        canRunMeaningUnitsForSegment(segment)
+        canRunMeaningUnitsForSegment(segment),
       ),
-    [displaySegments]
+    [displaySegments],
   );
   const selectedMeaningUnitSegment = useMemo(
     () =>
       displaySegments.find((segment) => segment.id === meaningUnitSegmentId) ??
       null,
-    [displaySegments, meaningUnitSegmentId]
+    [displaySegments, meaningUnitSegmentId],
   );
   const canGenerateMeaningUnits = Boolean(
-    transcriptConfirmed && editableTranscript.trim()
+    transcriptConfirmed && editableTranscript.trim(),
   );
   const currentMeaningUnits = useMemo(
     () => normalizeMeaningUnitNumbersForSegments(units, displaySegments),
-    [displaySegments, units]
+    [displaySegments, units],
   );
   const segmentMeaningUnitCounts = useMemo(() => {
     const counts = new Map<
@@ -558,7 +612,7 @@ export function GdiqrWorkspace({
       const current = counts.get(unit.segmentId) ?? {
         accepted: 0,
         excluded: 0,
-        total: 0
+        total: 0,
       };
       current.total += 1;
       if (unit.analysisExcluded) {
@@ -573,15 +627,15 @@ export function GdiqrWorkspace({
   }, [currentMeaningUnits]);
   const confirmedMeaningUnits = useMemo(
     () => currentMeaningUnits.filter((unit) => isConfirmedMeaningUnit(unit)),
-    [currentMeaningUnits]
+    [currentMeaningUnits],
   );
   const unconfirmedMeaningUnits = useMemo(
     () => currentMeaningUnits.filter((unit) => !isConfirmedMeaningUnit(unit)),
-    [currentMeaningUnits]
+    [currentMeaningUnits],
   );
   const excludedMeaningUnits = useMemo(
     () => currentMeaningUnits.filter((unit) => unit.analysisExcluded),
-    [currentMeaningUnits]
+    [currentMeaningUnits],
   );
   const hasFallbackCategoryLabels = displayCategories.some(isFallbackCategory);
   const hasTemporaryFallbackCategories = categoryDraftIsFallback;
@@ -590,23 +644,23 @@ export function GdiqrWorkspace({
       new Set(
         displayCategories
           .filter((category) => category.status !== "rejected")
-          .flatMap((category) => category.includedUnitIds)
+          .flatMap((category) => category.includedUnitIds),
       ),
-    [displayCategories]
+    [displayCategories],
   );
   const unassignedMeaningUnits = useMemo(
     () =>
       confirmedMeaningUnits.filter(
-        (unit) => !assignedMeaningUnitNumbers.has(unit.number)
+        (unit) => !assignedMeaningUnitNumbers.has(unit.number),
       ),
-    [assignedMeaningUnitNumbers, confirmedMeaningUnits]
+    [assignedMeaningUnitNumbers, confirmedMeaningUnits],
   );
   const confirmedCategoryCount = displayCategories.filter(
-    (category) => category.status === "confirmed"
+    (category) => category.status === "confirmed",
   ).length;
   const acceptedMeaningUnitNumbers = useMemo(
     () => new Set(confirmedMeaningUnits.map((unit) => unit.number)),
-    [confirmedMeaningUnits]
+    [confirmedMeaningUnits],
   );
   const reviewedIntegrationCategories = useMemo(
     () =>
@@ -614,14 +668,14 @@ export function GdiqrWorkspace({
         (category) =>
           category.status !== "rejected" &&
           category.includedUnitIds.some((unitNumber) =>
-            acceptedMeaningUnitNumbers.has(unitNumber)
-          )
+            acceptedMeaningUnitNumbers.has(unitNumber),
+          ),
       ),
-    [acceptedMeaningUnitNumbers, displayCategories]
+    [acceptedMeaningUnitNumbers, displayCategories],
   );
   const integrationMapGroups = useMemo(
     () => buildIntegrationMapGroups(reviewedIntegrationCategories),
-    [reviewedIntegrationCategories]
+    [reviewedIntegrationCategories],
   );
   const canGenerateIntegrationStructure =
     allSegmentsProcessedForModeC &&
@@ -631,41 +685,46 @@ export function GdiqrWorkspace({
   const canRunCategories =
     confirmedMeaningUnits.length > 0 &&
     (mode === "A" ||
-      (mode === "B" && displayCategories.length > 0 && !hasTemporaryFallbackCategories) ||
+      (mode === "B" &&
+        displayCategories.length > 0 &&
+        !hasTemporaryFallbackCategories) ||
       (mode === "C" &&
         displayCategories.length > 0 &&
         !hasTemporaryFallbackCategories &&
         allSegmentsProcessedForModeC));
   const canRunReviewer = currentMeaningUnits.length > 0;
   const meaningUnitReviewIssues = useMemo(
-    () => reviewerOutputs.filter((comment) => comment.workspace === "meaning-units"),
-    [reviewerOutputs]
+    () =>
+      reviewerOutputs.filter(
+        (comment) => comment.workspace === "meaning-units",
+      ),
+    [reviewerOutputs],
   );
   const meaningUnitIssueContextById = useMemo(
     () =>
       buildMeaningUnitIssueContextById(
         meaningUnitReviewIssues,
-        currentMeaningUnits
+        currentMeaningUnits,
       ),
-    [currentMeaningUnits, meaningUnitReviewIssues]
+    [currentMeaningUnits, meaningUnitReviewIssues],
   );
   const categoryReviewIssues = useMemo(
-    () => reviewerOutputs.filter((comment) => comment.workspace === "categories"),
-    [reviewerOutputs]
+    () =>
+      reviewerOutputs.filter((comment) => comment.workspace === "categories"),
+    [reviewerOutputs],
   );
   const canExport = Boolean(
     editableTranscript.trim() ||
-      units.length ||
-      displayCategories.length ||
-      reviewerOutputs.length
+    units.length ||
+    displayCategories.length ||
+    reviewerOutputs.length,
   );
-  const generationTargetLabel =
-    "the confirmed transcript";
+  const generationTargetLabel = "the confirmed transcript";
   const selectedSegmentAlreadyHasUnits = Boolean(
     selectedMeaningUnitSegment &&
-      currentMeaningUnits.some(
-        (unit) => unit.segmentId === selectedMeaningUnitSegment.segmentId
-      )
+    currentMeaningUnits.some(
+      (unit) => unit.segmentId === selectedMeaningUnitSegment.segmentId,
+    ),
   );
   const generationButtonLabel =
     currentMeaningUnits.length > 0
@@ -690,9 +749,9 @@ export function GdiqrWorkspace({
           narrative,
           project: currentProject,
           transcriptConfirmed,
-          unassignedMeaningUnits
+          unassignedMeaningUnits,
         }),
-        displayIntegrityItems
+        displayIntegrityItems,
       ),
     [
       categoryReviewIssues,
@@ -708,8 +767,8 @@ export function GdiqrWorkspace({
       meaningUnitReviewIssues,
       narrative,
       transcriptConfirmed,
-      unassignedMeaningUnits
-    ]
+      unassignedMeaningUnits,
+    ],
   );
 
   useEffect(() => {
@@ -717,13 +776,13 @@ export function GdiqrWorkspace({
       acceptedMeaningUnitNumberKey
         .split(",")
         .map((value) => Number(value))
-        .filter(Number.isFinite)
+        .filter(Number.isFinite),
     );
     setDisplayCategories((current) => {
       let changed = false;
       const next = current.map((category) => {
         const includedUnitIds = category.includedUnitIds.filter((number) =>
-          acceptedNumbers.has(number)
+          acceptedNumbers.has(number),
         );
         if (includedUnitIds.length !== category.includedUnitIds.length) {
           changed = true;
@@ -744,23 +803,23 @@ export function GdiqrWorkspace({
     setProjectResearcherNotes(workspace.project.researcherNotes);
     setResearchQuestion(
       workspace.preAnalysisNotes?.researchQuestion ||
-        workspace.project.researchQuestion
+        workspace.project.researchQuestion,
     );
     setStudyDescription(
       normaliseResearcherFacingText(
         workspace.preAnalysisNotes?.studyDescription ||
-          workspace.project.studyDescription
-      )
+          workspace.project.studyDescription,
+      ),
     );
     setResearcherReflexivityNotes(
-      workspace.preAnalysisNotes?.researcherPosition ?? ""
+      workspace.preAnalysisNotes?.researcherPosition ?? "",
     );
     setResearcherNotes(workspace.preAnalysisNotes?.contextualNotes ?? "");
     setResearcherExpectations(
-      workspace.preAnalysisNotes?.initialSensitisingConcepts ?? ""
+      workspace.preAnalysisNotes?.initialSensitisingConcepts ?? "",
     );
     setDataFamiliarisationNotes(
-      workspace.preAnalysisNotes?.dataFamiliarisationNotes ?? ""
+      workspace.preAnalysisNotes?.dataFamiliarisationNotes ?? "",
     );
     setPreAnalysisSavedAt(workspace.preAnalysisNotes?.updatedAt ?? "");
     setProjectLanguage(workspace.project.language);
@@ -773,7 +832,7 @@ export function GdiqrWorkspace({
     setTranscriptStorageStatus(
       workspace.transcript.trim()
         ? "Anonymised version saved"
-        : "Not saved yet — local draft only"
+        : "Not saved yet — local draft only",
     );
     setDisplaySegments(workspace.segments);
     setDisplayAudioFiles(workspace.audioFiles);
@@ -791,8 +850,8 @@ export function GdiqrWorkspace({
       buildIntegrationRelationshipDrafts({
         categories: workspace.categories,
         storedRelationships: workspace.integrationRelationships ?? [],
-        units: workspace.meaningUnits
-      })
+        units: workspace.meaningUnits,
+      }),
     );
     setIntegrationSavedAt("");
     setCategoryDraftNotice("");
@@ -806,7 +865,7 @@ export function GdiqrWorkspace({
     setIsSavingProject(true);
     if (!dataSuitabilityConfirmed) {
       setApiStatus(
-        "Confirm the data suitability notice before saving project setup or uploading data."
+        "Confirm the data suitability notice before saving project setup or uploading data.",
       );
       setIsSavingProject(false);
       return;
@@ -814,7 +873,7 @@ export function GdiqrWorkspace({
 
     if (datasetType === "identifiable_sensitive" && !isLocalOnlyMode) {
       setApiStatus(
-        "Identifiable sensitive data is not supported in the cloud-assisted v1.0 research release. Use an approved secure/local deployment before uploading that data."
+        "Identifiable sensitive data is not supported in the cloud-assisted v1.0 research release. Use an approved secure/local deployment before uploading that data.",
       );
       setIsSavingProject(false);
       return;
@@ -827,7 +886,7 @@ export function GdiqrWorkspace({
         dataSource: projectDataSource,
         dataSuitabilityConfirmed,
         dataSuitabilityConfirmedAt: dataSuitabilityConfirmed
-          ? current.dataSuitabilityConfirmedAt ?? now
+          ? (current.dataSuitabilityConfirmedAt ?? now)
           : undefined,
         datasetType,
         language: projectLanguage,
@@ -836,12 +895,12 @@ export function GdiqrWorkspace({
         researchQuestion,
         studyDescription,
         title: projectTitle,
-        updatedAt: now
+        updatedAt: now,
       }));
       setUploadLanguage(projectLanguage);
       setProjectSetupSavedAt(now);
       setApiStatus(
-        `Project setup saved locally at ${new Date(now).toLocaleTimeString()}. Nothing was saved to Supabase.`
+        `Project setup saved locally at ${new Date(now).toLocaleTimeString()}. Nothing was saved to Supabase.`,
       );
       setIsSavingProject(false);
       return;
@@ -861,10 +920,10 @@ export function GdiqrWorkspace({
           researcherNotes: projectResearcherNotes,
           researchQuestion,
           studyDescription,
-          title: projectTitle
+          title: projectTitle,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "PATCH"
+        method: "PATCH",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -887,27 +946,26 @@ export function GdiqrWorkspace({
         setAvailableProjects((current) =>
           current.some((item) => item.id === nextProject.id)
             ? current.map((item) =>
-                item.id === nextProject.id ? nextProject : item
+                item.id === nextProject.id ? nextProject : item,
               )
-            : [nextProject, ...current]
+            : [nextProject, ...current],
         );
       }
       setProjectSetupSavedAt(new Date().toISOString());
       setApiStatus("Project setup saved to Supabase");
     } catch (error) {
       setApiStatus(
-        error instanceof Error ? error.message : "Project setup save failed"
+        error instanceof Error ? error.message : "Project setup save failed",
       );
     } finally {
       setIsSavingProject(false);
     }
   }
 
-
   async function saveStepOnePreAnalysisNotes() {
     if (!researchQuestion.trim() || !studyDescription.trim()) {
       setApiStatus(
-        "Add a research question and study description/domains before saving Step 1."
+        "Add a research question and study description/domains before saving Step 1.",
       );
       return;
     }
@@ -920,15 +978,15 @@ export function GdiqrWorkspace({
         ...current,
         researchQuestion,
         studyDescription,
-        updatedAt: now
+        updatedAt: now,
       }));
       setPreAnalysisSavedAt(now);
       recordLocalAuditEvent({
         action: "Updated Step 1 pre-analysis notes locally",
-        target: "Step 1 pre-analysis"
+        target: "Step 1 pre-analysis",
       });
       setApiStatus(
-        "Step 1 pre-analysis notes saved locally for this browser session. Export JSON to keep a copy."
+        "Step 1 pre-analysis notes saved locally for this browser session. Export JSON to keep a copy.",
       );
       setIsSavingPreAnalysis(false);
       return;
@@ -945,10 +1003,10 @@ export function GdiqrWorkspace({
           projectId: currentProject.id,
           researcherPosition: researcherReflexivityNotes,
           researchQuestion,
-          studyDescription
+          studyDescription,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "PATCH"
+        method: "PATCH",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -970,17 +1028,19 @@ export function GdiqrWorkspace({
       if (result.preAnalysisNotes) {
         setResearchQuestion(result.preAnalysisNotes.researchQuestion);
         setStudyDescription(
-          normaliseResearcherFacingText(result.preAnalysisNotes.studyDescription)
+          normaliseResearcherFacingText(
+            result.preAnalysisNotes.studyDescription,
+          ),
         );
         setResearcherReflexivityNotes(
-          result.preAnalysisNotes.researcherPosition
+          result.preAnalysisNotes.researcherPosition,
         );
         setResearcherNotes(result.preAnalysisNotes.contextualNotes);
         setResearcherExpectations(
-          result.preAnalysisNotes.initialSensitisingConcepts
+          result.preAnalysisNotes.initialSensitisingConcepts,
         );
         setDataFamiliarisationNotes(
-          result.preAnalysisNotes.dataFamiliarisationNotes
+          result.preAnalysisNotes.dataFamiliarisationNotes,
         );
         setPreAnalysisSavedAt(result.preAnalysisNotes.updatedAt);
       }
@@ -989,13 +1049,12 @@ export function GdiqrWorkspace({
       setApiStatus(
         error instanceof Error
           ? error.message
-          : "Step 1 pre-analysis save failed."
+          : "Step 1 pre-analysis save failed.",
       );
     } finally {
       setIsSavingPreAnalysis(false);
     }
   }
-
 
   function openProject(projectId: string) {
     if (!projectId || projectId === currentProject.id) {
@@ -1013,7 +1072,7 @@ export function GdiqrWorkspace({
 
     if (!dataSuitabilityConfirmed) {
       setApiStatus(
-        `Confirm the data suitability notice before ${actionLabel}. This v1.0 release is for open, public, or anonymised datasets only.`
+        `Confirm the data suitability notice before ${actionLabel}. This v1.0 release is for open, public, or anonymised datasets only.`,
       );
       setCreateProjectExpanded(true);
       return false;
@@ -1021,7 +1080,7 @@ export function GdiqrWorkspace({
 
     if (datasetType === "identifiable_sensitive") {
       setApiStatus(
-        "Identifiable sensitive data is not supported in the cloud-assisted v1.0 research release. Use an approved secure/local deployment before uploading that data."
+        "Identifiable sensitive data is not supported in the cloud-assisted v1.0 research release. Use an approved secure/local deployment before uploading that data.",
       );
       setCreateProjectExpanded(true);
       return false;
@@ -1033,7 +1092,7 @@ export function GdiqrWorkspace({
   async function createNewProject() {
     if (isLocalOnlyMode) {
       setApiStatus(
-        "Project creation is stored only in browser state in local-only mode. Use the current workspace or switch to Supabase storage for a project list."
+        "Project creation is stored only in browser state in local-only mode. Use the current workspace or switch to Supabase storage for a project list.",
       );
       return;
     }
@@ -1045,21 +1104,21 @@ export function GdiqrWorkspace({
       !newResearcherNotes.trim()
     ) {
       setApiStatus(
-        "Complete the project title, research question, study description, and researcher notes before creating a project."
+        "Complete the project title, research question, study description, and researcher notes before creating a project.",
       );
       return;
     }
 
     if (!newDataSuitabilityConfirmed) {
       setApiStatus(
-        "Confirm the data suitability notice before creating a v1.0 research-release project."
+        "Confirm the data suitability notice before creating a v1.0 research-release project.",
       );
       return;
     }
 
     if (newDatasetType === "identifiable_sensitive") {
       setApiStatus(
-        "Identifiable sensitive data is not supported in the cloud-assisted v1.0 research release. Choose open/anonymised data or use an approved secure/local deployment."
+        "Identifiable sensitive data is not supported in the cloud-assisted v1.0 research release. Choose open/anonymised data or use an approved secure/local deployment.",
       );
       return;
     }
@@ -1078,10 +1137,10 @@ export function GdiqrWorkspace({
           researcherNotes: newResearcherNotes,
           researchQuestion: newResearchQuestion,
           studyDescription: newStudyDescription,
-          title: newProjectTitle
+          title: newProjectTitle,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         created?: boolean;
@@ -1092,7 +1151,7 @@ export function GdiqrWorkspace({
 
       if (!response.ok || !result.created || !result.project) {
         setApiStatus(
-          result.error ?? result.reason ?? "Project creation failed."
+          result.error ?? result.reason ?? "Project creation failed.",
         );
         return;
       }
@@ -1100,7 +1159,7 @@ export function GdiqrWorkspace({
       const createdProject = result.project;
       setAvailableProjects((current) => [
         createdProject,
-        ...current.filter((item) => item.id !== createdProject.id)
+        ...current.filter((item) => item.id !== createdProject.id),
       ]);
       setApiStatus("Project created. Opening the new workspace...");
       const url = new URL(window.location.href);
@@ -1108,7 +1167,7 @@ export function GdiqrWorkspace({
       window.location.href = url.toString();
     } catch (error) {
       setApiStatus(
-        error instanceof Error ? error.message : "Project creation failed."
+        error instanceof Error ? error.message : "Project creation failed.",
       );
     } finally {
       setIsCreatingProject(false);
@@ -1121,19 +1180,19 @@ export function GdiqrWorkspace({
     setCurrentProject((current) => ({
       ...current,
       lightInterpretation: value,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     }));
     setApiStatus(
       value
         ? "Light interpretation is ON. New meaning-unit drafts may include cautious tentative interpretation."
-        : "Light interpretation is OFF. New meaning-unit drafts will stay closer to descriptive summaries."
+        : "Light interpretation is OFF. New meaning-unit drafts will stay closer to descriptive summaries.",
     );
   }
 
   async function uploadAndTranscribeAudio() {
     if (isLocalOnlyMode) {
       setApiStatus(
-        "Audio upload is disabled in local-only sharing mode because raw audio would need special temporary handling. Please import an anonymised transcript for this prototype test."
+        "Audio upload is disabled in local-only sharing mode because raw audio would need special temporary handling. Please import an anonymised transcript for this prototype test.",
       );
       return;
     }
@@ -1148,7 +1207,9 @@ export function GdiqrWorkspace({
     }
 
     setIsUploadingAudio(true);
-    setApiStatus("Uploading and transcribing. You can follow progress in the activity panel below.");
+    setApiStatus(
+      "Uploading and transcribing. You can follow progress in the activity panel below.",
+    );
 
     const formData = new FormData();
     formData.append("file", selectedAudioFile);
@@ -1158,7 +1219,7 @@ export function GdiqrWorkspace({
     try {
       const response = await fetch("/api/audio/transcribe", {
         body: formData,
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -1169,7 +1230,10 @@ export function GdiqrWorkspace({
       };
 
       if (!response.ok) {
-        setApiStatus(result.error ?? "Audio upload failed");
+        setRecoverableWorkflowError(
+          result.error ?? "Audio upload failed",
+          () => void uploadAndTranscribeAudio(),
+        );
         return;
       }
 
@@ -1180,12 +1244,12 @@ export function GdiqrWorkspace({
       setTranscriptStorageStatus(
         result.transcribed
           ? "Audio transcript generated and saved as review draft"
-          : "Audio uploaded; transcription did not complete"
+          : "Audio uploaded; transcription did not complete",
       );
       setAiPrivacyFindings(
         result.privacyFindings?.length
           ? result.privacyFindings
-          : extractPrivacyReviewMarkers(result.workspace?.transcript ?? "")
+          : extractPrivacyReviewMarkers(result.workspace?.transcript ?? ""),
       );
 
       setApiStatus(
@@ -1195,12 +1259,13 @@ export function GdiqrWorkspace({
                 ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
                 : ""
             }`
-          : result.error ??
-              "Audio uploaded to Supabase, but local transcription failed"
+          : (result.error ??
+              "Audio uploaded to Supabase, but local transcription failed"),
       );
     } catch (error) {
-      setApiStatus(
-        error instanceof Error ? error.message : "Audio upload failed"
+      setRecoverableWorkflowError(
+        error instanceof Error ? error.message : "Audio upload failed",
+        () => void uploadAndTranscribeAudio(),
       );
     } finally {
       setIsUploadingAudio(false);
@@ -1220,7 +1285,7 @@ export function GdiqrWorkspace({
 
       const response = await fetch("/api/transcripts/extract", {
         body: formData,
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -1236,12 +1301,14 @@ export function GdiqrWorkspace({
       setTranscriptImportText(result.transcript);
       setTranscriptImportName(result.filename ?? file.name);
       setTranscriptPreparationStage("");
-      setApiStatus(`Transcript loaded from ${result.filename ?? file.name}. Review it before importing.`);
+      setApiStatus(
+        `Transcript loaded from ${result.filename ?? file.name}. Review it before importing.`,
+      );
     } catch (error) {
       setApiStatus(
         error instanceof Error
           ? error.message
-          : "Transcript file extraction failed"
+          : "Transcript file extraction failed",
       );
     }
   }
@@ -1260,17 +1327,17 @@ export function GdiqrWorkspace({
     setTranscriptPreparationStage(
       forceRuleBased
         ? "Using quick local transcript preparation. Please review speaker labels and sensitive details carefully."
-        : "Preparing transcript with local AI first. If it is slow, the app will switch to quick local preparation automatically."
+        : "Preparing transcript with local AI first. If it is slow, the app will switch to quick local preparation automatically.",
     );
     const slowNoticeTimer = window.setTimeout(() => {
       setTranscriptPreparationStage(
-        "Still preparing. Local AI can be slow; the app will use quick local preparation if needed."
+        "Still preparing. Local AI can be slow; the app will use quick local preparation if needed.",
       );
     }, 30000);
     setApiStatus(
       forceRuleBased
         ? "Preparing transcript with quick local rules..."
-        : "Preparing transcript. The app will label speakers and flag possible private details for your review."
+        : "Preparing transcript. The app will label speakers and flag possible private details for your review.",
     );
 
     try {
@@ -1280,13 +1347,14 @@ export function GdiqrWorkspace({
           language: uploadLanguage,
           projectId: currentProject.id,
           saveReviewDraft: !isLocalOnlyMode,
-          sourceLabel: transcriptImportName || "Uploaded transcript — review draft",
+          sourceLabel:
+            transcriptImportName || "Uploaded transcript — review draft",
           timeoutMs: 45000,
-          transcript: transcriptImportText
+          transcript: transcriptImportText,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 75000
+        timeoutMs: 75000,
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -1308,37 +1376,40 @@ export function GdiqrWorkspace({
       if (result.workspace) {
         applyWorkspace(result.workspace);
       }
-      const safePreparedTranscript = prepareTranscriptForStorage(result.transcript);
+      const safePreparedTranscript = prepareTranscriptForStorage(
+        result.transcript,
+      );
       setEditableTranscript(safePreparedTranscript);
       setTranscriptConfirmed(false);
       setTranscriptStorageStatus(
         result.savedDraft
           ? "Original upload and prepared review draft saved"
-          : "Not saved yet — local draft only"
+          : "Not saved yet — local draft only",
       );
       setPrivacyOverrideAccepted(false);
       setAiPrivacyFindings(
         result.privacyFindings?.length
           ? result.privacyFindings
-          : extractPrivacyReviewMarkers(result.transcript)
+          : extractPrivacyReviewMarkers(result.transcript),
       );
 
       setTranscriptImportText("");
       setTranscriptPreparationStage(
         result.fallbackUsed || forceRuleBased
           ? "Quick local preparation completed. Please review speaker labels and sensitive-information items before confirming."
-          : "AI-assisted transcript preparation completed. Please review before confirming."
+          : "AI-assisted transcript preparation completed. Please review before confirming.",
       );
       setApiStatus(
         `${result.fallbackUsed || forceRuleBased ? "Transcript prepared with quick local rules" : "Transcript prepared locally"}${result.savedDraft ? " and saved as a review draft" : " and not saved yet"}. Please review speaker labels, sensitive-information items, and wording before saving or confirming${
           result.privacyFindings?.length
             ? ` (${result.privacyFindings.length} privacy finding${result.privacyFindings.length === 1 ? "" : "s"})`
             : ""
-        }`
+        }`,
       );
     } catch (error) {
-      setApiStatus(
-        error instanceof Error ? error.message : "Transcript import failed"
+      setRecoverableWorkflowError(
+        error instanceof Error ? error.message : "Transcript import failed",
+        () => void importTranscript(forceRuleBased),
       );
     } finally {
       window.clearTimeout(slowNoticeTimer);
@@ -1348,15 +1419,22 @@ export function GdiqrWorkspace({
 
   async function refreshWorkspace() {
     if (isLocalOnlyMode) {
-      setApiStatus("Local-only mode keeps the current workspace in browser state. Export project JSON to keep a copy.");
+      setApiStatus(
+        "Local-only mode keeps the current workspace in browser state. Export project JSON to keep a copy.",
+      );
       return;
     }
     setApiStatus("Refreshing workspace...");
-    const response = await fetch(`/api/workspace?projectId=${currentProject.id}`, {
-      cache: "no-store"
-    });
+    const response = await fetch(
+      `/api/workspace?projectId=${currentProject.id}`,
+      {
+        cache: "no-store",
+      },
+    );
     if (!response.ok) {
-      setApiStatus("Could not refresh the workspace. Check Supabase connection and try again.");
+      setApiStatus(
+        "Could not refresh the workspace. Check Supabase connection and try again.",
+      );
       return;
     }
     const workspace = (await response.json()) as WorkspaceData;
@@ -1370,26 +1448,26 @@ export function GdiqrWorkspace({
 
     if (!canProceedWithTranscript) {
       setApiStatus(
-        "This transcript may still contain identifiable or sensitive information. Please review high-risk items before saving."
+        "This transcript may still contain identifiable or sensitive information. Please review high-risk items before saving.",
       );
       return;
     }
 
     if (hasUnresolvedPrivacyMarkers(editableTranscript)) {
       setApiStatus(
-        "Unresolved privacy review markers remain in this transcript. Please review or anonymise them before saving or analysis."
+        "Unresolved privacy review markers remain in this transcript. Please review or anonymise them before saving or analysis.",
       );
       return;
     }
     const preparedTranscript = prepareTranscriptForStorage(editableTranscript);
     const cleanedSource = cleanTranscriptSourceForAnalysis(
       preparedTranscript,
-      currentProject
+      currentProject,
     );
     const transcriptForStorage = cleanedSource.transcript;
     if (!transcriptForStorage.trim()) {
       setApiStatus(
-        "Only project setup or metadata was detected. Add the interview transcript / participant account before confirming for analysis."
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before confirming for analysis.",
       );
       return;
     }
@@ -1397,7 +1475,9 @@ export function GdiqrWorkspace({
       setEditableTranscript(transcriptForStorage);
       setTranscriptConfirmed(false);
       setTranscriptStorageStatus("Reviewed transcript saved locally");
-      setApiStatus("Reviewed transcript saved locally in this browser session. Export project JSON to keep a copy.");
+      setApiStatus(
+        "Reviewed transcript saved locally in this browser session. Export project JSON to keep a copy.",
+      );
       return;
     }
     setApiStatus("Saving reviewed transcript...");
@@ -1409,10 +1489,10 @@ export function GdiqrWorkspace({
         sensitiveItems: serialiseSensitiveItemsForStorage(sensitiveReviewItems),
         anonymisationStatus:
           unresolvedHighRiskCount === 0 ? "reviewed" : "not_reviewed",
-        rawTranscriptRetained: false
+        rawTranscriptRetained: false,
       }),
       headers: { "Content-Type": "application/json" },
-      method: "POST"
+      method: "POST",
     });
     if (!response.ok) {
       const errorResult = (await response.json().catch(() => ({}))) as {
@@ -1430,7 +1510,7 @@ export function GdiqrWorkspace({
     setApiStatus(
       result.saved
         ? "Reviewed transcript saved. Please confirm again before analysis."
-        : result.reason ?? result.error ?? "Transcript save failed"
+        : (result.reason ?? result.error ?? "Transcript save failed"),
     );
     if (result.saved) {
       if (result.workspace) {
@@ -1443,34 +1523,38 @@ export function GdiqrWorkspace({
 
   async function confirmTranscriptForAnalysis() {
     if (!editableTranscript.trim()) {
-      setApiStatus("Add or import a transcript before confirming it for analysis.");
+      setApiStatus(
+        "Add or import a transcript before confirming it for analysis.",
+      );
       return;
     }
-    if (!ensureDataSuitabilityConfirmed("confirming a transcript for analysis")) {
+    if (
+      !ensureDataSuitabilityConfirmed("confirming a transcript for analysis")
+    ) {
       return;
     }
     if (!canProceedWithTranscript) {
       setApiStatus(
-        "This transcript may still contain identifiable or sensitive information. Please review high-risk items before analysis."
+        "This transcript may still contain identifiable or sensitive information. Please review high-risk items before analysis.",
       );
       return;
     }
 
     if (hasUnresolvedPrivacyMarkers(editableTranscript)) {
       setApiStatus(
-        "Unresolved privacy review markers remain in this transcript. Please review or anonymise them before saving or analysis."
+        "Unresolved privacy review markers remain in this transcript. Please review or anonymise them before saving or analysis.",
       );
       return;
     }
     const preparedTranscript = prepareTranscriptForStorage(editableTranscript);
     const cleanedSource = cleanTranscriptSourceForAnalysis(
       preparedTranscript,
-      currentProject
+      currentProject,
     );
     const transcriptForStorage = cleanedSource.transcript;
     if (!transcriptForStorage.trim()) {
       setApiStatus(
-        "Only project setup or metadata was detected. Add the interview transcript / participant account before confirming for analysis."
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before confirming for analysis.",
       );
       return;
     }
@@ -1482,42 +1566,40 @@ export function GdiqrWorkspace({
       setCurrentProject((current) => ({
         ...current,
         status: "Transcript confirmed for local analysis",
-        updatedAt: now
+        updatedAt: now,
       }));
       const splitResult = autoSplitTranscript(transcriptForStorage, {
         mode: segmentSplitMode,
         researchQuestion,
-        sourceTranscriptId: "active-transcript"
+        sourceTranscriptId: "active-transcript",
       });
       const splitStartedAt = Date.now();
       const localSegments =
         splitResult.segments.length > 0
-          ? splitResult.segments.map(
-              (segment, index): TranscriptSegment => ({
-                caseId: "CASE-001",
-                createdBy: "auto",
-                endTimestamp: "00:00",
-                endTurnIndex: segment.endTurnIndex,
-                id: `local-seg-${splitStartedAt}-${index + 1}`,
-                segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
-                segmentNumber: index + 1,
-                sourceTranscriptId: segment.sourceTranscriptId,
-                speakerInfo: segment.title,
-                splittingMode: segment.splittingMode,
-                startingMuNumber: index * 100 + 1,
-                startTimestamp: "00:00",
-                startTurnIndex: segment.startTurnIndex,
-                status: "Needs Review",
-                text: segment.text,
-                topicLabel: segment.title || `Segment ${index + 1}`
-              })
-            )
+          ? splitResult.segments.map((segment, index): TranscriptSegment => ({
+              caseId: "CASE-001",
+              createdBy: "auto",
+              endTimestamp: "00:00",
+              endTurnIndex: segment.endTurnIndex,
+              id: `local-seg-${splitStartedAt}-${index + 1}`,
+              segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
+              segmentNumber: index + 1,
+              sourceTranscriptId: segment.sourceTranscriptId,
+              speakerInfo: segment.title,
+              splittingMode: segment.splittingMode,
+              startingMuNumber: index * 100 + 1,
+              startTimestamp: "00:00",
+              startTurnIndex: segment.startTurnIndex,
+              status: "Needs Review",
+              text: segment.text,
+              topicLabel: segment.title || `Segment ${index + 1}`,
+            }))
           : [
               buildLocalTranscriptSegment({
                 caseId: "CASE-001",
                 segmentNumber: 1,
-                text: transcriptForStorage
-              })
+                text: transcriptForStorage,
+              }),
             ];
       setDisplaySegments(localSegments);
       setSelectedSegmentId(localSegments[0]?.id ?? "");
@@ -1532,33 +1614,36 @@ export function GdiqrWorkspace({
           action: "Confirmed reviewed transcript locally",
           id: `audit_local_${Date.now()}`,
           target: "Local-only workspace",
-          timestamp: now
+          timestamp: now,
         },
-        ...current
+        ...current,
       ]);
       setApiStatus(
         cleanedSource.removedLineCount > 0
           ? `Reviewed transcript confirmed locally. Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before analysis.`
-          : "Reviewed transcript confirmed locally. Internal source chunks are ready; generate draft meaning units when you are ready to review them."
+          : "Reviewed transcript confirmed locally. Internal source chunks are ready; generate draft meaning units when you are ready to review them.",
       );
       return;
     }
     setIsConfirmingTranscript(true);
-    setApiStatus("Confirming transcript. Previous derived analysis will be cleared so the next analysis uses this reviewed text.");
+    setApiStatus(
+      "Confirming transcript. Previous derived analysis will be cleared so the next analysis uses this reviewed text.",
+    );
 
     try {
       const response = await fetch("/api/transcripts/confirm", {
         body: JSON.stringify({
           content: transcriptForStorage,
-        language: projectLanguage,
-        projectId: currentProject.id,
-        sensitiveItems: serialiseSensitiveItemsForStorage(sensitiveReviewItems),
-        anonymisationStatus:
-          unresolvedHighRiskCount === 0 ? "confirmed" : "not_reviewed",
-        rawTranscriptRetained: false
+          language: projectLanguage,
+          projectId: currentProject.id,
+          sensitiveItems:
+            serialiseSensitiveItemsForStorage(sensitiveReviewItems),
+          anonymisationStatus:
+            unresolvedHighRiskCount === 0 ? "confirmed" : "not_reviewed",
+          rawTranscriptRetained: false,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -1580,11 +1665,13 @@ export function GdiqrWorkspace({
       setApiStatus(
         cleanedSource.removedLineCount > 0
           ? `Transcript confirmed. Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before analysis.`
-          : "Transcript confirmed. You can now generate meaning units from the reviewed text."
+          : "Transcript confirmed. You can now generate meaning units from the reviewed text.",
       );
     } catch (error) {
       setApiStatus(
-        error instanceof Error ? error.message : "Transcript confirmation failed"
+        error instanceof Error
+          ? error.message
+          : "Transcript confirmation failed",
       );
     } finally {
       setIsConfirmingTranscript(false);
@@ -1593,7 +1680,7 @@ export function GdiqrWorkspace({
 
   async function clearTranscriptAndDerivedOutputs() {
     const confirmed = window.confirm(
-      "Delete the current transcript, uploaded audio records, and all derived meaning units, categories, methodological integrity issues, and audit records for this project? This cannot be undone."
+      "Delete the current transcript, uploaded audio records, and all derived meaning units, categories, methodological integrity issues, and audit records for this project? This cannot be undone.",
     );
     if (!confirmed) {
       return;
@@ -1619,7 +1706,9 @@ export function GdiqrWorkspace({
       setAiPrivacyFindings([]);
       setPrivacyOverrideAccepted(false);
       setDisplayAuditEvents([]);
-      setApiStatus("Local transcript and derived outputs cleared from this browser session.");
+      setApiStatus(
+        "Local transcript and derived outputs cleared from this browser session.",
+      );
       return;
     }
 
@@ -1627,7 +1716,7 @@ export function GdiqrWorkspace({
     const response = await fetch("/api/project/clear-data", {
       body: JSON.stringify({ projectId: currentProject.id }),
       headers: { "Content-Type": "application/json" },
-      method: "POST"
+      method: "POST",
     });
     const result = (await response.json().catch(() => ({}))) as {
       cleared?: boolean;
@@ -1637,7 +1726,9 @@ export function GdiqrWorkspace({
     };
 
     if (!response.ok || !result.cleared) {
-      setApiStatus(result.error ?? result.reason ?? "Project data clear failed.");
+      setApiStatus(
+        result.error ?? result.reason ?? "Project data clear failed.",
+      );
       return;
     }
 
@@ -1661,18 +1752,20 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       const updatedSegment: TranscriptSegment = {
         ...selectedSegment,
+        speakerInfo: segmentDraftTitle,
+        speakerRole: segmentDraftRole,
         status: status ?? selectedSegment.status,
         text: segmentDraftText,
-        topicLabel: segmentDraftTitle
+        topicLabel: segmentDraftTitle,
       };
       setDisplaySegments((current) =>
         current.map((segment) =>
-          segment.id === selectedSegment.id ? updatedSegment : segment
-        )
+          segment.id === selectedSegment.id ? updatedSegment : segment,
+        ),
       );
       setSelectedSegmentId(updatedSegment.id);
       setUnits((current) =>
-        current.filter((unit) => unit.segmentId !== updatedSegment.segmentId)
+        current.filter((unit) => unit.segmentId !== updatedSegment.segmentId),
       );
       setDisplayCategories([]);
       setReviewerOutputs([]);
@@ -1682,12 +1775,12 @@ export function GdiqrWorkspace({
           status === "Ready for MU Analysis"
             ? `Marked ${updatedSegment.segmentId} ready for MU analysis`
             : `Edited ${updatedSegment.segmentId} boundary/excerpt text`,
-        target: updatedSegment.segmentId
+        target: updatedSegment.segmentId,
       });
       setApiStatus(
         status === "Ready for MU Analysis"
           ? "Meaning unit marked ready locally. You can now generate its summary."
-          : "Meaning unit saved locally. Existing summaries for this unit were cleared so regenerated analysis uses the edited text."
+          : "Meaning unit saved locally. Existing summaries for this unit were cleared so regenerated analysis uses the edited text.",
       );
       return;
     }
@@ -1699,12 +1792,13 @@ export function GdiqrWorkspace({
       const response = await fetch(`/api/segments/${selectedSegment.id}`, {
         body: JSON.stringify({
           projectId: currentProject.id,
+          speakerRole: segmentDraftRole,
           status,
           text: segmentDraftText,
-          topicLabel: segmentDraftTitle
+          topicLabel: segmentDraftTitle,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "PATCH"
+        method: "PATCH",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -1717,17 +1811,19 @@ export function GdiqrWorkspace({
       }
       setDisplaySegments((current) =>
         current.map((segment) =>
-          segment.id === result.segment?.id ? result.segment : segment
-        )
+          segment.id === result.segment?.id ? result.segment : segment,
+        ),
       );
       setSelectedSegmentId(result.segment.id);
       setApiStatus(
         status === "Ready for MU Analysis"
           ? "Meaning unit marked ready. You can now generate its summary."
-          : "Meaning unit saved."
+          : "Meaning unit saved.",
       );
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Meaning unit save failed.");
+      setApiStatus(
+        error instanceof Error ? error.message : "Meaning unit save failed.",
+      );
     } finally {
       setIsSavingSegment(false);
     }
@@ -1735,7 +1831,7 @@ export function GdiqrWorkspace({
 
   async function runSegmentAction(
     action: "split" | "merge" | "move",
-    direction?: "previous" | "next" | "up" | "down"
+    direction?: "previous" | "next" | "up" | "down",
   ) {
     if (!selectedSegment) {
       setApiStatus("Select a meaning unit first.");
@@ -1747,12 +1843,14 @@ export function GdiqrWorkspace({
     if (action === "split") {
       const splitIndex = getSegmentSplitIndex(
         segmentDraftText,
-        segmentTextAreaRef.current?.selectionStart
+        segmentTextAreaRef.current?.selectionStart,
       );
       beforeText = segmentDraftText.slice(0, splitIndex).trim();
       afterText = segmentDraftText.slice(splitIndex).trim();
       if (!beforeText || !afterText) {
-        setApiStatus("Place the cursor where this meaning unit should split, then try again.");
+        setApiStatus(
+          "Place the cursor where this meaning unit should split, then try again.",
+        );
         return;
       }
     }
@@ -1763,7 +1861,7 @@ export function GdiqrWorkspace({
         ? "Splitting meaning unit..."
         : action === "merge"
           ? "Merging meaning units..."
-          : "Reordering meaning unit..."
+          : "Reordering meaning unit...",
     );
 
     try {
@@ -1775,15 +1873,21 @@ export function GdiqrWorkspace({
             ...selectedSegment,
             text: beforeText,
             topicLabel: segmentDraftTitle || selectedSegment.topicLabel,
-            status: "Needs Review"
+            status: "Needs Review",
           };
           const afterSegment = buildLocalTranscriptSegment({
             caseId: selectedSegment.caseId,
             segmentNumber: nextNumber,
+            speakerRole: selectedSegment.speakerRole ?? segmentDraftRole,
             text: afterText,
-            topicLabel: `Split from ${selectedSegment.segmentId}`
+            topicLabel: `Split from ${selectedSegment.segmentId}`,
           });
-          nextSegments.splice(selectedSegmentIndex, 1, beforeSegment, afterSegment);
+          nextSegments.splice(
+            selectedSegmentIndex,
+            1,
+            beforeSegment,
+            afterSegment,
+          );
         } else if (action === "merge") {
           const targetIndex =
             direction === "previous"
@@ -1801,10 +1905,16 @@ export function GdiqrWorkspace({
                 ? `${target.text}\n\n${segmentDraftText}`.trim()
                 : `${segmentDraftText}\n\n${target.text}`.trim(),
             topicLabel: `${target.topicLabel} + ${selectedSegment.topicLabel}`,
-            status: "Needs Review"
+            status: "Needs Review",
           };
-          nextSegments = nextSegments.filter((segment) => segment.id !== selectedSegment.id);
-          nextSegments[targetIndex > selectedSegmentIndex ? selectedSegmentIndex : targetIndex] = merged;
+          nextSegments = nextSegments.filter(
+            (segment) => segment.id !== selectedSegment.id,
+          );
+          nextSegments[
+            targetIndex > selectedSegmentIndex
+              ? selectedSegmentIndex
+              : targetIndex
+          ] = merged;
           setSelectedSegmentId(merged.id);
         } else {
           const targetIndex =
@@ -1832,9 +1942,11 @@ export function GdiqrWorkspace({
               : action === "merge"
                 ? `Merged ${selectedSegment.segmentId} ${direction ?? ""}`.trim()
                 : `Reordered ${selectedSegment.segmentId}`,
-          target: selectedSegment.segmentId
+          target: selectedSegment.segmentId,
         });
-        setApiStatus("Meaning unit list updated locally. Review boundaries before generating summaries.");
+        setApiStatus(
+          "Meaning unit list updated locally. Review boundaries before generating summaries.",
+        );
         return;
       }
 
@@ -1844,10 +1956,10 @@ export function GdiqrWorkspace({
           afterText,
           beforeText,
           direction,
-          projectId: currentProject.id
+          projectId: currentProject.id,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -1856,7 +1968,9 @@ export function GdiqrWorkspace({
         segments?: TranscriptSegment[];
       };
       if (!response.ok || !result.saved || !result.segments) {
-        setApiStatus(result.error ?? result.reason ?? "Meaning unit action failed.");
+        setApiStatus(
+          result.error ?? result.reason ?? "Meaning unit action failed.",
+        );
         return;
       }
       setDisplaySegments(result.segments);
@@ -1864,9 +1978,13 @@ export function GdiqrWorkspace({
         result.segments.find((segment) => segment.id === selectedSegment.id) ??
         result.segments[Math.max(0, selectedSegmentIndex)];
       setSelectedSegmentId(selected?.id ?? "");
-      setApiStatus("Meaning unit list updated. Review boundaries before generating summaries.");
+      setApiStatus(
+        "Meaning unit list updated. Review boundaries before generating summaries.",
+      );
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Meaning unit action failed.");
+      setApiStatus(
+        error instanceof Error ? error.message : "Meaning unit action failed.",
+      );
     } finally {
       setIsSavingSegment(false);
     }
@@ -1883,45 +2001,49 @@ export function GdiqrWorkspace({
     const selectionEnd = textarea?.selectionEnd ?? 0;
     if (selectionEnd <= selectionStart) {
       setApiStatus(
-        "Select the text that should become its own meaning unit, then click Create new meaning unit from selection."
+        "Select the text that should become its own meaning unit, then click Create new meaning unit from selection.",
       );
       return;
     }
 
-    const selectedText = segmentDraftText.slice(selectionStart, selectionEnd).trim();
+    const selectedText = segmentDraftText
+      .slice(selectionStart, selectionEnd)
+      .trim();
     const beforeText = segmentDraftText.slice(0, selectionStart).trim();
     const afterText = segmentDraftText.slice(selectionEnd).trim();
     const remainingText = [beforeText, afterText].filter(Boolean).join("\n\n");
     if (!selectedText || !remainingText) {
       setApiStatus(
-        "Selection split needs both selected text and remaining text in the current meaning unit."
+        "Selection split needs both selected text and remaining text in the current meaning unit.",
       );
       return;
     }
 
     const newTitle =
-      window.prompt("Title for the new meaning unit:", "New selected meaning unit")?.trim() ||
-      "New selected meaning unit";
+      window
+        .prompt("Title for the new meaning unit:", "New selected meaning unit")
+        ?.trim() || "New selected meaning unit";
     const selectedSegmentDraft = buildLocalTranscriptSegment({
       caseId: selectedSegment.caseId,
       createdBy: "manual",
       segmentNumber: selectedSegment.segmentNumber + 1,
+      speakerRole: selectedSegment.speakerRole ?? segmentDraftRole,
       splittingMode: segmentSplitMode,
       text: selectedText,
-      topicLabel: newTitle
+      topicLabel: newTitle,
     });
     const updatedOriginal: TranscriptSegment = {
       ...selectedSegment,
       createdBy: selectedSegment.createdBy ?? "manual",
       splittingMode: selectedSegment.splittingMode ?? segmentSplitMode,
       status: "Needs Review",
-      text: remainingText
+      text: remainingText,
     };
     const nextSegments = renumberLocalSegments([
       ...displaySegments.slice(0, selectedSegmentIndex),
       updatedOriginal,
       selectedSegmentDraft,
-      ...displaySegments.slice(selectedSegmentIndex + 1)
+      ...displaySegments.slice(selectedSegmentIndex + 1),
     ]);
 
     setDisplaySegments(nextSegments);
@@ -1933,10 +2055,10 @@ export function GdiqrWorkspace({
     setNarrative("");
     recordLocalAuditEvent({
       action: `Created ${selectedSegmentDraft.segmentId} from selected transcript text`,
-      target: selectedSegmentDraft.segmentId
+      target: selectedSegmentDraft.segmentId,
     });
     setApiStatus(
-      "Created a new meaning unit from the selected text. Review both boundaries before generating summaries."
+      "Created a new meaning unit from the selected text. Review both boundaries before generating summaries.",
     );
   }
 
@@ -1952,24 +2074,30 @@ export function GdiqrWorkspace({
     try {
       if (isLocalOnlyMode) {
         const nextSegments = renumberLocalSegments(
-          displaySegments.filter((segment) => segment.id !== selectedSegment.id)
+          displaySegments.filter(
+            (segment) => segment.id !== selectedSegment.id,
+          ),
         );
         setDisplaySegments(nextSegments);
         setSelectedSegmentId(nextSegments[0]?.id ?? "");
         setMeaningUnitSegmentId(nextSegments[0]?.id ?? "");
         setUnits((current) =>
-          current.filter((unit) => unit.segmentId !== selectedSegment.segmentId)
+          current.filter(
+            (unit) => unit.segmentId !== selectedSegment.segmentId,
+          ),
         );
         setDisplayCategories([]);
         setReviewerOutputs([]);
         setNarrative("");
-        setApiStatus("Meaning unit deleted locally. Related summaries and categories were cleared.");
+        setApiStatus(
+          "Meaning unit deleted locally. Related summaries and categories were cleared.",
+        );
         return;
       }
 
       const response = await fetch(
         `/api/segments/${selectedSegment.id}?projectId=${currentProject.id}`,
-        { method: "DELETE" }
+        { method: "DELETE" },
       );
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -1984,7 +2112,9 @@ export function GdiqrWorkspace({
       setSelectedSegmentId(result.segments[0]?.id ?? "");
       setApiStatus("Meaning unit deleted.");
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Meaning unit delete failed.");
+      setApiStatus(
+        error instanceof Error ? error.message : "Meaning unit delete failed.",
+      );
     } finally {
       setIsSavingSegment(false);
     }
@@ -1993,23 +2123,25 @@ export function GdiqrWorkspace({
   async function autoSplitTranscriptSegments() {
     if (!editableTranscript.trim()) {
       setApiStatus(
-        "No transcript text found. Please confirm or edit the transcript before auto-delineation."
+        "No transcript text found. Please confirm or edit the transcript before auto-delineation.",
       );
       return;
     }
     if (!transcriptConfirmed) {
-      setApiStatus("Confirm the transcript before auto-delineating meaning units.");
+      setApiStatus(
+        "Confirm the transcript before auto-delineating meaning units.",
+      );
       return;
     }
     if (hasUnresolvedPrivacyMarkers(editableTranscript)) {
       setApiStatus(
-        "Unresolved privacy review markers remain. Review or anonymise them before delineation and analysis."
+        "Unresolved privacy review markers remain. Review or anonymise them before delineation and analysis.",
       );
       return;
     }
 
     const confirmed = window.confirm(
-      "Auto-delineation will replace the current meaning unit list. Existing summaries linked to these units may need to be regenerated. Continue?"
+      "Auto-delineation will replace the current meaning unit list. Existing summaries linked to these units may need to be regenerated. Continue?",
     );
     if (!confirmed) {
       return;
@@ -2021,11 +2153,11 @@ export function GdiqrWorkspace({
     try {
       const cleanedSource = cleanTranscriptSourceForAnalysis(
         editableTranscript,
-        currentProject
+        currentProject,
       );
       if (!cleanedSource.transcript.trim()) {
         setApiStatus(
-          "Only project setup or metadata was detected. Add the interview transcript / participant account before auto-delineation."
+          "Only project setup or metadata was detected. Add the interview transcript / participant account before auto-delineation.",
         );
         return;
       }
@@ -2035,10 +2167,10 @@ export function GdiqrWorkspace({
           projectId: currentProject.id,
           researchQuestion: currentProject.researchQuestion,
           splittingMode: segmentSplitMode,
-          transcript: cleanedSource.transcript
+          transcript: cleanedSource.transcript,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -2049,7 +2181,7 @@ export function GdiqrWorkspace({
       };
       if (!response.ok || !result.saved || !result.segments) {
         setApiStatus(
-          result.error ?? result.reason ?? "Auto-delineation failed."
+          result.error ?? result.reason ?? "Auto-delineation failed.",
         );
         return;
       }
@@ -2062,28 +2194,133 @@ export function GdiqrWorkspace({
       setNarrative("");
       setApiStatus(
         result.notice ??
-          `Created ${result.segments.length} draft meaning unit${result.segments.length === 1 ? "" : "s"}. Please review the suggested boundaries before analysis.`
+          `Created ${result.segments.length} draft meaning unit${result.segments.length === 1 ? "" : "s"}. Please review the suggested boundaries before analysis.`,
       );
     } catch (error) {
       setApiStatus(
-        error instanceof Error ? error.message : "Auto-delineation failed."
+        error instanceof Error ? error.message : "Auto-delineation failed.",
       );
     } finally {
       setIsAutoSplittingTranscript(false);
     }
   }
 
+  function getTranscriptForMeaningUnitGeneration() {
+    const analysisSegments = displaySegments.filter(
+      (segment) => segment.speakerRole !== "interviewer" && segment.text.trim(),
+    );
+    const ignoredInterviewerCount = displaySegments.filter(
+      (segment) => segment.speakerRole === "interviewer",
+    ).length;
+
+    if (analysisSegments.length > 0) {
+      return {
+        ignoredInterviewerCount,
+        transcript: analysisSegments
+          .map((segment) => segment.text.trim())
+          .join("\n\n"),
+      };
+    }
+
+    return {
+      ignoredInterviewerCount: 0,
+      transcript: editableTranscript,
+    };
+  }
+
+  async function speakerSplitTranscriptSegments() {
+    if (!editableTranscript.trim()) {
+      setApiStatus(
+        "Prepare and confirm a transcript before splitting by speaker labels.",
+      );
+      return;
+    }
+    if (!transcriptConfirmed) {
+      setApiStatus(
+        "Confirm the reviewed transcript before creating speaker segments.",
+      );
+      return;
+    }
+    const confirmed = window.confirm(
+      "Speaker segmentation will replace the current segment list and clear existing meaning units, categories, reviewer issues, and integration outputs. Continue?",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsSpeakerSplittingTranscript(true);
+    clearWorkflowError();
+    setApiStatus("Splitting transcript by speaker labels...");
+
+    try {
+      const cleanedSource = cleanTranscriptSourceForAnalysis(
+        editableTranscript,
+        currentProject,
+      );
+      const response = await fetch("/api/segments/speaker-split", {
+        body: JSON.stringify({
+          caseId: selectedSegment?.caseId ?? "CASE-001",
+          projectId: currentProject.id,
+          transcript: cleanedSource.transcript,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        notice?: string;
+        reason?: string;
+        saved?: boolean;
+        segments?: TranscriptSegment[];
+      };
+      if (!response.ok || !result.saved || !result.segments) {
+        setRecoverableWorkflowError(
+          result.error ?? result.reason ?? "Speaker segmentation failed.",
+          () => void speakerSplitTranscriptSegments(),
+        );
+        return;
+      }
+
+      setDisplaySegments(result.segments);
+      setSelectedSegmentId(result.segments[0]?.id ?? "");
+      setMeaningUnitSegmentId(
+        result.segments.find((segment) => segment.speakerRole !== "interviewer")
+          ?.id ??
+          result.segments[0]?.id ??
+          "",
+      );
+      setUnits([]);
+      setDisplayCategories([]);
+      setReviewerOutputs([]);
+      setNarrative("");
+      setCategoryDraftNotice("");
+      setCategoryDraftIsFallback(false);
+      setApiStatus(
+        result.notice ??
+          `Created ${result.segments.length} speaker segment${result.segments.length === 1 ? "" : "s"}. Correct speaker type before generating meaning units.`,
+      );
+    } catch (error) {
+      setRecoverableWorkflowError(
+        error instanceof Error ? error.message : "Speaker segmentation failed.",
+        () => void speakerSplitTranscriptSegments(),
+      );
+    } finally {
+      setIsSpeakerSplittingTranscript(false);
+    }
+  }
+
   async function generateMeaningUnitsFromTranscript(
     forceRuleBased: boolean,
-    signal: AbortSignal
+    signal: AbortSignal,
   ) {
+    const generationSource = getTranscriptForMeaningUnitGeneration();
     const cleanedSource = cleanTranscriptSourceForAnalysis(
-      editableTranscript,
-      currentProject
+      generationSource.transcript,
+      currentProject,
     );
     if (!cleanedSource.transcript.trim()) {
       throw new Error(
-        "Only project setup or metadata was detected. Add the interview transcript / participant account before generating meaning units."
+        "Only project setup or metadata was detected. Add the interview transcript / participant account before generating meaning units.",
       );
     }
     const response = await fetchWithTimeout("/api/ai/meaning-units", {
@@ -2095,12 +2332,12 @@ export function GdiqrWorkspace({
         projectId: currentProject.id,
         startingNumber: 1,
         timeoutMs: 45000,
-        transcript: cleanedSource.transcript
+        transcript: cleanedSource.transcript,
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
       signal,
-      timeoutMs: 75000
+      timeoutMs: 75000,
     });
 
     if (!response.ok) {
@@ -2126,21 +2363,21 @@ export function GdiqrWorkspace({
         humanStatus:
           unit.analysisExcluded || unit.humanStatus === "Excluded"
             ? "Excluded"
-            : "Draft"
+            : "Draft",
       }));
       setUnits(draftUnits.sort((left, right) => left.number - right.number));
       setDisplaySegments((current) =>
-        current.map((item) => ({ ...item, status: "Analysed" }))
+        current.map((item) => ({ ...item, status: "Analysed" })),
       );
       recordLocalAuditEvent({
         actor: "AI",
         action: `${forceRuleBased || result.fallbackUsed ? "Generated rule-based" : "Generated AI-assisted"} ${draftUnits.length} draft meaning unit${draftUnits.length === 1 ? "" : "s"} from the confirmed transcript`,
-        target: "Step 2 Meaning Units"
+        target: "Step 2 Meaning Units",
       });
       setMeaningUnitGenerationStage(
         forceRuleBased || result.fallbackUsed
           ? "Rule-based draft MUs generated. Review carefully before accepting."
-          : "AI-assisted draft MUs generated. Review carefully before accepting."
+          : "AI-assisted draft MUs generated. Review carefully before accepting.",
       );
     }
 
@@ -2149,27 +2386,29 @@ export function GdiqrWorkspace({
 
   async function generateMeaningUnits(
     segmentOverride?: TranscriptSegment | null,
-    forceRuleBased = false
+    forceRuleBased = false,
   ) {
     if (!editableTranscript.trim()) {
-      setApiStatus("Prepare and confirm a transcript before generating meaning units.");
+      setApiStatus(
+        "Prepare and confirm a transcript before generating meaning units.",
+      );
       return;
     }
     if (!transcriptConfirmed) {
       setApiStatus(
-        "Review and confirm the transcript before generating meaning units."
+        "Review and confirm the transcript before generating meaning units.",
       );
       return;
     }
     if (hasUnresolvedPrivacyMarkers(editableTranscript)) {
       setApiStatus(
-        "Unresolved privacy review markers remain. Review or anonymise them before requesting AI analysis."
+        "Unresolved privacy review markers remain. Review or anonymise them before requesting AI analysis.",
       );
       return;
     }
     if (currentMeaningUnits.length > 0) {
       const confirmed = window.confirm(
-        "Draft meaning units already exist. Redelineating will replace draft MU boundaries and clear later category/review outputs. Accepted/excluded decisions should be exported first if you need to preserve them. Continue?"
+        "Draft meaning units already exist. Redelineating will replace draft MU boundaries and clear later category/review outputs. Accepted/excluded decisions should be exported first if you need to preserve them. Continue?",
       );
       if (!confirmed) {
         return;
@@ -2182,33 +2421,37 @@ export function GdiqrWorkspace({
     const controller = new AbortController();
     const slowNoticeTimer = window.setTimeout(() => {
       setMeaningUnitGenerationStage(
-        "Still working. If local AI is slow, the system will switch to rule-based draft MUs automatically."
+        "Still working. If local AI is slow, the system will switch to rule-based draft MUs automatically.",
       );
     }, 30000);
     meaningUnitAbortControllerRef.current = controller;
     setIsGeneratingMeaningUnits(true);
-    setGenerationProgress({ current: 1, label: "Confirmed transcript", total: 1 });
+    setGenerationProgress({
+      current: 1,
+      label: "Confirmed transcript",
+      total: 1,
+    });
     setMeaningUnitGenerationStage(
       forceRuleBased
         ? "Generating rule-based draft MUs from speaker turns and meaning-preserving boundaries."
-        : "Generation started. Trying local AI first; rule-based fallback will be used if it takes too long. This may take a moment."
+        : "Generation started. Trying local AI first; rule-based fallback will be used if it takes too long. This may take a moment.",
     );
 
     try {
       setApiStatus(
         forceRuleBased
           ? "Generating rule-based draft meaning units..."
-          : "Delineating draft meaning units from the confirmed transcript..."
+          : "Delineating draft meaning units from the confirmed transcript...",
       );
       const result = await generateMeaningUnitsFromTranscript(
         forceRuleBased,
-        controller.signal
+        controller.signal,
       );
       if (!controller.signal.aborted) {
         setApiStatus(
           result.fallbackUsed || forceRuleBased
-            ? "Rule-based draft meaning units generated. Review, edit, accept, or exclude each MU before categorizing."
-            : "Draft meaning units generated. Review, edit, accept, or exclude each MU before categorizing."
+            ? "Rule-based draft meaning units generated. Interviewer-only speaker segments were ignored where marked. Review, edit, accept, or exclude each MU before categorizing."
+            : "Draft meaning units generated. Interviewer-only speaker segments were ignored where marked. Review, edit, accept, or exclude each MU before categorizing.",
         );
       }
     } catch (error) {
@@ -2216,8 +2459,9 @@ export function GdiqrWorkspace({
         setApiStatus("Generation stopped by user.");
         return;
       }
-      setApiStatus(
-        error instanceof Error ? error.message : "Meaning-unit API failed"
+      setRecoverableWorkflowError(
+        error instanceof Error ? error.message : "Meaning-unit API failed",
+        () => void generateMeaningUnits(segmentOverride, forceRuleBased),
       );
     } finally {
       window.clearTimeout(slowNoticeTimer);
@@ -2240,12 +2484,12 @@ export function GdiqrWorkspace({
     options: {
       allowFallbackRegenerate?: boolean;
       modeOverride?: CategoryMode;
-    } = {}
+    } = {},
   ) {
     const requestedMode = options.modeOverride ?? mode;
     if (confirmedMeaningUnits.length === 0) {
       setApiStatus(
-        "Accept meaning units before creating categories. Categories only use researcher-accepted, non-excluded meaning units."
+        "Accept meaning units before creating categories. Categories only use researcher-accepted, non-excluded meaning units.",
       );
       return;
     }
@@ -2259,18 +2503,20 @@ export function GdiqrWorkspace({
       !options.allowFallbackRegenerate
     ) {
       setApiStatus(
-        "This category set is a fallback draft. Regenerate it or use it as an editable starting point before continuing."
+        "This category set is a fallback draft. Regenerate it or use it as an editable starting point before continuing.",
       );
       return;
     }
     if (requestedMode === "C") {
       if (displayCategories.length === 0) {
-        setApiStatus("Construct and review categories before integrating findings.");
+        setApiStatus(
+          "Construct and review categories before integrating findings.",
+        );
         return;
       }
       if (!allSegmentsProcessedForModeC) {
         setApiStatus(
-          "Confirm that all meaning units in this transcript have been processed and reviewed before integrating findings."
+          "Confirm that all meaning units in this transcript have been processed and reviewed before integrating findings.",
         );
         return;
       }
@@ -2289,18 +2535,19 @@ export function GdiqrWorkspace({
           categories: displayCategories,
           integratedNarrative: narrative,
           project: currentProject,
-          units: confirmedMeaningUnits
+          units: confirmedMeaningUnits,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 900000
+        timeoutMs: 900000,
       });
       if (!response.ok) {
         const errorResult = (await response.json().catch(() => ({}))) as {
           error?: string;
         };
-        setApiStatus(
-          errorResult.error ?? `${getCategoryRunLabel(requestedMode)} failed`
+        setRecoverableWorkflowError(
+          errorResult.error ?? `${getCategoryRunLabel(requestedMode)} failed`,
+          () => void runCategories({ ...options, modeOverride: requestedMode }),
         );
         return;
       }
@@ -2321,20 +2568,21 @@ export function GdiqrWorkspace({
       const warning =
         result.uncertainties?.[0] ?? result.categoryRevisions?.[0] ?? "";
       setCategoryDraftNotice(
-      result.isFallbackDraft
+        result.isFallbackDraft
           ? "The assistant returned an empty response, so a temporary draft was created to keep the workflow testable. You can redraft it or use it as an editable starting point; please do not treat it as final analysis."
-          : warning
+          : warning,
       );
       setApiStatus(
         `${warning ? `${warning} ` : ""}${getCategoryRunLabel(requestedMode)} completed using ${result.provider ?? aiProvider}${
           result.persisted ? " and saved to Supabase" : ""
-        }`
+        }`,
       );
     } catch (error) {
-      setApiStatus(
+      setRecoverableWorkflowError(
         error instanceof Error
           ? error.message
-          : `${getCategoryRunLabel(requestedMode)} failed`
+          : `${getCategoryRunLabel(requestedMode)} failed`,
+        () => void runCategories({ ...options, modeOverride: requestedMode }),
       );
     } finally {
       setIsRunningCategories(false);
@@ -2343,14 +2591,16 @@ export function GdiqrWorkspace({
 
   async function acceptTemporaryCategoryDraft() {
     if (!hasTemporaryFallbackCategories || displayCategories.length === 0) {
-      setApiStatus("No temporary fallback category draft is available to accept.");
+      setApiStatus(
+        "No temporary fallback category draft is available to accept.",
+      );
       return;
     }
 
     const confirmed = window.confirm(
       isLocalOnlyMode
         ? "This will mark the temporary fallback category draft as researcher-confirmed in this local browser session. Only continue if you have reviewed it and accept it for prototype testing."
-        : "This will save the temporary fallback category draft to Supabase for prototype testing. Only continue if you have reviewed it and accept it as a researcher-confirmed draft."
+        : "This will save the temporary fallback category draft to Supabase for prototype testing. Only continue if you have reviewed it and accept it as a researcher-confirmed draft.",
     );
     if (!confirmed) {
       return;
@@ -2361,7 +2611,7 @@ export function GdiqrWorkspace({
       setDisplayCategories(markCategoriesEditableDraft(displayCategories));
       setCategoryDraftIsFallback(false);
       setCategoryDraftNotice(
-        "Fallback draft is now an editable starting point. It still requires review, renaming, evidence checks, and confirmation."
+        "Fallback draft is now an editable starting point. It still requires review, renaming, evidence checks, and confirmation.",
       );
       setApiStatus("Fallback draft kept as editable draft only.");
       setIsRunningCategories(false);
@@ -2376,11 +2626,11 @@ export function GdiqrWorkspace({
           categories: displayCategories,
           integratedNarrative: narrative,
           mode,
-          projectId: currentProject.id
+          projectId: currentProject.id,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 120000
+        timeoutMs: 120000,
       });
       const result = (await response.json().catch(() => ({}))) as {
         categories?: CategoryNode[];
@@ -2389,21 +2639,25 @@ export function GdiqrWorkspace({
         persisted?: boolean;
       };
       if (!response.ok || !result.persisted) {
-        setApiStatus(result.error ?? "Temporary category draft could not be saved.");
+        setApiStatus(
+          result.error ?? "Temporary category draft could not be saved.",
+        );
         return;
       }
       setDisplayCategories(result.categories ?? displayCategories);
       setNarrative(result.integratedNarrative ?? narrative);
       setCategoryDraftIsFallback(false);
       setCategoryDraftNotice(
-        "Temporary fallback draft saved after explicit researcher confirmation. Review/refine it before using it as final analysis."
+        "Temporary fallback draft saved after explicit researcher confirmation. Review/refine it before using it as final analysis.",
       );
-      setApiStatus("Temporary category draft saved to Supabase after researcher confirmation.");
+      setApiStatus(
+        "Temporary category draft saved to Supabase after researcher confirmation.",
+      );
     } catch (error) {
       setApiStatus(
         error instanceof Error
           ? error.message
-          : "Temporary category draft could not be saved."
+          : "Temporary category draft could not be saved.",
       );
     } finally {
       setIsRunningCategories(false);
@@ -2413,19 +2667,22 @@ export function GdiqrWorkspace({
   async function generateIntegrationStructureDraft() {
     if (hasTemporaryFallbackCategories) {
       setApiStatus(
-        "This category set is still a fallback draft. Review or regenerate categories before integrating."
+        "This category set is still a fallback draft. Review or regenerate categories before integrating.",
       );
       return;
     }
-    if (confirmedMeaningUnits.length === 0 || reviewedIntegrationCategories.length < 2) {
+    if (
+      confirmedMeaningUnits.length === 0 ||
+      reviewedIntegrationCategories.length < 2
+    ) {
       setApiStatus(
-        "Not enough reviewed categories to generate an integration structure. Please return to Step 3 and accept or revise categories first."
+        "Not enough reviewed categories to generate an integration structure. Please return to Step 3 and accept or revise categories first.",
       );
       return;
     }
     if (!allSegmentsProcessedForModeC) {
       setApiStatus(
-        "Confirm that all meaning units in this transcript have been processed and reviewed before generating an integration draft."
+        "Confirm that all meaning units in this transcript have been processed and reviewed before generating an integration draft.",
       );
       return;
     }
@@ -2433,32 +2690,32 @@ export function GdiqrWorkspace({
     const draft = buildIntegrationStructureDraft({
       categories: reviewedIntegrationCategories,
       researchQuestion: currentProject.researchQuestion,
-      units: confirmedMeaningUnits
+      units: confirmedMeaningUnits,
     });
     setIntegrationStructureTitle(draft.title);
     setIntegrationStructureExplanation(draft.explanation);
     setIntegrationRelationships(draft.relationships);
     setIntegrationStructureNotice(
-      "Provisional relationship structure generated from reviewed categories. Researcher review needed; edit before treating it as an analytic finding."
+      "Provisional relationship structure generated from reviewed categories. Researcher review needed; edit before treating it as an analytic finding.",
     );
     setNarrative(draft.narrative);
     setIntegrationReviewed(false);
     setApiStatus(
-      "Provisional relationship structure, draft category map, and editable narrative created from reviewed categories."
+      "Provisional relationship structure, draft category map, and editable narrative created from reviewed categories.",
     );
     await persistIntegrationWorkspace({
       action: "Generated provisional integration structure",
       actionType: "relationship_created",
       narrativeValue: draft.narrative,
       noteValue: integrationNote,
-      relationships: draft.relationships
+      relationships: draft.relationships,
     });
   }
 
   function addIntegrationRelationship() {
     if (reviewedIntegrationCategories.length < 2) {
       setApiStatus(
-        "Add at least two reviewed categories before creating a relationship."
+        "Add at least two reviewed categories before creating a relationship.",
       );
       return;
     }
@@ -2467,12 +2724,12 @@ export function GdiqrWorkspace({
       evidenceUnitNumbers: Array.from(
         new Set([
           ...source.includedUnitIds.filter((unitNumber) =>
-            acceptedMeaningUnitNumbers.has(unitNumber)
+            acceptedMeaningUnitNumbers.has(unitNumber),
           ),
           ...target.includedUnitIds.filter((unitNumber) =>
-            acceptedMeaningUnitNumbers.has(unitNumber)
-          )
-        ])
+            acceptedMeaningUnitNumbers.has(unitNumber),
+          ),
+        ]),
       ).slice(0, 4),
       id: `rel_manual_${Date.now()}`,
       rationale:
@@ -2480,33 +2737,33 @@ export function GdiqrWorkspace({
       researcherNote: "",
       sourceCategoryId: source.id,
       targetCategoryId: target.id,
-      label: "unclear relationship"
+      label: "unclear relationship",
     };
     const nextRelationships = [...integrationRelationships, nextRelationship];
     setIntegrationRelationships(nextRelationships);
     setIntegrationStructureNotice(
-      "Relationship added as an editable researcher draft. Save the integration draft after editing rationale and evidence."
+      "Relationship added as an editable researcher draft. Save the integration draft after editing rationale and evidence.",
     );
     void persistIntegrationWorkspace({
       action: "Added integration relationship",
       actionType: "relationship_created",
-      relationships: nextRelationships
+      relationships: nextRelationships,
     });
   }
 
   function updateIntegrationRelationship(
     relationshipId: string,
-    updates: Partial<IntegrationRelationshipDraft>
+    updates: Partial<IntegrationRelationshipDraft>,
   ) {
     const existingRelationship = integrationRelationships.find(
-      (relationship) => relationship.id === relationshipId
+      (relationship) => relationship.id === relationshipId,
     );
     setIntegrationRelationships((current) =>
       current.map((relationship) =>
         relationship.id === relationshipId
           ? { ...relationship, ...updates }
-          : relationship
-      )
+          : relationship,
+      ),
     );
     if (existingRelationship) {
       const auditActions: string[] = [];
@@ -2518,16 +2775,20 @@ export function GdiqrWorkspace({
         const previous = new Set(existingRelationship.evidenceUnitNumbers);
         const next = new Set(updates.evidenceUnitNumbers);
         const added = updates.evidenceUnitNumbers.filter(
-          (unitNumber) => !previous.has(unitNumber)
+          (unitNumber) => !previous.has(unitNumber),
         );
         const removed = existingRelationship.evidenceUnitNumbers.filter(
-          (unitNumber) => !next.has(unitNumber)
+          (unitNumber) => !next.has(unitNumber),
         );
         if (added.length > 0) {
-          auditActions.push(`Added MU evidence ${added.join(", ")} to relationship`);
+          auditActions.push(
+            `Added MU evidence ${added.join(", ")} to relationship`,
+          );
         }
         if (removed.length > 0) {
-          auditActions.push(`Removed MU evidence ${removed.join(", ")} from relationship`);
+          auditActions.push(
+            `Removed MU evidence ${removed.join(", ")} from relationship`,
+          );
         }
       }
       if (
@@ -2542,36 +2803,36 @@ export function GdiqrWorkspace({
       auditActions.forEach((action) =>
         recordLocalAuditEvent({
           action,
-          target: `Step 4 relationship ${relationshipId}`
-        })
+          target: `Step 4 relationship ${relationshipId}`,
+        }),
       );
     }
     setIntegrationStructureNotice(
-      "Relationship edited. Save the integration draft to persist rationale, type, and evidence changes."
+      "Relationship edited. Save the integration draft to persist rationale, type, and evidence changes.",
     );
     setIntegrationReviewed(false);
   }
 
   function removeIntegrationRelationship(relationshipId: string) {
     const nextRelationships = integrationRelationships.filter(
-      (relationship) => relationship.id !== relationshipId
+      (relationship) => relationship.id !== relationshipId,
     );
     setIntegrationRelationships(nextRelationships);
     setIntegrationStructureNotice(
-      "Relationship removed from the provisional structure. Save the integration draft to persist this change."
+      "Relationship removed from the provisional structure. Save the integration draft to persist this change.",
     );
     setIntegrationReviewed(false);
     void persistIntegrationWorkspace({
       action: "Removed integration relationship",
       actionType: "relationship_deleted",
-      relationships: nextRelationships
+      relationships: nextRelationships,
     });
   }
 
   async function saveIntegrationDraft() {
     await persistIntegrationWorkspace({
       action: "Saved Step 4 integration draft",
-      actionType: "relationship_updated"
+      actionType: "relationship_updated",
     });
   }
 
@@ -2581,7 +2842,7 @@ export function GdiqrWorkspace({
     narrativeValue = narrative,
     noteValue = integrationNote,
     relationships = integrationRelationships,
-    reviewed = false
+    reviewed = false,
   }: {
     action: string;
     actionType?: AuditActionType;
@@ -2595,7 +2856,7 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action,
-        target: "Step 4 integration workspace"
+        target: "Step 4 integration workspace",
       });
       setIntegrationSavedAt(new Date().toISOString());
       setIntegrationReviewed(reviewed || integrationReviewed);
@@ -2620,12 +2881,12 @@ export function GdiqrWorkspace({
             rationale: relationship.rationale,
             researcherNote: relationship.researcherNote,
             sourceCategoryId: relationship.sourceCategoryId,
-            targetCategoryId: relationship.targetCategoryId
+            targetCategoryId: relationship.targetCategoryId,
           })),
-          reviewed
+          reviewed,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -2646,8 +2907,8 @@ export function GdiqrWorkspace({
         buildIntegrationRelationshipDrafts({
           categories: reviewedIntegrationCategories,
           storedRelationships: result.relationships ?? [],
-          units: confirmedMeaningUnits
-        })
+          units: confirmedMeaningUnits,
+        }),
       );
       setIntegrationReviewed(reviewed || integrationReviewed);
       setIntegrationSavedAt(new Date().toISOString());
@@ -2657,7 +2918,7 @@ export function GdiqrWorkspace({
       setApiStatus(
         error instanceof Error
           ? error.message
-          : "Integration draft could not be saved."
+          : "Integration draft could not be saved.",
       );
       return false;
     } finally {
@@ -2667,7 +2928,9 @@ export function GdiqrWorkspace({
 
   async function runReviewer(reviewerWorkspace: ReviewerWorkspace) {
     if (units.length === 0) {
-      setApiStatus("Generate meaning units before running methodological integrity checks.");
+      setApiStatus(
+        "Generate meaning units before running methodological integrity checks.",
+      );
       return;
     }
     if (reviewerWorkspace === "meaning-units") {
@@ -2683,7 +2946,7 @@ export function GdiqrWorkspace({
     setApiStatus(
       reviewerWorkspace === "categories"
         ? "Running category methodological integrity check..."
-        : "Running meaning-unit methodological integrity check..."
+        : "Running meaning-unit methodological integrity check...",
     );
 
     try {
@@ -2695,17 +2958,19 @@ export function GdiqrWorkspace({
           projectId: currentProject.id,
           project: currentProject,
           units,
-          workspace: reviewerWorkspace
+          workspace: reviewerWorkspace,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
-        timeoutMs: 900000
+        timeoutMs: 900000,
       });
       if (!response.ok) {
         const errorResult = (await response.json().catch(() => ({}))) as {
           error?: string;
         };
-        setApiStatus(errorResult.error ?? "Methodological integrity check failed");
+        setApiStatus(
+          errorResult.error ?? "Methodological integrity check failed",
+        );
         return;
       }
       const result = (await response.json()) as {
@@ -2715,15 +2980,19 @@ export function GdiqrWorkspace({
       };
       setReviewerOutputs((current) => [
         ...current.filter((comment) => comment.workspace !== reviewerWorkspace),
-        ...(result.comments ?? [])
+        ...(result.comments ?? []),
       ]);
       setApiStatus(
         `Methodological integrity check applied from ${result.provider ?? aiProvider}${
           result.persisted ? " and saved to Supabase" : ""
-        }`
+        }`,
       );
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Methodological integrity check failed");
+      setApiStatus(
+        error instanceof Error
+          ? error.message
+          : "Methodological integrity check failed",
+      );
     } finally {
       setIsRunningReviewer(false);
     }
@@ -2736,39 +3005,42 @@ export function GdiqrWorkspace({
     const comments = buildMeaningUnitIntegrityIssues(currentMeaningUnits);
     setReviewerOutputs((current) => [
       ...current.filter((comment) => comment.workspace !== "meaning-units"),
-      ...comments
+      ...comments,
     ]);
     setMuIntegrityReviewRan(true);
     recordLocalAuditEvent({
       actor: "Reviewer",
       action: `Ran Step 2 MU integrity support (${comments.length} issue${comments.length === 1 ? "" : "s"})`,
-      target: "Meaning Unit Integrity Support"
+      target: "Meaning Unit Integrity Support",
     });
     setApiStatus(
       comments.length === 0
         ? "No major Step 2 integrity issues found. Please still review meaning-unit boundaries and summaries carefully."
-        : `Meaning Unit Integrity Support found ${comments.length} point${comments.length === 1 ? "" : "s"} for researcher review.`
+        : `Meaning Unit Integrity Support found ${comments.length} point${comments.length === 1 ? "" : "s"} for researcher review.`,
     );
     setIsRunningReviewer(false);
   }
 
   async function updateCategoryDraft(
     categoryId: string,
-    updates: Partial<CategoryNode>
+    updates: Partial<CategoryNode>,
   ) {
     const previousCategories = displayCategories;
-    const existingCategory = previousCategories.find((item) => item.id === categoryId);
+    const existingCategory = previousCategories.find(
+      (item) => item.id === categoryId,
+    );
     const nextCategories: CategoryNode[] = previousCategories.map((category) =>
       category.id === categoryId
         ? {
             ...category,
             ...updates,
-            status: updates.status ?? getEditedCategoryStatus(category.status)
+            status: updates.status ?? getEditedCategoryStatus(category.status),
           }
-        : category
+        : category,
     );
     const actionType: AuditActionType =
-      typeof updates.name === "string" && updates.name !== existingCategory?.name
+      typeof updates.name === "string" &&
+      updates.name !== existingCategory?.name
         ? "category_renamed"
         : "category_updated";
     await persistCategorySystem({
@@ -2780,9 +3052,10 @@ export function GdiqrWorkspace({
       nextCategories,
       previousCategories,
       researcherNote:
-        typeof updates.memo === "string" || typeof updates.rationale === "string"
-          ? updates.memo ?? updates.rationale
-          : undefined
+        typeof updates.memo === "string" ||
+        typeof updates.rationale === "string"
+          ? (updates.memo ?? updates.rationale)
+          : undefined,
     });
   }
 
@@ -2792,12 +3065,13 @@ export function GdiqrWorkspace({
       "New draft category";
     const previousCategories = displayCategories;
     const nextCategory: CategoryNode = {
-      definition: "Researcher-created draft category. Add a short analytic definition.",
+      definition:
+        "Researcher-created draft category. Add a short analytic definition.",
       id: `cat_manual_${Date.now()}`,
       includedUnitIds: unitNumbers,
       name,
       source: "researcher_confirmed",
-      status: "edited"
+      status: "edited",
     };
     await persistCategorySystem({
       action: `Created category ${name}`,
@@ -2807,11 +3081,14 @@ export function GdiqrWorkspace({
       researcherNote:
         unitNumbers.length > 0
           ? `Created from MU ${unitNumbers.join(", ")}`
-          : "Researcher-created empty category"
+          : "Researcher-created empty category",
     });
   }
 
-  async function removeMeaningUnitFromCategory(categoryId: string, unitNumber: number) {
+  async function removeMeaningUnitFromCategory(
+    categoryId: string,
+    unitNumber: number,
+  ) {
     const previousCategories = displayCategories;
     const category = previousCategories.find((item) => item.id === categoryId);
     const nextCategories: CategoryNode[] = previousCategories.map((item) =>
@@ -2819,41 +3096,48 @@ export function GdiqrWorkspace({
         ? {
             ...item,
             includedUnitIds: item.includedUnitIds.filter(
-              (number) => number !== unitNumber
+              (number) => number !== unitNumber,
             ),
-            status: getEditedCategoryStatus(item.status)
+            status: getEditedCategoryStatus(item.status),
           }
-        : item
+        : item,
     );
     await persistCategorySystem({
       action: `Removed MU #${unitNumber} from ${category?.name ?? categoryId}`,
       actionType: "meaning_unit_moved",
       nextCategories,
-      previousCategories
+      previousCategories,
     });
   }
 
-  async function assignMeaningUnitToCategory(unitNumber: number, categoryId: string) {
+  async function assignMeaningUnitToCategory(
+    unitNumber: number,
+    categoryId: string,
+  ) {
     const previousCategories = displayCategories;
-    const target = previousCategories.find((category) => category.id === categoryId);
-    const previousCategory = previousCategories.find((category) =>
-      category.includedUnitIds.includes(unitNumber)
+    const target = previousCategories.find(
+      (category) => category.id === categoryId,
     );
-    const nextCategories: CategoryNode[] = previousCategories.map((category) => {
-      const withoutUnit = category.includedUnitIds.filter(
-        (number) => number !== unitNumber
-      );
-      if (category.id !== categoryId) {
-        return { ...category, includedUnitIds: withoutUnit };
-      }
-      return {
-        ...category,
-        includedUnitIds: Array.from(new Set([...withoutUnit, unitNumber])).sort(
-          (left, right) => left - right
-        ),
-        status: getEditedCategoryStatus(category.status)
-      };
-    });
+    const previousCategory = previousCategories.find((category) =>
+      category.includedUnitIds.includes(unitNumber),
+    );
+    const nextCategories: CategoryNode[] = previousCategories.map(
+      (category) => {
+        const withoutUnit = category.includedUnitIds.filter(
+          (number) => number !== unitNumber,
+        );
+        if (category.id !== categoryId) {
+          return { ...category, includedUnitIds: withoutUnit };
+        }
+        return {
+          ...category,
+          includedUnitIds: Array.from(
+            new Set([...withoutUnit, unitNumber]),
+          ).sort((left, right) => left - right),
+          status: getEditedCategoryStatus(category.status),
+        };
+      },
+    );
     await persistCategorySystem({
       action: `Moved MU #${unitNumber} to ${target?.name ?? categoryId}`,
       actionType: "meaning_unit_moved",
@@ -2861,7 +3145,7 @@ export function GdiqrWorkspace({
       previousCategories,
       researcherNote: previousCategory
         ? `Previous category: ${previousCategory.name}`
-        : "Previously unassigned"
+        : "Previously unassigned",
     });
   }
 
@@ -2869,14 +3153,16 @@ export function GdiqrWorkspace({
     if (
       category.includedUnitIds.length > 0 &&
       !window.confirm(
-        `${category.name} contains ${category.includedUnitIds.length} MU(s). Delete it and move those MUs to Unassigned?`
+        `${category.name} contains ${category.includedUnitIds.length} MU(s). Delete it and move those MUs to Unassigned?`,
       )
     ) {
       return;
     }
 
     const previousCategories = displayCategories;
-    const nextCategories = previousCategories.filter((item) => item.id !== category.id);
+    const nextCategories = previousCategories.filter(
+      (item) => item.id !== category.id,
+    );
     await persistCategorySystem({
       action: `Deleted category ${category.name}`,
       actionType: "category_deleted",
@@ -2885,7 +3171,7 @@ export function GdiqrWorkspace({
       researcherNote:
         category.includedUnitIds.length > 0
           ? `MUs returned to unassigned: ${category.includedUnitIds.join(", ")}`
-          : undefined
+          : undefined,
     });
   }
 
@@ -2894,7 +3180,7 @@ export function GdiqrWorkspace({
       `Merge "${category.name}" into which category ID? Available: ${displayCategories
         .filter((item) => item.id !== category.id)
         .map((item) => item.id)
-        .join(", ")}`
+        .join(", ")}`,
     );
     const target = displayCategories.find((item) => item.id === targetId);
     if (!target) {
@@ -2903,7 +3189,8 @@ export function GdiqrWorkspace({
     }
 
     const mergedName =
-      window.prompt("Merged category title:", target.name)?.trim() || target.name;
+      window.prompt("Merged category title:", target.name)?.trim() ||
+      target.name;
     const previousCategories = displayCategories;
     const nextCategories = previousCategories
       .filter((item) => item.id !== category.id)
@@ -2911,42 +3198,50 @@ export function GdiqrWorkspace({
         item.id === target.id
           ? {
               ...item,
-              definition: `${item.definition}\n\nMerged note: ${category.definition}`.trim(),
+              definition:
+                `${item.definition}\n\nMerged note: ${category.definition}`.trim(),
               includedUnitIds: Array.from(
-                new Set([...item.includedUnitIds, ...category.includedUnitIds])
+                new Set([...item.includedUnitIds, ...category.includedUnitIds]),
               ).sort((left, right) => left - right),
               name: mergedName,
-              status: "edited" as const
+              status: "edited" as const,
             }
-          : item
+          : item,
       );
     await persistCategorySystem({
       action: `Merged category ${category.name} into ${mergedName}`,
       actionType: "category_updated",
       nextCategories,
       previousCategories,
-      researcherNote: `Merged into target category ${target.name}`
+      researcherNote: `Merged into target category ${target.name}`,
     });
   }
 
   async function splitCategoryDraft(category: CategoryNode) {
     if (category.includedUnitIds.length < 2) {
-      setApiStatus("Add at least two meaning units before splitting this category.");
+      setApiStatus(
+        "Add at least two meaning units before splitting this category.",
+      );
       return;
     }
     const splitIndex = Math.ceil(category.includedUnitIds.length / 2);
     const remainingUnitIds = category.includedUnitIds.slice(0, splitIndex);
     const splitUnitIds = category.includedUnitIds.slice(splitIndex);
     const splitName =
-      window.prompt("Title for the new split category:", "Untitled provisional category")?.trim() ||
-      "Untitled provisional category";
+      window
+        .prompt(
+          "Title for the new split category:",
+          "Untitled provisional category",
+        )
+        ?.trim() || "Untitled provisional category";
     const splitCategory: CategoryNode = {
-      definition: "Researcher-created split category. Add a short analytic definition.",
+      definition:
+        "Researcher-created split category. Add a short analytic definition.",
       id: `cat_split_${Date.now()}`,
       includedUnitIds: splitUnitIds,
       name: splitName,
       source: "researcher_confirmed",
-      status: "edited"
+      status: "edited",
     };
 
     const previousCategories = displayCategories;
@@ -2959,18 +3254,18 @@ export function GdiqrWorkspace({
               status:
                 item.status === "confirmed"
                   ? ("confirmed" as const)
-                  : ("edited" as const)
+                  : ("edited" as const),
             }
-          : item
+          : item,
       ),
-      splitCategory
+      splitCategory,
     ];
     await persistCategorySystem({
       action: `Split category ${category.name}`,
       actionType: "category_updated",
       nextCategories,
       previousCategories,
-      researcherNote: `New split category ${splitName} contains MU ${splitUnitIds.join(", ")}`
+      researcherNote: `New split category ${splitName} contains MU ${splitUnitIds.join(", ")}`,
     });
   }
 
@@ -2983,19 +3278,19 @@ export function GdiqrWorkspace({
     const categoryDefinition = getCategoryDescriptionValue(category).trim();
     if (!categoryTitle || category.includedUnitIds.length === 0) {
       setApiStatus(
-        "An evidence cluster needs a researcher category name and at least one included MU before it can be confirmed."
+        "An evidence cluster needs a researcher category name and at least one included MU before it can be confirmed.",
       );
       return;
     }
     if (!categoryDefinition) {
       setApiStatus(
-        "Add a shared-meaning definition before confirming this evidence cluster as a provisional category."
+        "Add a shared-meaning definition before confirming this evidence cluster as a provisional category.",
       );
       return;
     }
     if (hasSensitivePlaceholder(categoryTitle)) {
       setApiStatus(
-        "Category title contains a sensitive placeholder. Rename it before confirming."
+        "Category title contains a sensitive placeholder. Rename it before confirming.",
       );
       return;
     }
@@ -3006,31 +3301,36 @@ export function GdiqrWorkspace({
   async function rejectCategoryDraft(category: CategoryNode) {
     if (
       !window.confirm(
-        `Reject "${category.name}"? Its meaning units will move to Unassigned.`
+        `Reject "${category.name}"? Its meaning units will move to Unassigned.`,
       )
     ) {
       return;
     }
     await updateCategoryDraft(category.id, {
       includedUnitIds: [],
-      status: "rejected"
+      status: "rejected",
     });
   }
 
   function updateIntegrityReviewItem(
     itemId: string,
-    updates: Partial<Pick<IntegrityReviewItem, "researcherNote" | "response" | "status">>
+    updates: Partial<
+      Pick<IntegrityReviewItem, "researcherNote" | "response" | "status">
+    >,
   ) {
     setDisplayIntegrityItems((current) => {
-      const baseItems = mergeIntegrityReviewItems(integrityChecklistItems, current);
+      const baseItems = mergeIntegrityReviewItems(
+        integrityChecklistItems,
+        current,
+      );
       return baseItems.map((item) =>
         item.id === itemId
           ? {
               ...item,
               ...updates,
-              updatedAt: new Date().toISOString()
+              updatedAt: new Date().toISOString(),
             }
-          : item
+          : item,
       );
     });
   }
@@ -3051,18 +3351,20 @@ export function GdiqrWorkspace({
           narrative,
           project: currentProject,
           transcriptConfirmed,
-          unassignedMeaningUnits
+          unassignedMeaningUnits,
         }),
-        current
-      )
+        current,
+      ),
     );
-    setApiStatus("Methodological integrity checklist refreshed from the current project state.");
+    setApiStatus(
+      "Methodological integrity checklist refreshed from the current project state.",
+    );
   }
 
   async function saveIntegrityReview() {
     const itemsToSave = integrityChecklistItems.map((item) => ({
       ...item,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     }));
     setDisplayIntegrityItems(itemsToSave);
     setIsSavingIntegrityReview(true);
@@ -3070,10 +3372,12 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action: "Updated methodological integrity review locally",
-        target: "Step 5 methodological integrity review"
+        target: "Step 5 methodological integrity review",
       });
       setIntegritySavedAt(new Date().toISOString());
-      setApiStatus("Methodological integrity review saved locally for this browser session.");
+      setApiStatus(
+        "Methodological integrity review saved locally for this browser session.",
+      );
       setIsSavingIntegrityReview(false);
       return;
     }
@@ -3084,10 +3388,11 @@ export function GdiqrWorkspace({
           action: "Updated Step 5 methodological integrity review",
           items: itemsToSave,
           projectId: currentProject.id,
-          researcherNote: "Researcher reviewed Step 5 methodological integrity checklist"
+          researcherNote:
+            "Researcher reviewed Step 5 methodological integrity checklist",
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -3096,7 +3401,9 @@ export function GdiqrWorkspace({
       };
 
       if (!response.ok || !result.saved) {
-        setApiStatus(result.error ?? "Methodological integrity review could not be saved.");
+        setApiStatus(
+          result.error ?? "Methodological integrity review could not be saved.",
+        );
         return;
       }
 
@@ -3108,7 +3415,7 @@ export function GdiqrWorkspace({
       setApiStatus(
         error instanceof Error
           ? error.message
-          : "Methodological integrity review could not be saved."
+          : "Methodological integrity review could not be saved.",
       );
     } finally {
       setIsSavingIntegrityReview(false);
@@ -3119,7 +3426,7 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action: `Generated ${format.toUpperCase()} export locally`,
-        target: "Export"
+        target: "Export",
       });
       return;
     }
@@ -3128,10 +3435,10 @@ export function GdiqrWorkspace({
       const response = await fetch("/api/export-records", {
         body: JSON.stringify({
           format,
-          projectId: currentProject.id
+          projectId: currentProject.id,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       if (response.ok) {
         const result = (await response.json().catch(() => ({}))) as {
@@ -3140,7 +3447,7 @@ export function GdiqrWorkspace({
         if (result.exportRecord) {
           setDisplayExportRecords((current) => [
             result.exportRecord as ExportRecord,
-            ...current.filter((item) => item.id !== result.exportRecord?.id)
+            ...current.filter((item) => item.id !== result.exportRecord?.id),
           ]);
         }
         void refreshWorkspace();
@@ -3152,7 +3459,7 @@ export function GdiqrWorkspace({
 
   async function updateReviewerIssue(
     commentId: string,
-    updates: { memo?: string; status?: ReviewerComment["status"] }
+    updates: { memo?: string; status?: ReviewerComment["status"] },
   ) {
     const isSessionOnlyIssue = commentId.startsWith("mu_integrity_");
     if (isLocalOnlyMode || isSessionOnlyIssue) {
@@ -3169,28 +3476,30 @@ export function GdiqrWorkspace({
                   updates.status === "resolved"
                     ? new Date().toISOString()
                     : comment.resolvedAt,
-                status: updates.status ?? comment.status
+                status: updates.status ?? comment.status,
               }
-            : comment
-        )
+            : comment,
+        ),
       );
       recordLocalAuditEvent({
         action: updates.status
           ? `${updates.status === "resolved" ? "Resolved" : "Dismissed"} MU integrity issue`
           : "Updated memo on MU integrity issue",
-        target: commentId
+        target: commentId,
       });
-      setApiStatus("Meaning Unit Integrity Support item updated for this session.");
+      setApiStatus(
+        "Meaning Unit Integrity Support item updated for this session.",
+      );
       return;
     }
 
     const response = await fetch(`/api/reviewer-comments/${commentId}`, {
       body: JSON.stringify({
         ...updates,
-        projectId: currentProject.id
+        projectId: currentProject.id,
       }),
       headers: { "Content-Type": "application/json" },
-      method: "PATCH"
+      method: "PATCH",
     });
     const result = (await response.json().catch(() => ({}))) as {
       comment?: ReviewerComment;
@@ -3203,8 +3512,8 @@ export function GdiqrWorkspace({
     }
     setReviewerOutputs((current) =>
       current.map((comment) =>
-        comment.id === result.comment?.id ? result.comment : comment
-      )
+        comment.id === result.comment?.id ? result.comment : comment,
+      ),
     );
     setApiStatus("Integrity issue updated.");
   }
@@ -3213,7 +3522,7 @@ export function GdiqrWorkspace({
     if (comment.workspace === "meaning-units") {
       recordLocalAuditEvent({
         action: "Opened MU from integrity issue",
-        target: comment.target
+        target: comment.target,
       });
     }
     const targetId =
@@ -3232,12 +3541,15 @@ export function GdiqrWorkspace({
     window.setTimeout(() => {
       document.getElementById(targetId)?.scrollIntoView({
         behavior: "smooth",
-        block: "center"
+        block: "center",
       });
       document.getElementById(targetId)?.classList.add("target-highlight");
       window.setTimeout(
-        () => document.getElementById(targetId)?.classList.remove("target-highlight"),
-        1800
+        () =>
+          document
+            .getElementById(targetId)
+            ?.classList.remove("target-highlight"),
+        1800,
       );
     }, 80);
   }
@@ -3250,7 +3562,7 @@ export function GdiqrWorkspace({
   }
 
   function getEditedCategoryStatus(
-    status: CategoryNode["status"]
+    status: CategoryNode["status"],
   ): CategoryNode["status"] {
     return status === "confirmed" ? "confirmed" : "edited";
   }
@@ -3260,7 +3572,7 @@ export function GdiqrWorkspace({
     actionType = "category_updated",
     nextCategories,
     previousCategories = displayCategories,
-    researcherNote
+    researcherNote,
   }: {
     action: string;
     actionType?: AuditActionType;
@@ -3271,17 +3583,17 @@ export function GdiqrWorkspace({
     setDisplayCategories(nextCategories);
     setNarrative("");
     setReviewerOutputs((current) =>
-      current.filter((comment) => comment.workspace !== "categories")
+      current.filter((comment) => comment.workspace !== "categories"),
     );
     setCategoryDraftNotice(
-      `${action}. Category changes are researcher-led and should be reviewed against accepted meaning units.`
+      `${action}. Category changes are researcher-led and should be reviewed against accepted meaning units.`,
     );
     setCategoryDraftIsFallback(false);
 
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action,
-        target: "Step 3 category system"
+        target: "Step 3 category system",
       });
       return true;
     }
@@ -3296,10 +3608,10 @@ export function GdiqrWorkspace({
           mode,
           previousCategories,
           projectId: currentProject.id,
-          researcherNote
+          researcherNote,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         categories?: CategoryNode[];
@@ -3310,7 +3622,9 @@ export function GdiqrWorkspace({
 
       if (!response.ok || !result.saved) {
         setApiStatus(
-          result.error ?? result.reason ?? "Category change could not be saved."
+          result.error ??
+            result.reason ??
+            "Category change could not be saved.",
         );
         setDisplayCategories(previousCategories);
         return false;
@@ -3321,7 +3635,9 @@ export function GdiqrWorkspace({
       return true;
     } catch (error) {
       setApiStatus(
-        error instanceof Error ? error.message : "Category change could not be saved."
+        error instanceof Error
+          ? error.message
+          : "Category change could not be saved.",
       );
       setDisplayCategories(previousCategories);
       return false;
@@ -3331,7 +3647,7 @@ export function GdiqrWorkspace({
   function recordLocalAuditEvent({
     action,
     actor = "Researcher",
-    target = "Step 2 meaning-unit pipeline"
+    target = "Step 2 meaning-unit pipeline",
   }: {
     action: string;
     actor?: AuditEvent["actor"];
@@ -3347,9 +3663,9 @@ export function GdiqrWorkspace({
         action,
         id: `audit_local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         target,
-        timestamp: now
+        timestamp: now,
       },
-      ...current
+      ...current,
     ]);
   }
 
@@ -3357,14 +3673,15 @@ export function GdiqrWorkspace({
     excerpt,
     humanSummary = "",
     segmentId,
-    speaker = "Participant"
+    speaker = "Participant",
   }: {
     excerpt: string;
     humanSummary?: string;
     segmentId?: string;
     speaker?: string;
   }): MeaningUnit {
-    const nextNumber = Math.max(0, ...currentMeaningUnits.map((unit) => unit.number)) + 1;
+    const nextNumber =
+      Math.max(0, ...currentMeaningUnits.map((unit) => unit.number)) + 1;
     const sourceSegment =
       displaySegments.find((segment) => segment.segmentId === segmentId) ??
       selectedMeaningUnitSegment ??
@@ -3382,7 +3699,7 @@ export function GdiqrWorkspace({
       reviewerStatus: "Not run",
       segmentId: segmentId ?? sourceSegment?.segmentId ?? "SEG-001",
       speaker,
-      uncertainty: "Researcher-created meaning unit"
+      uncertainty: "Researcher-created meaning unit",
     };
   }
 
@@ -3393,20 +3710,25 @@ export function GdiqrWorkspace({
   }
 
   async function addManualMeaningUnit() {
-    const excerpt = window.prompt(
-      "New meaning-unit excerpt. Keep it close to the participant account:"
-    )?.trim();
+    const excerpt = window
+      .prompt(
+        "New meaning-unit excerpt. Keep it close to the participant account:",
+      )
+      ?.trim();
     if (!excerpt) {
       return;
     }
-    const humanSummary = window.prompt(
-      "Optional researcher summary for this manual MU:",
-      ""
-    )?.trim() ?? "";
-    const researcherNote = window.prompt(
-      "Optional audit note for why this manual MU was added:",
-      "Manual MU added during researcher review"
-    )?.trim() ?? "Manual MU added during researcher review";
+    const humanSummary =
+      window
+        .prompt("Optional researcher summary for this manual MU:", "")
+        ?.trim() ?? "";
+    const researcherNote =
+      window
+        .prompt(
+          "Optional audit note for why this manual MU was added:",
+          "Manual MU added during researcher review",
+        )
+        ?.trim() ?? "Manual MU added during researcher review";
     const sourceSegment = selectedMeaningUnitSegment ?? displaySegments[0];
 
     setIsSavingMeaningUnitAction(true);
@@ -3418,15 +3740,19 @@ export function GdiqrWorkspace({
           excerpt,
           humanSummary,
           segmentId: sourceSegment?.segmentId,
-          speaker: "Participant"
+          speaker: "Participant",
         });
-        setUnits((current) => renumberMeaningUnitsForDisplay([...current, manualUnit]));
+        setUnits((current) =>
+          renumberMeaningUnitsForDisplay([...current, manualUnit]),
+        );
         clearDerivedAnalysisAfterMeaningUnitChange();
         recordLocalAuditEvent({
           action: `Created manual MU #${manualUnit.number}: ${researcherNote}`,
-          target: manualUnit.id
+          target: manualUnit.id,
         });
-        setApiStatus("Manual meaning unit added locally. Review it before accepting.");
+        setApiStatus(
+          "Manual meaning unit added locally. Review it before accepting.",
+        );
         return;
       }
 
@@ -3439,10 +3765,10 @@ export function GdiqrWorkspace({
           projectId: currentProject.id,
           researcherNote,
           segmentId: sourceSegment?.segmentId ?? "SEG-001",
-          speaker: "Participant"
+          speaker: "Participant",
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -3455,16 +3781,27 @@ export function GdiqrWorkspace({
       }
       setUnits(result.units ?? []);
       clearDerivedAnalysisAfterMeaningUnitChange();
-      setApiStatus("Manual meaning unit added and audit logged. Review it before accepting.");
+      setApiStatus(
+        "Manual meaning unit added and audit logged. Review it before accepting.",
+      );
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Manual meaning unit could not be added.");
+      setApiStatus(
+        error instanceof Error
+          ? error.message
+          : "Manual meaning unit could not be added.",
+      );
     } finally {
       setIsSavingMeaningUnitAction(false);
     }
   }
 
-  function findMeaningUnitNeighbor(unit: MeaningUnit, direction: "previous" | "next") {
-    const ordered = [...currentMeaningUnits].sort((left, right) => left.number - right.number);
+  function findMeaningUnitNeighbor(
+    unit: MeaningUnit,
+    direction: "previous" | "next",
+  ) {
+    const ordered = [...currentMeaningUnits].sort(
+      (left, right) => left.number - right.number,
+    );
     const index = ordered.findIndex((item) => item.id === unit.id);
     return direction === "previous" ? ordered[index - 1] : ordered[index + 1];
   }
@@ -3476,7 +3813,7 @@ export function GdiqrWorkspace({
       const firstEnd = sentenceBoundary + 1;
       return {
         first: trimmed.slice(0, firstEnd).trim(),
-        second: trimmed.slice(firstEnd).trim()
+        second: trimmed.slice(firstEnd).trim(),
       };
     }
     const midpoint = Math.floor(trimmed.length / 2);
@@ -3484,7 +3821,7 @@ export function GdiqrWorkspace({
     const splitIndex = nearestSpace > 0 ? nearestSpace : midpoint;
     return {
       first: trimmed.slice(0, splitIndex).trim(),
-      second: trimmed.slice(splitIndex).trim()
+      second: trimmed.slice(splitIndex).trim(),
     };
   }
 
@@ -3494,24 +3831,26 @@ export function GdiqrWorkspace({
       return;
     }
     const suggestion = suggestMeaningUnitSplit(unit.excerpt);
-    const firstExcerpt = window.prompt(
-      `First part for MU #${unit.number}:`,
-      suggestion.first
-    )?.trim();
+    const firstExcerpt = window
+      .prompt(`First part for MU #${unit.number}:`, suggestion.first)
+      ?.trim();
     if (!firstExcerpt) {
       return;
     }
-    const secondExcerpt = window.prompt(
-      `Second part for MU #${unit.number}:`,
-      suggestion.second
-    )?.trim();
+    const secondExcerpt = window
+      .prompt(`Second part for MU #${unit.number}:`, suggestion.second)
+      ?.trim();
     if (!secondExcerpt) {
       return;
     }
-    const researcherNote = window.prompt(
-      "Optional audit note for the split decision:",
-      "Split because the original MU contained more than one meaning"
-    )?.trim() ?? "Split because the original MU contained more than one meaning";
+    const researcherNote =
+      window
+        .prompt(
+          "Optional audit note for the split decision:",
+          "Split because the original MU contained more than one meaning",
+        )
+        ?.trim() ??
+      "Split because the original MU contained more than one meaning";
 
     setIsSavingMeaningUnitAction(true);
     setApiStatus(`Splitting MU #${unit.number}...`);
@@ -3527,7 +3866,7 @@ export function GdiqrWorkspace({
           humanSummary: "",
           id: `mu_split_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           number: unit.number + 0.1,
-          uncertainty: "Researcher split from an existing MU"
+          uncertainty: "Researcher split from an existing MU",
         };
         setUnits((current) =>
           renumberMeaningUnitsForDisplay(
@@ -3538,20 +3877,22 @@ export function GdiqrWorkspace({
                       ...item,
                       excerpt: firstExcerpt,
                       humanStatus: "Needs review" as const,
-                      humanSummary: item.humanSummary || item.aiSummary || ""
+                      humanSummary: item.humanSummary || item.aiSummary || "",
                     },
-                    secondUnit
+                    secondUnit,
                   ]
-                : [item]
-            )
-          )
+                : [item],
+            ),
+          ),
         );
         clearDerivedAnalysisAfterMeaningUnitChange();
         recordLocalAuditEvent({
           action: `Split MU #${unit.number}: ${researcherNote}`,
-          target: unit.id
+          target: unit.id,
         });
-        setApiStatus("Meaning unit split locally. Review both MUs before accepting.");
+        setApiStatus(
+          "Meaning unit split locally. Review both MUs before accepting.",
+        );
         return;
       }
 
@@ -3564,10 +3905,10 @@ export function GdiqrWorkspace({
           researcherNote,
           secondExcerpt,
           secondSummary: "",
-          unitId: unit.id
+          unitId: unit.id,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -3580,9 +3921,13 @@ export function GdiqrWorkspace({
       }
       setUnits(result.units ?? []);
       clearDerivedAnalysisAfterMeaningUnitChange();
-      setApiStatus("Meaning unit split and audit logged. Review both MUs before accepting.");
+      setApiStatus(
+        "Meaning unit split and audit logged. Review both MUs before accepting.",
+      );
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Meaning unit split failed.");
+      setApiStatus(
+        error instanceof Error ? error.message : "Meaning unit split failed.",
+      );
     } finally {
       setIsSavingMeaningUnitAction(false);
     }
@@ -3590,7 +3935,7 @@ export function GdiqrWorkspace({
 
   async function mergeMeaningUnitFromCard(
     unit: MeaningUnit,
-    direction: "previous" | "next"
+    direction: "previous" | "next",
   ) {
     const neighbor = findMeaningUnitNeighbor(unit, direction);
     if (!neighbor) {
@@ -3600,31 +3945,40 @@ export function GdiqrWorkspace({
     const first = neighbor.number < unit.number ? neighbor : unit;
     const second = neighbor.number < unit.number ? unit : neighbor;
     const confirmed = window.confirm(
-      `Merge MU #${first.number} and MU #${second.number}? This clears category and reviewer outputs because the accepted evidence base changes.`
+      `Merge MU #${first.number} and MU #${second.number}? This clears category and reviewer outputs because the accepted evidence base changes.`,
     );
     if (!confirmed) {
       return;
     }
-    const mergedExcerpt = window.prompt(
-      "Merged MU excerpt:",
-      `${first.excerpt.trim()}\n\n${second.excerpt.trim()}`.trim()
-    )?.trim();
+    const mergedExcerpt = window
+      .prompt(
+        "Merged MU excerpt:",
+        `${first.excerpt.trim()}\n\n${second.excerpt.trim()}`.trim(),
+      )
+      ?.trim();
     if (!mergedExcerpt) {
       return;
     }
-    const mergedSummary = window.prompt(
-      "Optional merged researcher summary:",
-      [
-        first.humanSummary || first.aiSummary,
-        second.humanSummary || second.aiSummary
-      ]
-        .filter(Boolean)
-        .join(" / ")
-    )?.trim() ?? "";
-    const researcherNote = window.prompt(
-      "Optional audit note for the merge decision:",
-      "Merged because the two MUs represented one connected meaning"
-    )?.trim() ?? "Merged because the two MUs represented one connected meaning";
+    const mergedSummary =
+      window
+        .prompt(
+          "Optional merged researcher summary:",
+          [
+            first.humanSummary || first.aiSummary,
+            second.humanSummary || second.aiSummary,
+          ]
+            .filter(Boolean)
+            .join(" / "),
+        )
+        ?.trim() ?? "";
+    const researcherNote =
+      window
+        .prompt(
+          "Optional audit note for the merge decision:",
+          "Merged because the two MUs represented one connected meaning",
+        )
+        ?.trim() ??
+      "Merged because the two MUs represented one connected meaning";
 
     setIsSavingMeaningUnitAction(true);
     setApiStatus(`Merging MU #${first.number} and MU #${second.number}...`);
@@ -3643,18 +3997,20 @@ export function GdiqrWorkspace({
                       exclusionReason: undefined,
                       excerpt: mergedExcerpt,
                       humanStatus: "Needs review" as const,
-                      humanSummary: mergedSummary
+                      humanSummary: mergedSummary,
                     }
-                  : item
-              )
-          )
+                  : item,
+              ),
+          ),
         );
         clearDerivedAnalysisAfterMeaningUnitChange();
         recordLocalAuditEvent({
           action: `Merged MU #${first.number} and MU #${second.number}: ${researcherNote}`,
-          target: first.id
+          target: first.id,
         });
-        setApiStatus("Meaning units merged locally. Review the merged MU before accepting.");
+        setApiStatus(
+          "Meaning units merged locally. Review the merged MU before accepting.",
+        );
         return;
       }
 
@@ -3666,10 +4022,10 @@ export function GdiqrWorkspace({
           projectId: currentProject.id,
           researcherNote,
           sourceUnitId: first.id,
-          targetUnitId: second.id
+          targetUnitId: second.id,
         }),
         headers: { "Content-Type": "application/json" },
-        method: "POST"
+        method: "POST",
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
@@ -3682,9 +4038,13 @@ export function GdiqrWorkspace({
       }
       setUnits(result.units ?? []);
       clearDerivedAnalysisAfterMeaningUnitChange();
-      setApiStatus("Meaning units merged and audit logged. Review the merged MU before accepting.");
+      setApiStatus(
+        "Meaning units merged and audit logged. Review the merged MU before accepting.",
+      );
     } catch (error) {
-      setApiStatus(error instanceof Error ? error.message : "Meaning unit merge failed.");
+      setApiStatus(
+        error instanceof Error ? error.message : "Meaning unit merge failed.",
+      );
     } finally {
       setIsSavingMeaningUnitAction(false);
     }
@@ -3699,12 +4059,13 @@ export function GdiqrWorkspace({
               aiExcerpt: unit.aiExcerpt ?? unit.excerpt,
               excerpt: value,
               humanStatus:
-                unit.humanStatus === "Accepted" || unit.humanStatus === "Excluded"
+                unit.humanStatus === "Accepted" ||
+                unit.humanStatus === "Excluded"
                   ? "Needs review"
-                  : "Edited"
+                  : "Edited",
             }
-          : unit
-      )
+          : unit,
+      ),
     );
     clearDerivedAnalysisAfterMeaningUnitChange();
   }
@@ -3723,7 +4084,7 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action: `Edited MU #${unit.number} excerpt`,
-        target: unit.id
+        target: unit.id,
       });
       setApiStatus("Meaning-unit excerpt edit saved locally.");
       return;
@@ -3732,10 +4093,11 @@ export function GdiqrWorkspace({
     const response = await fetch(`/api/meaning-units/${unitId}`, {
       body: JSON.stringify({
         excerpt: unit.excerpt,
-        humanStatus: unit.humanStatus === "Accepted" ? "Needs review" : unit.humanStatus
+        humanStatus:
+          unit.humanStatus === "Accepted" ? "Needs review" : unit.humanStatus,
       }),
       headers: { "Content-Type": "application/json" },
-      method: "PATCH"
+      method: "PATCH",
     });
     if (!response.ok) {
       setApiStatus("Meaning-unit excerpt edit could not be saved. Try again.");
@@ -3750,10 +4112,10 @@ export function GdiqrWorkspace({
         unit.id === unitId
           ? {
               ...unit,
-              exclusionReason: value
+              exclusionReason: value,
             }
-          : unit
-      )
+          : unit,
+      ),
     );
   }
 
@@ -3762,8 +4124,8 @@ export function GdiqrWorkspace({
       current.map((unit) =>
         unit.id === unitId
           ? { ...unit, humanSummary: value, humanStatus: "Edited" }
-          : unit
-      )
+          : unit,
+      ),
     );
     clearDerivedAnalysisAfterMeaningUnitChange();
   }
@@ -3777,7 +4139,7 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action: `Edited MU #${unit.number} summary`,
-        target: unit.id
+        target: unit.id,
       });
       setApiStatus("Meaning-unit summary edit saved locally.");
       return;
@@ -3786,10 +4148,10 @@ export function GdiqrWorkspace({
     const response = await fetch(`/api/meaning-units/${unitId}`, {
       body: JSON.stringify({
         humanStatus: unit.humanStatus,
-        humanSummary: unit.humanSummary
+        humanSummary: unit.humanSummary,
       }),
       headers: { "Content-Type": "application/json" },
-      method: "PATCH"
+      method: "PATCH",
     });
     if (!response.ok) {
       setApiStatus("Meaning-unit summary edit could not be saved. Try again.");
@@ -3800,34 +4162,35 @@ export function GdiqrWorkspace({
 
   async function acceptAllReviewedMeaningUnits() {
     const includableUnits = currentMeaningUnits.filter(
-      (unit) => !unit.analysisExcluded
+      (unit) => !unit.analysisExcluded,
     );
     if (includableUnits.length === 0) {
       setApiStatus("Generate meaning units before accepting summaries.");
       return;
     }
     const incompleteUnit = includableUnits.find(
-      (unit) => !unit.excerpt.trim() || !(unit.humanSummary || unit.aiSummary).trim()
+      (unit) =>
+        !unit.excerpt.trim() || !(unit.humanSummary || unit.aiSummary).trim(),
     );
     if (incompleteUnit) {
       setApiStatus(
-        `Review MU #${incompleteUnit.number} before accepting all summaries. Each MU needs an excerpt and researcher summary.`
+        `Review MU #${incompleteUnit.number} before accepting all summaries. Each MU needs an excerpt and researcher summary.`,
       );
       return;
     }
     const nonTranscriptUnit = includableUnits.find(
       (unit) =>
         containsNonTranscriptMaterial(unit.excerpt) &&
-        !unit.exclusionReason?.trim()
+        !unit.exclusionReason?.trim(),
     );
     if (nonTranscriptUnit) {
       setApiStatus(
-        `MU #${nonTranscriptUnit.number} may contain project setup or other non-transcript material. Add a researcher memo or exclude it before accepting all.`
+        `MU #${nonTranscriptUnit.number} may contain project setup or other non-transcript material. Add a researcher memo or exclude it before accepting all.`,
       );
       return;
     }
     const confirmed = window.confirm(
-      "Accept all visible, non-excluded meaning units? This records the current researcher-reviewed excerpts and summaries as accepted analytic material."
+      "Accept all visible, non-excluded meaning units? This records the current researcher-reviewed excerpts and summaries as accepted analytic material.",
     );
     if (!confirmed) {
       return;
@@ -3835,7 +4198,7 @@ export function GdiqrWorkspace({
     const acceptedDraftSummaryWithoutEditCount = includableUnits.filter(
       (unit) =>
         (unit.humanSummary || unit.aiSummary).trim() ===
-        (unit.aiSummary || "").trim()
+        (unit.aiSummary || "").trim(),
     ).length;
 
     setIsAcceptingMeaningUnits(true);
@@ -3851,19 +4214,19 @@ export function GdiqrWorkspace({
                   ...unit,
                   excerpt: unit.excerpt.trim(),
                   humanStatus: "Accepted",
-                  humanSummary: (unit.humanSummary || unit.aiSummary).trim()
-              }
-          )
+                  humanSummary: (unit.humanSummary || unit.aiSummary).trim(),
+                },
+          ),
         );
         recordLocalAuditEvent({
           action:
             acceptedDraftSummaryWithoutEditCount > 0
               ? `Accepted ${includableUnits.length} reviewed meaning unit${includableUnits.length === 1 ? "" : "s"} in bulk (${acceptedDraftSummaryWithoutEditCount} draft summar${acceptedDraftSummaryWithoutEditCount === 1 ? "y" : "ies"} accepted without edit)`
               : `Accepted ${includableUnits.length} reviewed meaning unit${includableUnits.length === 1 ? "" : "s"} in bulk`,
-          target: "Step 2 meaning-unit review"
+          target: "Step 2 meaning-unit review",
         });
         setApiStatus(
-          "Meaning-unit summaries accepted locally. You can now create and refine provisional categories."
+          "Meaning-unit summaries accepted locally. You can now create and refine provisional categories.",
         );
         return;
       }
@@ -3874,10 +4237,10 @@ export function GdiqrWorkspace({
             body: JSON.stringify({
               excerpt: unit.excerpt.trim(),
               humanStatus: "Accepted",
-              humanSummary: (unit.humanSummary || unit.aiSummary).trim()
+              humanSummary: (unit.humanSummary || unit.aiSummary).trim(),
             }),
             headers: { "Content-Type": "application/json" },
-            method: "PATCH"
+            method: "PATCH",
           });
           if (!response.ok) {
             throw new Error(`Could not save MU #${unit.number}.`);
@@ -3885,7 +4248,7 @@ export function GdiqrWorkspace({
           return (await response.json()) as {
             meaningUnit?: MeaningUnit;
           };
-        })
+        }),
       );
 
       const savedUnits = results
@@ -3896,18 +4259,18 @@ export function GdiqrWorkspace({
           (unit) =>
             savedUnits.find((savedUnit) => savedUnit.id === unit.id) ?? {
               ...unit,
-              humanStatus: "Accepted"
-            }
-        )
+              humanStatus: "Accepted",
+            },
+        ),
       );
       setApiStatus(
-        "Meaning-unit summaries accepted. You can now create and refine provisional categories."
+        "Meaning-unit summaries accepted. You can now create and refine provisional categories.",
       );
     } catch (error) {
       setApiStatus(
         error instanceof Error
           ? error.message
-          : "Could not accept meaning-unit summaries."
+          : "Could not accept meaning-unit summaries.",
       );
     } finally {
       setIsAcceptingMeaningUnits(false);
@@ -3917,10 +4280,8 @@ export function GdiqrWorkspace({
   async function updateMeaningUnitSpeaker(unitId: string, speaker: string) {
     setUnits((current) =>
       current.map((unit) =>
-        unit.id === unitId
-          ? { ...unit, speaker, humanStatus: "Edited" }
-          : unit
-      )
+        unit.id === unitId ? { ...unit, speaker, humanStatus: "Edited" } : unit,
+      ),
     );
 
     if (isLocalOnlyMode) {
@@ -3931,10 +4292,10 @@ export function GdiqrWorkspace({
     const response = await fetch(`/api/meaning-units/${unitId}`, {
       body: JSON.stringify({
         humanStatus: "Edited",
-        speaker
+        speaker,
       }),
       headers: { "Content-Type": "application/json" },
-      method: "PATCH"
+      method: "PATCH",
     });
     if (!response.ok) {
       setApiStatus("Speaker change could not be saved. Try again.");
@@ -3947,7 +4308,7 @@ export function GdiqrWorkspace({
     const reason = (unit.exclusionReason ?? "").trim();
     if (!reason) {
       setApiStatus(
-        `Add a short reason before excluding MU #${unit.number}. This keeps the researcher decision audit-visible.`
+        `Add a short reason before excluding MU #${unit.number}. This keeps the researcher decision audit-visible.`,
       );
       return;
     }
@@ -3959,10 +4320,10 @@ export function GdiqrWorkspace({
               ...item,
               analysisExcluded: true,
               exclusionReason: reason,
-              humanStatus: "Excluded"
+              humanStatus: "Excluded",
             }
-          : item
-      )
+          : item,
+      ),
     );
     setDisplayCategories([]);
     setNarrative("");
@@ -3973,10 +4334,10 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action: `Excluded MU #${unit.number}: ${reason}`,
-        target: unit.id
+        target: unit.id,
       });
       setApiStatus(
-        "Meaning unit excluded locally. Existing categories were cleared; rerun categories when ready."
+        "Meaning unit excluded locally. Existing categories were cleared; rerun categories when ready.",
       );
       return;
     }
@@ -3984,10 +4345,10 @@ export function GdiqrWorkspace({
     const response = await fetch(`/api/meaning-units/${unit.id}`, {
       body: JSON.stringify({
         analysisExcluded: true,
-        exclusionReason: reason
+        exclusionReason: reason,
       }),
       headers: { "Content-Type": "application/json" },
-      method: "PATCH"
+      method: "PATCH",
     });
     const result = (await response.json().catch(() => ({}))) as {
       error?: string;
@@ -3995,18 +4356,20 @@ export function GdiqrWorkspace({
       saved?: boolean;
     };
     if (!response.ok || !result.saved) {
-      setApiStatus(result.error ?? "Meaning-unit exclusion could not be saved.");
+      setApiStatus(
+        result.error ?? "Meaning-unit exclusion could not be saved.",
+      );
       return;
     }
     if (result.meaningUnit) {
       setUnits((current) =>
         current.map((item) =>
-          item.id === result.meaningUnit?.id ? result.meaningUnit : item
-        )
+          item.id === result.meaningUnit?.id ? result.meaningUnit : item,
+        ),
       );
     }
     setApiStatus(
-      "Meaning unit excluded from category analysis. Existing categories were cleared; rerun categories when ready."
+      "Meaning unit excluded from category analysis. Existing categories were cleared; rerun categories when ready.",
     );
   }
 
@@ -4017,10 +4380,10 @@ export function GdiqrWorkspace({
           ? {
               ...item,
               analysisExcluded: false,
-              humanStatus: "Needs review"
+              humanStatus: "Needs review",
             }
-          : item
-      )
+          : item,
+      ),
     );
     clearDerivedAnalysisAfterMeaningUnitChange();
     setApiStatus("Restoring meaning unit...");
@@ -4028,10 +4391,10 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action: `Restored MU #${unit.number} for review`,
-        target: unit.id
+        target: unit.id,
       });
       setApiStatus(
-        "Meaning unit restored locally. Review and accept it before categories."
+        "Meaning unit restored locally. Review and accept it before categories.",
       );
       return;
     }
@@ -4039,10 +4402,10 @@ export function GdiqrWorkspace({
     const response = await fetch(`/api/meaning-units/${unit.id}`, {
       body: JSON.stringify({
         analysisExcluded: false,
-        exclusionReason: null
+        exclusionReason: null,
       }),
       headers: { "Content-Type": "application/json" },
-      method: "PATCH"
+      method: "PATCH",
     });
     const result = (await response.json().catch(() => ({}))) as {
       error?: string;
@@ -4056,18 +4419,18 @@ export function GdiqrWorkspace({
     if (result.meaningUnit) {
       setUnits((current) =>
         current.map((item) =>
-          item.id === result.meaningUnit?.id ? result.meaningUnit : item
-        )
+          item.id === result.meaningUnit?.id ? result.meaningUnit : item,
+        ),
       );
     }
     setApiStatus(
-      "Meaning unit restored for analysis. Review and accept it before categories."
+      "Meaning unit restored for analysis. Review and accept it before categories.",
     );
   }
 
   async function deleteMeaningUnitFromWorkspace(unit: MeaningUnit) {
     const confirmed = window.confirm(
-      `Delete MU #${unit.number}? This removes it from the workspace and clears existing categories because category results may reference it. Use Exclude instead if you want to keep an audit-visible record.`
+      `Delete MU #${unit.number}? This removes it from the workspace and clears existing categories because category results may reference it. Use Exclude instead if you want to keep an audit-visible record.`,
     );
     if (!confirmed) {
       return;
@@ -4077,22 +4440,22 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       setUnits((current) =>
         renumberMeaningUnitsForDisplay(
-          current.filter((item) => item.id !== unit.id)
-        )
+          current.filter((item) => item.id !== unit.id),
+        ),
       );
       clearDerivedAnalysisAfterMeaningUnitChange();
       recordLocalAuditEvent({
         action: `Deleted MU #${unit.number}`,
-        target: unit.id
+        target: unit.id,
       });
       setApiStatus(
-        `MU #${unit.number} deleted locally. Existing categories were cleared; rerun categories when ready.`
+        `MU #${unit.number} deleted locally. Existing categories were cleared; rerun categories when ready.`,
       );
       return;
     }
 
     const response = await fetch(`/api/meaning-units/${unit.id}`, {
-      method: "DELETE"
+      method: "DELETE",
     });
     const result = (await response.json().catch(() => ({}))) as {
       deleted?: boolean;
@@ -4108,21 +4471,126 @@ export function GdiqrWorkspace({
     } else {
       setUnits((current) =>
         renumberMeaningUnitsForDisplay(
-          current.filter((item) => item.id !== unit.id)
-        )
+          current.filter((item) => item.id !== unit.id),
+        ),
       );
     }
     clearDerivedAnalysisAfterMeaningUnitChange();
     setApiStatus(
-      `MU #${unit.number} deleted. Existing categories were cleared; rerun categories when ready.`
+      `MU #${unit.number} deleted. Existing categories were cleared; rerun categories when ready.`,
     );
+  }
+
+  async function askGuidanceQuestion() {
+    const question = guidanceQuestion.trim();
+    if (!question) {
+      setApiStatus("Ask a methodological guidance question first.");
+      return;
+    }
+
+    setIsGuidanceLoading(true);
+    clearWorkflowError();
+    setApiStatus("Preparing methodological guidance...");
+
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      const answer = buildMethodologicalGuidanceAnswer({
+        activeStep,
+        categoryCount: displayCategories.length,
+        confirmedMeaningUnitCount: confirmedMeaningUnits.length,
+        hasTranscript: Boolean(editableTranscript.trim()),
+        question,
+        transcriptConfirmed,
+      });
+      const message: GuidanceMessage = {
+        answer,
+        createdAt: new Date().toISOString(),
+        id: `guidance_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        question,
+        step: activeStep,
+      };
+      setGuidanceMessages((current) => [message, ...current]);
+      setGuidanceQuestion("");
+      setApiStatus(
+        "Guidance drafted. Save it as a memo only if it is useful for your audit trail.",
+      );
+    } catch (error) {
+      setRecoverableWorkflowError(
+        error instanceof Error
+          ? error.message
+          : "Guidance could not be generated.",
+        () => void askGuidanceQuestion(),
+      );
+    } finally {
+      setIsGuidanceLoading(false);
+    }
+  }
+
+  async function saveGuidanceAsMemo(message: GuidanceMessage) {
+    if (message.saved) {
+      setApiStatus("This guidance is already saved as a memo.");
+      return;
+    }
+
+    if (isLocalOnlyMode) {
+      const savedMessage = { ...message, saved: true };
+      setGuidanceMessages((current) =>
+        current.map((item) => (item.id === message.id ? savedMessage : item)),
+      );
+      setSavedGuidanceMemos((current) => [savedMessage, ...current]);
+      recordLocalAuditEvent({
+        action: `Saved methodological guidance memo for ${message.step}`,
+        target: "Guidance panel",
+      });
+      setApiStatus("Guidance memo saved locally and audit logged.");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/guidance-memos", {
+        body: JSON.stringify({
+          answer: message.answer,
+          projectId: currentProject.id,
+          question: message.question,
+          step: message.step,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        saved?: boolean;
+      };
+      if (!response.ok || !result.saved) {
+        setRecoverableWorkflowError(
+          result.error ?? "Guidance memo could not be saved.",
+          () => void saveGuidanceAsMemo(message),
+        );
+        return;
+      }
+
+      const savedMessage = { ...message, saved: true };
+      setGuidanceMessages((current) =>
+        current.map((item) => (item.id === message.id ? savedMessage : item)),
+      );
+      setSavedGuidanceMemos((current) => [savedMessage, ...current]);
+      setApiStatus("Guidance memo saved and audit logged.");
+      void refreshWorkspace();
+    } catch (error) {
+      setRecoverableWorkflowError(
+        error instanceof Error
+          ? error.message
+          : "Guidance memo could not be saved.",
+        () => void saveGuidanceAsMemo(message),
+      );
+    }
   }
 
   function returnToTranscriptForUnit(unit: MeaningUnit) {
     setActiveStep("pre-analysis");
     setTranscriptConfirmed(false);
     setApiStatus(
-      `Check the transcript around MU #${unit.number}. After editing, save/confirm the transcript and regenerate meaning units.`
+      `Check the transcript around MU #${unit.number}. After editing, save/confirm the transcript and regenerate meaning units.`,
     );
   }
 
@@ -4135,7 +4603,7 @@ export function GdiqrWorkspace({
       .trim();
     const sourceCleaned = cleanTranscriptSourceForAnalysis(
       spacingCleaned,
-      currentProject
+      currentProject,
     );
     const cleaned = sourceCleaned.transcript;
     setEditableTranscript(cleaned);
@@ -4146,7 +4614,7 @@ export function GdiqrWorkspace({
     setApiStatus(
       sourceCleaned.removedLineCount > 0
         ? `Transcript cleaned. Removed ${sourceCleaned.removedLineCount} non-transcript setup/metadata line${sourceCleaned.removedLineCount === 1 ? "" : "s"}. Review, save, then confirm before analysis.`
-        : "Transcript spacing cleaned. Review the text, save a reviewed transcript, then confirm before analysis."
+        : "Transcript spacing cleaned. Review the text, save a reviewed transcript, then confirm before analysis.",
     );
   }
 
@@ -4162,14 +4630,14 @@ export function GdiqrWorkspace({
       textarea.scrollIntoView({ behavior: "smooth", block: "center" });
       textarea.setSelectionRange(
         item.startOffset,
-        item.endOffset ?? item.startOffset + item.placeholder.length
+        item.endOffset ?? item.startOffset + item.placeholder.length,
       );
     }, 0);
   }
 
   function updateSensitiveItemStatus(
     itemId: string,
-    status: SensitiveReviewStatus
+    status: SensitiveReviewStatus,
   ) {
     const item = sensitiveReviewItems.find((current) => current.id === itemId);
     if (
@@ -4180,14 +4648,14 @@ export function GdiqrWorkspace({
       replaceSensitiveItemText(item, item.replacementText);
     }
     setSensitiveReviewItems((current) =>
-      current.map((item) => (item.id === itemId ? { ...item, status } : item))
+      current.map((item) => (item.id === itemId ? { ...item, status } : item)),
     );
   }
 
   function editSensitiveReplacement(item: SensitiveReviewItem) {
     const replacement = window.prompt(
       "Edit the anonymised replacement label:",
-      item.replacementText
+      item.replacementText,
     );
     if (!replacement?.trim()) {
       return;
@@ -4201,10 +4669,10 @@ export function GdiqrWorkspace({
               ...currentItem,
               placeholder: nextReplacement,
               replacementText: nextReplacement,
-              status: "edited"
+              status: "edited",
             }
-          : currentItem
-      )
+          : currentItem,
+      ),
     );
   }
 
@@ -4212,7 +4680,7 @@ export function GdiqrWorkspace({
     const replacement = item.replacementText || item.placeholder;
     const sourceText = item.matchedText ?? item.placeholder;
     setEditableTranscript((current) =>
-      current.split(sourceText).join(replacement)
+      current.split(sourceText).join(replacement),
     );
     setTranscriptConfirmed(false);
     setTranscriptStorageStatus("Not saved yet — local draft only");
@@ -4223,17 +4691,18 @@ export function GdiqrWorkspace({
               ...currentItem,
               placeholder: replacement,
               replacementText: replacement,
-              status: currentItem.status === "ignored" ? "ignored" : "confirmed"
+              status:
+                currentItem.status === "ignored" ? "ignored" : "confirmed",
             }
-          : currentItem
-      )
+          : currentItem,
+      ),
     );
     setApiStatus(`Applied ${replacement} consistently across the transcript.`);
   }
 
   function replaceSensitiveItemText(
     item: SensitiveReviewItem,
-    replacement: string
+    replacement: string,
   ) {
     const sourceText = item.matchedText ?? item.placeholder;
     setEditableTranscript((current) => {
@@ -4260,7 +4729,7 @@ export function GdiqrWorkspace({
     setApiStatus("Loading signed audio preview...");
     const response = await fetch(
       `/api/audio/${latestAudioFile.id}/signed-url?projectId=${currentProject.id}`,
-      { cache: "no-store" }
+      { cache: "no-store" },
     );
     const result = (await response.json().catch(() => ({}))) as {
       error?: string;
@@ -4276,57 +4745,74 @@ export function GdiqrWorkspace({
     setApiStatus("Audio preview loaded");
   }
 
-  function exportWorkspace(format: AnalysisExportFormat) {
+  async function exportWorkspace(format: AnalysisExportFormat) {
+    setIsExportingFormat(format);
+    clearWorkflowError();
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const safeProjectTitle = slugifyFilename(currentProject.title || "gdi-qr-project");
-
-    if (format === "json") {
-      downloadFile(
-        `${safeProjectTitle}-analysis-record-${timestamp}.json`,
-        JSON.stringify(buildExportPayload(), null, 2),
-        "application/json"
-      );
-      setApiStatus("JSON backup export downloaded.");
-      void recordExportEvent("json");
-      return;
-    }
-
-    if (format === "csv") {
-      downloadFile(
-        `${safeProjectTitle}-meaning-units-${timestamp}.csv`,
-        buildMeaningUnitCsv(currentMeaningUnits),
-        "text/csv"
-      );
-      setApiStatus("Meaning-unit CSV export downloaded.");
-      void recordExportEvent("csv");
-      return;
-    }
-
-    if (format === "docx") {
-      const docxBlob = buildDocxBlobFromText(buildTextReport());
-      downloadBlob(
-        `${safeProjectTitle}-analysis-record-${timestamp}.docx`,
-        docxBlob
-      );
-      setApiStatus("DOCX analysis record downloaded.");
-      void recordExportEvent("docx");
-      return;
-    }
-
-    if (format === "pdf") {
-      openPrintableAnalysisRecord(buildTextReport());
-      setApiStatus("Printable analysis record opened. Use the browser print dialog to save as PDF.");
-      void recordExportEvent("pdf");
-      return;
-    }
-
-    downloadFile(
-      `${safeProjectTitle}-analysis-record-${timestamp}.txt`,
-      buildTextReport(),
-      "text/plain"
+    const safeProjectTitle = slugifyFilename(
+      currentProject.title || "gdi-qr-project",
     );
-    setApiStatus("Text analysis record downloaded.");
-    void recordExportEvent("txt");
+
+    try {
+      if (format === "json") {
+        downloadFile(
+          `${safeProjectTitle}-analysis-record-${timestamp}.json`,
+          JSON.stringify(buildExportPayload(), null, 2),
+          "application/json",
+        );
+        setApiStatus("JSON backup export downloaded.");
+        await recordExportEvent("json");
+        return;
+      }
+
+      if (format === "csv") {
+        downloadFile(
+          `${safeProjectTitle}-meaning-units-${timestamp}.csv`,
+          buildMeaningUnitCsv(currentMeaningUnits),
+          "text/csv",
+        );
+        setApiStatus("Meaning-unit CSV export downloaded.");
+        await recordExportEvent("csv");
+        return;
+      }
+
+      if (format === "docx") {
+        const docxBlob = buildDocxBlobFromText(buildTextReport());
+        downloadBlob(
+          `${safeProjectTitle}-analysis-record-${timestamp}.docx`,
+          docxBlob,
+        );
+        setApiStatus("DOCX analysis record downloaded.");
+        await recordExportEvent("docx");
+        return;
+      }
+
+      if (format === "pdf") {
+        openPrintableAnalysisRecord(buildTextReport());
+        setApiStatus(
+          "Printable analysis record opened. Use the browser print dialog to save as PDF.",
+        );
+        await recordExportEvent("pdf");
+        return;
+      }
+
+      downloadFile(
+        `${safeProjectTitle}-analysis-record-${timestamp}.txt`,
+        buildTextReport(),
+        "text/plain",
+      );
+      setApiStatus("Text analysis record downloaded.");
+      await recordExportEvent("txt");
+    } catch (error) {
+      setRecoverableWorkflowError(
+        error instanceof Error
+          ? error.message
+          : `${format.toUpperCase()} export failed.`,
+        () => void exportWorkspace(format),
+      );
+    } finally {
+      setIsExportingFormat(null);
+    }
   }
 
   function buildExportPayload() {
@@ -4339,7 +4825,7 @@ export function GdiqrWorkspace({
         dataSource: currentProject.dataSource,
         confirmed: currentProject.dataSuitabilityConfirmed,
         confirmedAt: currentProject.dataSuitabilityConfirmedAt,
-        researcherNotes: currentProject.researcherNotes
+        researcherNotes: currentProject.researcherNotes,
       },
       preAnalysis: {
         researchQuestion,
@@ -4348,7 +4834,7 @@ export function GdiqrWorkspace({
         contextualNotes: researcherNotes,
         initialSensitisingConcepts: researcherExpectations,
         dataFamiliarisationNotes,
-        relevanceGuideline
+        relevanceGuideline,
       },
       transcript: editableTranscript,
       transcriptRecords: displayTranscriptRecords,
@@ -4356,9 +4842,15 @@ export function GdiqrWorkspace({
       audioFiles: displayAudioFiles,
       transcriptionJobs: displayTranscriptionJobs,
       transcriptReview: {
-        originalSaved: displayTranscriptRecords.some((item) => Boolean(item.rawContent)),
-        editedDraftSaved: displayTranscriptRecords.some((item) => Boolean(item.cleanedContent)),
-        confirmedSaved: displayTranscriptRecords.some((item) => item.status === "Confirmed" || Boolean(item.finalContent))
+        originalSaved: displayTranscriptRecords.some((item) =>
+          Boolean(item.rawContent),
+        ),
+        editedDraftSaved: displayTranscriptRecords.some((item) =>
+          Boolean(item.cleanedContent),
+        ),
+        confirmedSaved: displayTranscriptRecords.some(
+          (item) => item.status === "Confirmed" || Boolean(item.finalContent),
+        ),
       },
       meaningUnits: currentMeaningUnits,
       categories: displayCategories,
@@ -4373,11 +4865,12 @@ export function GdiqrWorkspace({
         researcherNote: integrationNote,
         reviewed: integrationReviewed,
         savedAt: integrationSavedAt,
-        note: integrationStructureNotice
+        note: integrationStructureNotice,
       },
+      guidanceMemos: savedGuidanceMemos,
       auditTrail: displayAuditEvents,
       auditEvents: displayAuditEvents,
-      exportRecords: displayExportRecords
+      exportRecords: displayExportRecords,
     };
   }
 
@@ -4388,19 +4881,25 @@ export function GdiqrWorkspace({
     const reviewerText = reviewerOutputs
       .map(
         (comment) =>
-          `- [${comment.severity}] ${comment.agent} on ${comment.target}: ${comment.comment}`
+          `- [${comment.severity}] ${comment.agent} on ${comment.target}: ${comment.comment}`,
       )
       .join("\n");
     const integrityChecklistText = integrityChecklistItems
       .map(
         (item) =>
-          `- [${formatIntegrityStatus(item.status)}] ${item.prompt}\n  Response: ${item.response || "Not recorded"}\n  Researcher note: ${item.researcherNote || "Not recorded"}`
+          `- [${formatIntegrityStatus(item.status)}] ${item.prompt}\n  Response: ${item.response || "Not recorded"}\n  Researcher note: ${item.researcherNote || "Not recorded"}`,
+      )
+      .join("\n");
+    const guidanceMemoText = savedGuidanceMemos
+      .map(
+        (memo) =>
+          `- ${memo.createdAt} | ${getStepShortLabel(memo.step)} | Q: ${memo.question}\n  Guidance: ${memo.answer}`,
       )
       .join("\n");
     const auditTrailText = displayAuditEvents
       .map(
         (event) =>
-          `- ${event.timestamp} | ${event.actor} | ${event.actionType ?? "other"} | ${event.action} | ${event.target}`
+          `- ${event.timestamp} | ${event.actor} | ${event.actionType ?? "other"} | ${event.action} | ${event.target}`,
       )
       .join("\n");
 
@@ -4439,7 +4938,7 @@ export function GdiqrWorkspace({
         ? units
             .map(
               (unit) =>
-                `${unit.number}. ${unit.humanSummary || unit.aiSummary} (${unit.excerpt})`
+                `${unit.number}. ${unit.humanSummary || unit.aiSummary} (${unit.excerpt})`,
             )
             .join("\n")
         : "No meaning units yet.",
@@ -4448,7 +4947,8 @@ export function GdiqrWorkspace({
       categoryText || "No categories yet.",
       "",
       "Methodological Integrity Review",
-      integrityChecklistText || "No methodological integrity checklist items yet.",
+      integrityChecklistText ||
+        "No methodological integrity checklist items yet.",
       "",
       "Reviewer Issues",
       reviewerText || "No methodological integrity issues yet.",
@@ -4466,13 +4966,13 @@ export function GdiqrWorkspace({
         ? displayExportRecords
             .map(
               (record) =>
-                `- ${record.generatedAt} | ${record.format.toUpperCase()} | ${record.storagePath || "local/download"}`
+                `- ${record.generatedAt} | ${record.format.toUpperCase()} | ${record.storagePath || "local/download"}`,
             )
             .join("\n")
         : "No export records yet.",
       "",
       "Audit Trail",
-      auditTrailText || "No audit events yet."
+      auditTrailText || "No audit events yet.",
     ].join("\n");
   }
 
@@ -4487,7 +4987,7 @@ export function GdiqrWorkspace({
       reviewedSummary === (unit.aiSummary || "").trim();
     if (!reviewedExcerpt || !reviewedSummary) {
       setApiStatus(
-        `Review the excerpt and summary before accepting MU #${unit.number}.`
+        `Review the excerpt and summary before accepting MU #${unit.number}.`,
       );
       return;
     }
@@ -4496,7 +4996,7 @@ export function GdiqrWorkspace({
       !unit.exclusionReason?.trim()
     ) {
       setApiStatus(
-        `MU #${unit.number} may contain project setup or other non-transcript material. Add a researcher memo explaining why it belongs in analysis, or exclude it.`
+        `MU #${unit.number} may contain project setup or other non-transcript material. Add a researcher memo explaining why it belongs in analysis, or exclude it.`,
       );
       return;
     }
@@ -4507,10 +5007,10 @@ export function GdiqrWorkspace({
               ...unit,
               excerpt: reviewedExcerpt,
               humanSummary: reviewedSummary,
-              humanStatus: "Accepted"
+              humanStatus: "Accepted",
             }
-          : unit
-      )
+          : unit,
+      ),
     );
     setApiStatus("Saving meaning-unit decision...");
 
@@ -4519,7 +5019,7 @@ export function GdiqrWorkspace({
         action: acceptedDraftSummaryWithoutEdit
           ? `Accepted MU #${unit.number} draft summary without edit`
           : `Accepted MU #${unit.number}`,
-        target: unit.id
+        target: unit.id,
       });
       setApiStatus("Meaning-unit decision saved locally.");
       return;
@@ -4529,10 +5029,10 @@ export function GdiqrWorkspace({
       body: JSON.stringify({
         excerpt: reviewedExcerpt,
         humanStatus: "Accepted",
-        humanSummary: reviewedSummary
+        humanSummary: reviewedSummary,
       }),
       headers: { "Content-Type": "application/json" },
-      method: "PATCH"
+      method: "PATCH",
     });
     const result = (await response.json()) as {
       saved?: boolean;
@@ -4544,15 +5044,15 @@ export function GdiqrWorkspace({
     if (result.meaningUnit) {
       setUnits((current) =>
         current.map((item) =>
-          item.id === result.meaningUnit?.id ? result.meaningUnit : item
-        )
+          item.id === result.meaningUnit?.id ? result.meaningUnit : item,
+        ),
       );
     }
 
     setApiStatus(
       result.saved
         ? "Meaning-unit decision saved"
-        : result.reason ?? result.error ?? "Meaning-unit save skipped"
+        : (result.reason ?? result.error ?? "Meaning-unit save skipped"),
     );
   }
 
@@ -4562,11 +5062,10 @@ export function GdiqrWorkspace({
         <div className="brand" aria-label={PRODUCT_TITLE}>
           <div className="brand-mark">GDI-QR</div>
           <div>
-            <h1 className="brand-title">
-              GDI-QR Guided Qualitative Analysis
-            </h1>
+            <h1 className="brand-title">GDI-QR Guided Qualitative Analysis</h1>
             <p className="brand-subtitle">
-              A step-by-step workspace based on A Generic Approach to Descriptive-Interpretive Qualitative Research
+              A step-by-step workspace based on A Generic Approach to
+              Descriptive-Interpretive Qualitative Research
             </p>
           </div>
         </div>
@@ -4574,13 +5073,20 @@ export function GdiqrWorkspace({
 
       <div className="layout">
         <main className="main">
-          <section className="mini-card soft" aria-label="Project setup and data suitability">
+          <section
+            className="mini-card soft"
+            aria-label="Project setup and data suitability"
+          >
             <div className="section-header">
               <div>
                 <span className="badge">v1.0 research release</span>
-                <h2 className="section-title">Project setup and data suitability</h2>
+                <h2 className="section-title">
+                  Project setup and data suitability
+                </h2>
                 <p className="section-copy">
-                  Create or select a project before upload. This research release is intended for open, public, or anonymised datasets only.
+                  Create or select a project before upload. This research
+                  release is intended for open, public, or anonymised datasets
+                  only.
                 </p>
               </div>
             </div>
@@ -4597,7 +5103,9 @@ export function GdiqrWorkspace({
                   value={currentProject.id}
                 >
                   {availableProjects.length === 0 && (
-                    <option value={currentProject.id}>{currentProject.title}</option>
+                    <option value={currentProject.id}>
+                      {currentProject.title}
+                    </option>
                   )}
                   {availableProjects.map((item) => (
                     <option key={item.id} value={item.id}>
@@ -4628,14 +5136,20 @@ export function GdiqrWorkspace({
                     const value = event.target.value as DatasetType;
                     setDatasetType(value);
                     setDataSuitabilityConfirmed(
-                      value === "identifiable_sensitive" ? false : dataSuitabilityConfirmed
+                      value === "identifiable_sensitive"
+                        ? false
+                        : dataSuitabilityConfirmed,
                     );
                   }}
                   value={datasetType}
                 >
                   <option value="open">Open / public dataset</option>
-                  <option value="anonymised">Anonymised or de-identified dataset</option>
-                  <option value="identifiable_sensitive">Identifiable sensitive data</option>
+                  <option value="anonymised">
+                    Anonymised or de-identified dataset
+                  </option>
+                  <option value="identifiable_sensitive">
+                    Identifiable sensitive data
+                  </option>
                 </select>
               </div>
               <div>
@@ -4646,7 +5160,9 @@ export function GdiqrWorkspace({
                   className="select"
                   id="project-data-source"
                   onChange={(event) =>
-                    setProjectDataSource(event.target.value as ProjectDataSource)
+                    setProjectDataSource(
+                      event.target.value as ProjectDataSource,
+                    )
                   }
                   value={projectDataSource}
                 >
@@ -4664,31 +5180,47 @@ export function GdiqrWorkspace({
             <textarea
               className="textarea"
               id="project-researcher-notes"
-              onChange={(event) => setProjectResearcherNotes(event.target.value)}
+              onChange={(event) =>
+                setProjectResearcherNotes(event.target.value)
+              }
               placeholder="Briefly document the dataset source, de-identification status, or any project-level notes that should appear in the export."
               value={projectResearcherNotes}
             />
 
-            <div className={dataSuitabilityBlocksAnalysis ? "mini-card warning-card" : "mini-card soft"}>
+            <div
+              className={
+                dataSuitabilityBlocksAnalysis
+                  ? "mini-card warning-card"
+                  : "mini-card soft"
+              }
+            >
               <span className="label">Data suitability notice</span>
               <p className="small">
-                This research release is intended for open, public, or anonymised datasets only. Please do not upload identifiable or highly sensitive data unless an approved secure/local deployment is in place.
+                This research release is intended for open, public, or
+                anonymised datasets only. Please do not upload identifiable or
+                highly sensitive data unless an approved secure/local deployment
+                is in place.
               </p>
               {datasetType === "identifiable_sensitive" && !isLocalOnlyMode && (
                 <p className="small strong-warning">
-                  Identifiable sensitive data is blocked in this cloud-assisted v1.0 release. Choose an open/anonymised dataset or use the later secure/local deployment.
+                  Identifiable sensitive data is blocked in this cloud-assisted
+                  v1.0 release. Choose an open/anonymised dataset or use the
+                  later secure/local deployment.
                 </p>
               )}
               <label className="scope-option">
                 <input
                   checked={dataSuitabilityConfirmed}
-                  disabled={datasetType === "identifiable_sensitive" && !isLocalOnlyMode}
+                  disabled={
+                    datasetType === "identifiable_sensitive" && !isLocalOnlyMode
+                  }
                   onChange={(event) =>
                     setDataSuitabilityConfirmed(event.target.checked)
                   }
                   type="checkbox"
                 />
-                I confirm this project will use open, public, anonymised, or otherwise approved data suitable for this v1.0 release.
+                I confirm this project will use open, public, anonymised, or
+                otherwise approved data suitable for this v1.0 release.
               </label>
             </div>
 
@@ -4706,11 +5238,14 @@ export function GdiqrWorkspace({
                 onClick={() => setCreateProjectExpanded((current) => !current)}
                 type="button"
               >
-                {createProjectExpanded ? "Hide create project" : "Create new project"}
+                {createProjectExpanded
+                  ? "Hide create project"
+                  : "Create new project"}
               </button>
               {projectSetupSavedAt && (
                 <span className="small">
-                  Last saved: {new Date(projectSetupSavedAt).toLocaleTimeString()}
+                  Last saved:{" "}
+                  {new Date(projectSetupSavedAt).toLocaleTimeString()}
                 </span>
               )}
             </div>
@@ -4726,7 +5261,9 @@ export function GdiqrWorkspace({
                     <input
                       className="field"
                       id="new-project-title"
-                      onChange={(event) => setNewProjectTitle(event.target.value)}
+                      onChange={(event) =>
+                        setNewProjectTitle(event.target.value)
+                      }
                       value={newProjectTitle}
                     />
                   </div>
@@ -4738,7 +5275,9 @@ export function GdiqrWorkspace({
                       className="select"
                       id="new-data-source"
                       onChange={(event) =>
-                        setNewDataSource(event.target.value as ProjectDataSource)
+                        setNewDataSource(
+                          event.target.value as ProjectDataSource,
+                        )
                       }
                       value={newDataSource}
                     >
@@ -4765,8 +5304,12 @@ export function GdiqrWorkspace({
                       value={newDatasetType}
                     >
                       <option value="open">Open / public dataset</option>
-                      <option value="anonymised">Anonymised or de-identified dataset</option>
-                      <option value="identifiable_sensitive">Identifiable sensitive data</option>
+                      <option value="anonymised">
+                        Anonymised or de-identified dataset
+                      </option>
+                      <option value="identifiable_sensitive">
+                        Identifiable sensitive data
+                      </option>
                     </select>
                   </div>
                   <div>
@@ -4776,7 +5319,9 @@ export function GdiqrWorkspace({
                     <textarea
                       className="textarea"
                       id="new-research-question"
-                      onChange={(event) => setNewResearchQuestion(event.target.value)}
+                      onChange={(event) =>
+                        setNewResearchQuestion(event.target.value)
+                      }
                       value={newResearchQuestion}
                     />
                   </div>
@@ -4787,7 +5332,9 @@ export function GdiqrWorkspace({
                 <textarea
                   className="textarea"
                   id="new-study-description"
-                  onChange={(event) => setNewStudyDescription(event.target.value)}
+                  onChange={(event) =>
+                    setNewStudyDescription(event.target.value)
+                  }
                   value={newStudyDescription}
                 />
                 <label className="label" htmlFor="new-researcher-notes">
@@ -4796,13 +5343,18 @@ export function GdiqrWorkspace({
                 <textarea
                   className="textarea"
                   id="new-researcher-notes"
-                  onChange={(event) => setNewResearcherNotes(event.target.value)}
+                  onChange={(event) =>
+                    setNewResearcherNotes(event.target.value)
+                  }
                   value={newResearcherNotes}
                 />
                 <div className="mini-card soft">
                   <span className="label">Required confirmation</span>
                   <p className="small">
-                    This research release is intended for open, public, or anonymised datasets only. Please do not upload identifiable or highly sensitive data unless an approved secure/local deployment is in place.
+                    This research release is intended for open, public, or
+                    anonymised datasets only. Please do not upload identifiable
+                    or highly sensitive data unless an approved secure/local
+                    deployment is in place.
                   </p>
                   <label className="scope-option">
                     <input
@@ -4813,7 +5365,8 @@ export function GdiqrWorkspace({
                       }
                       type="checkbox"
                     />
-                    I confirm the dataset is suitable for this v1.0 research release.
+                    I confirm the dataset is suitable for this v1.0 research
+                    release.
                   </label>
                 </div>
                 <button
@@ -4830,9 +5383,13 @@ export function GdiqrWorkspace({
 
           {dataSuitabilityBlocksAnalysis && (
             <div className="mini-card warning-card">
-              <span className="label">Action required before upload or analysis</span>
+              <span className="label">
+                Action required before upload or analysis
+              </span>
               <p className="small">
-                Confirm data suitability for an open/public/anonymised dataset before uploading transcripts, uploading audio, or generating analysis outputs.
+                Confirm data suitability for an open/public/anonymised dataset
+                before uploading transcripts, uploading audio, or generating
+                analysis outputs.
               </p>
             </div>
           )}
@@ -4844,10 +5401,17 @@ export function GdiqrWorkspace({
                   activeStep === step.id ? "active" : ""
                 } ${completedSteps.has(step.id) ? "complete" : ""}`}
                 key={step.id}
-                disabled={dataSuitabilityBlocksAnalysis && step.id !== "pre-analysis"}
+                disabled={
+                  dataSuitabilityBlocksAnalysis && step.id !== "pre-analysis"
+                }
                 onClick={() => {
-                  if (dataSuitabilityBlocksAnalysis && step.id !== "pre-analysis") {
-                    void ensureDataSuitabilityConfirmed("moving beyond project setup");
+                  if (
+                    dataSuitabilityBlocksAnalysis &&
+                    step.id !== "pre-analysis"
+                  ) {
+                    void ensureDataSuitabilityConfirmed(
+                      "moving beyond project setup",
+                    );
                     return;
                   }
                   setActiveStep(step.id);
@@ -4870,6 +5434,24 @@ export function GdiqrWorkspace({
               </div>
             </div>
             <StepGuidance step={activeStep} />
+            {workflowError && (
+              <WorkflowErrorPanel
+                message={workflowError}
+                onClear={clearWorkflowError}
+                onRetry={() => retryActionRef.current?.()}
+                retryAvailable={Boolean(retryActionRef.current)}
+              />
+            )}
+            <GuidanceChatPanel
+              activeStep={activeStep}
+              isLoading={isGuidanceLoading}
+              messages={guidanceMessages}
+              onAsk={() => void askGuidanceQuestion()}
+              onQuestionChange={setGuidanceQuestion}
+              onSaveMemo={(message) => void saveGuidanceAsMemo(message)}
+              question={guidanceQuestion}
+              savedMemoCount={savedGuidanceMemos.length}
+            />
             <div className="workbook-task-heading">
               <span className="label">What you’ll work on</span>
               <p>
@@ -4879,7 +5461,10 @@ export function GdiqrWorkspace({
               </p>
             </div>
             {activeStep === "pre-analysis" && (
-              <div className="overlap-strip" aria-label="Pre-analysis activities overlap">
+              <div
+                className="overlap-strip"
+                aria-label="Pre-analysis activities overlap"
+              >
                 <span>Domains of Investigation</span>
                 <span>Data Preparation</span>
                 <span>Judgement of Relevance</span>
@@ -4925,7 +5510,9 @@ export function GdiqrWorkspace({
                   <textarea
                     className="textarea"
                     id="research-question"
-                    onChange={(event) => setResearchQuestion(event.target.value)}
+                    onChange={(event) =>
+                      setResearchQuestion(event.target.value)
+                    }
                     value={researchQuestion}
                   />
                 </div>
@@ -4936,7 +5523,9 @@ export function GdiqrWorkspace({
                   <textarea
                     className="textarea"
                     id="study-description"
-                    onChange={(event) => setStudyDescription(event.target.value)}
+                    onChange={(event) =>
+                      setStudyDescription(event.target.value)
+                    }
                     placeholder="Initial areas that organise the data in relation to the research question. These are not findings or categories."
                     value={studyDescription}
                   />
@@ -4944,7 +5533,8 @@ export function GdiqrWorkspace({
                 <details className="workbook-details" open>
                   <summary>Step 1 pre-analysis notes</summary>
                   <p className="small">
-                    These notes are part of the durable project record and will appear in the analysis export.
+                    These notes are part of the durable project record and will
+                    appear in the analysis export.
                   </p>
                   <div className="grid">
                     <div>
@@ -4968,13 +5558,18 @@ export function GdiqrWorkspace({
                       <textarea
                         className="textarea compact-textarea"
                         id="researcher-notes"
-                        onChange={(event) => setResearcherNotes(event.target.value)}
+                        onChange={(event) =>
+                          setResearcherNotes(event.target.value)
+                        }
                         placeholder="Add project context, sample/context notes, early decisions, questions, and methodological notes."
                         value={researcherNotes}
                       />
                     </div>
                     <div>
-                      <label className="label" htmlFor="researcher-expectations">
+                      <label
+                        className="label"
+                        htmlFor="researcher-expectations"
+                      >
                         Initial sensitising concepts
                       </label>
                       <textarea
@@ -4988,7 +5583,10 @@ export function GdiqrWorkspace({
                       />
                     </div>
                     <div>
-                      <label className="label" htmlFor="data-familiarisation-notes">
+                      <label
+                        className="label"
+                        htmlFor="data-familiarisation-notes"
+                      >
                         Data familiarisation notes
                       </label>
                       <textarea
@@ -5015,7 +5613,8 @@ export function GdiqrWorkspace({
                     </button>
                     {preAnalysisSavedAt && (
                       <span className="small">
-                        Last saved: {new Date(preAnalysisSavedAt).toLocaleString()}
+                        Last saved:{" "}
+                        {new Date(preAnalysisSavedAt).toLocaleString()}
                       </span>
                     )}
                   </div>
@@ -5038,8 +5637,8 @@ export function GdiqrWorkspace({
                   <span className="label">Purpose</span>
                   <p className="small">
                     I can help with preparation, and you remain in charge of
-                    ensuring the material is readable,
-                    anonymised, and appropriate for analysis.
+                    ensuring the material is readable, anonymised, and
+                    appropriate for analysis.
                   </p>
                   <p className="small">
                     This is the practical checkpoint: get the transcript into a
@@ -5050,15 +5649,25 @@ export function GdiqrWorkspace({
                   <div className="preparation-checklist">
                     <StatusLine
                       label="Transcript available"
-                      status={editableTranscript.trim() ? "Passed" : "Not addressed"}
+                      status={
+                        editableTranscript.trim() ? "Passed" : "Not addressed"
+                      }
                     />
                     <StatusLine
                       label="Readable format"
-                      status={transcriptImportText.trim() || editableTranscript.trim() ? "Passed" : "Not addressed"}
+                      status={
+                        transcriptImportText.trim() || editableTranscript.trim()
+                          ? "Passed"
+                          : "Not addressed"
+                      }
                     />
                     <StatusLine
                       label="Anonymisation completed"
-                      status={unresolvedHighRiskCount === 0 ? "Passed" : "Needs review"}
+                      status={
+                        unresolvedHighRiskCount === 0
+                          ? "Passed"
+                          : "Needs review"
+                      }
                     />
                     <StatusLine
                       label="Ready for analysis"
@@ -5080,98 +5689,102 @@ export function GdiqrWorkspace({
                   <p className="small">
                     Transcript file/paste imports are prepared as a local draft
                     first and are not saved until you review and confirm them.
-                    For shared demonstrations, use a short anonymised
-                    transcript or test text.
+                    For shared demonstrations, use a short anonymised transcript
+                    or test text.
                   </p>
                   {/* TODO: Consider an enforced ethics acknowledgement for non-demo deployments. */}
                 </div>
                 <details className="workbook-details">
                   <summary>Optional: transcribe interview audio</summary>
                   <div className="upload-panel">
-                  <div className="upload-dropzone">
-                    <FileAudio size={32} />
-                    <h3>Upload interview audio</h3>
-                    <p className="small">
-                      Supported audio: MP3, M4A, WAV, MP4, WebM, OGG, AAC.
-                      {isLocalOnlyMode
-                        ? " For shared demos, please use transcript import instead."
-                        : " The transcript will be shown for researcher review before any analysis begins."}
-                    </p>
-                    <div className="upload-controls">
-                      <div>
-                        <label className="label" htmlFor="audio-language">
-                          Audio language
-                        </label>
-                        <select
-                          className="select"
-                          id="audio-language"
-                          onChange={(event) =>
-                            setUploadLanguage(
-                              event.target.value === "Chinese"
-                                ? "Chinese"
-                                : "English"
-                            )
-                          }
-                          value={uploadLanguage}
-                        >
-                          <option value="English">English</option>
-                          <option value="Chinese">Chinese</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="label" htmlFor="audio-file">
-                          Audio file
-                        </label>
-                        <input
-                          accept="audio/*,.m4a,.mp3,.mp4,.wav,.webm,.ogg,.aac"
-                          className="field"
-                          disabled={isLocalOnlyMode || dataSuitabilityBlocksAnalysis}
-                          id="audio-file"
-                          onChange={(event) =>
-                            setSelectedAudioFile(event.target.files?.[0] ?? null)
-                          }
-                          type="file"
-                        />
-                      </div>
-                    </div>
-                    {selectedAudioFile && (
-                      <div className="selected-file">
-                        <strong>{selectedAudioFile.name}</strong>
-                        <span className="small">
-                          {formatBytes(selectedAudioFile.size)}
-                        </span>
-                      </div>
-                    )}
-                    <div className="button-row">
-                      <button
-                        className="button primary"
-                        disabled={
-                          isLocalOnlyMode ||
-                          dataSuitabilityBlocksAnalysis ||
-                          isUploadingAudio ||
-                          !selectedAudioFile
-                        }
-                        onClick={uploadAndTranscribeAudio}
-                        type="button"
-                      >
-                        <Upload size={18} />
+                    <div className="upload-dropzone">
+                      <FileAudio size={32} />
+                      <h3>Upload interview audio</h3>
+                      <p className="small">
+                        Supported audio: MP3, M4A, WAV, MP4, WebM, OGG, AAC.
                         {isLocalOnlyMode
-                          ? "Use transcript import for this demo"
-                          : isUploadingAudio
-                          ? "Uploading and transcribing..."
-                          : "Upload and transcribe"}
-                      </button>
-                      <button
-                        className="button"
-                        disabled={!latestAudioFile}
-                        onClick={loadAudioPreview}
-                        type="button"
-                      >
-                        <Play size={18} />
-                        Preview latest audio
-                      </button>
+                          ? " For shared demos, please use transcript import instead."
+                          : " The transcript will be shown for researcher review before any analysis begins."}
+                      </p>
+                      <div className="upload-controls">
+                        <div>
+                          <label className="label" htmlFor="audio-language">
+                            Audio language
+                          </label>
+                          <select
+                            className="select"
+                            id="audio-language"
+                            onChange={(event) =>
+                              setUploadLanguage(
+                                event.target.value === "Chinese"
+                                  ? "Chinese"
+                                  : "English",
+                              )
+                            }
+                            value={uploadLanguage}
+                          >
+                            <option value="English">English</option>
+                            <option value="Chinese">Chinese</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="label" htmlFor="audio-file">
+                            Audio file
+                          </label>
+                          <input
+                            accept="audio/*,.m4a,.mp3,.mp4,.wav,.webm,.ogg,.aac"
+                            className="field"
+                            disabled={
+                              isLocalOnlyMode || dataSuitabilityBlocksAnalysis
+                            }
+                            id="audio-file"
+                            onChange={(event) =>
+                              setSelectedAudioFile(
+                                event.target.files?.[0] ?? null,
+                              )
+                            }
+                            type="file"
+                          />
+                        </div>
+                      </div>
+                      {selectedAudioFile && (
+                        <div className="selected-file">
+                          <strong>{selectedAudioFile.name}</strong>
+                          <span className="small">
+                            {formatBytes(selectedAudioFile.size)}
+                          </span>
+                        </div>
+                      )}
+                      <div className="button-row">
+                        <button
+                          className="button primary"
+                          disabled={
+                            isLocalOnlyMode ||
+                            dataSuitabilityBlocksAnalysis ||
+                            isUploadingAudio ||
+                            !selectedAudioFile
+                          }
+                          onClick={uploadAndTranscribeAudio}
+                          type="button"
+                        >
+                          <Upload size={18} />
+                          {isLocalOnlyMode
+                            ? "Use transcript import for this demo"
+                            : isUploadingAudio
+                              ? "Uploading and transcribing..."
+                              : "Upload and transcribe"}
+                        </button>
+                        <button
+                          className="button"
+                          disabled={!latestAudioFile}
+                          onClick={loadAudioPreview}
+                          type="button"
+                        >
+                          <Play size={18} />
+                          Preview latest audio
+                        </button>
+                      </div>
                     </div>
-                  </div>
                   </div>
                 </details>
                 <details className="workbook-details transcript-import-details">
@@ -5184,9 +5797,9 @@ export function GdiqrWorkspace({
                         Supported transcript files: TXT, MD, VTT, SRT, DOCX, and
                         PDF. You can also paste text below. The app will prepare
                         the text, then ask you to review it before any draft
-                        outputs are created.
-                        For shared-link demos, use a short anonymised transcript
-                        or test text only. Files over 5 MB are not accepted.
+                        outputs are created. For shared-link demos, use a short
+                        anonymised transcript or test text only. Files over 5 MB
+                        are not accepted.
                       </p>
                     </div>
                     <div className="upload-controls">
@@ -5201,7 +5814,7 @@ export function GdiqrWorkspace({
                             setUploadLanguage(
                               event.target.value === "Chinese"
                                 ? "Chinese"
-                                : "English"
+                                : "English",
                             )
                           }
                           value={uploadLanguage}
@@ -5220,7 +5833,9 @@ export function GdiqrWorkspace({
                           disabled={dataSuitabilityBlocksAnalysis}
                           id="transcript-file"
                           onChange={(event) =>
-                            void loadTranscriptFile(event.target.files?.[0] ?? null)
+                            void loadTranscriptFile(
+                              event.target.files?.[0] ?? null,
+                            )
                           }
                           type="file"
                         />
@@ -5305,7 +5920,9 @@ export function GdiqrWorkspace({
                   <textarea
                     className="textarea compact-textarea"
                     id="relevance-guideline"
-                    onChange={(event) => setRelevanceGuideline(event.target.value)}
+                    onChange={(event) =>
+                      setRelevanceGuideline(event.target.value)
+                    }
                     placeholder="Example: Include participant accounts that address the research question; mark unclear passages as possibly relevant for later review."
                     value={relevanceGuideline}
                   />
@@ -5316,303 +5933,332 @@ export function GdiqrWorkspace({
                   </p>
                 </div>
                 <details className="workbook-details review-workbook-details">
-                  <summary>Review prepared transcript and anonymisation</summary>
-                <div
-                  className={`mini-card ${
-                    transcriptConfirmed ? "soft" : "review-required"
-                  }`}
-                >
-                  <div className="category-header">
-                    <div>
-                      <span className="label">Researcher review gate</span>
-                      <h3>
-                        {transcriptConfirmed
-                          ? "Transcript confirmed for analysis"
-                          : "Review transcript before analysis"}
-                      </h3>
-                      <p className="small">
-                        Before continuing, check that every turn is assigned to
-                        the correct speaker. Questions and prompts can be
-                        labelled Interviewer; interviewee experiences can be
-                        labelled Participant. Also correct any missing words,
-                        recognition errors, or anonymisation issues. Mistakes
-                        here will carry into the meaning units and category
-                        drafts.
-                      </p>
-                      <p className="small">
-                        Please ensure that all personal identifiers and
-                        sensitive information have been removed or appropriately
-                        anonymised before analysis. This may include names,
-                        addresses, contact details, institutions, health
-                        information, immigration status, financial details, and
-                        third-party identifiers.
-                      </p>
-                    </div>
-                    <StatusBadge
-                      label={transcriptConfirmed ? "Confirmed" : "Needs review"}
-                    />
-                  </div>
-                  {sensitiveReviewItems.length > 0 && (
-                    <div className="privacy-review-list">
-                      <div className="category-header">
-                        <div>
-                          <span className="label">Sensitive information review</span>
-                          <p className="small">
-                            Review each detected placeholder before analysis.
-                            Please confirm, edit, or mark high-risk items as
-                            false positives before moving ahead.
-                          </p>
-                        </div>
-                        <button
-                          className="button"
-                          onClick={() =>
-                            setPrivacyReviewExpanded((value) => !value)
-                          }
-                          type="button"
-                        >
-                          {privacyReviewExpanded
-                            ? "Hide review list"
-                            : `Show ${sensitiveReviewItems.length} item${sensitiveReviewItems.length === 1 ? "" : "s"}`}
-                        </button>
+                  <summary>
+                    Review prepared transcript and anonymisation
+                  </summary>
+                  <div
+                    className={`mini-card ${
+                      transcriptConfirmed ? "soft" : "review-required"
+                    }`}
+                  >
+                    <div className="category-header">
+                      <div>
+                        <span className="label">Researcher review gate</span>
+                        <h3>
+                          {transcriptConfirmed
+                            ? "Transcript confirmed for analysis"
+                            : "Review transcript before analysis"}
+                        </h3>
+                        <p className="small">
+                          Before continuing, check that every turn is assigned
+                          to the correct speaker. Questions and prompts can be
+                          labelled Interviewer; interviewee experiences can be
+                          labelled Participant. Also correct any missing words,
+                          recognition errors, or anonymisation issues. Mistakes
+                          here will carry into the meaning units and category
+                          drafts.
+                        </p>
+                        <p className="small">
+                          Please ensure that all personal identifiers and
+                          sensitive information have been removed or
+                          appropriately anonymised before analysis. This may
+                          include names, addresses, contact details,
+                          institutions, health information, immigration status,
+                          financial details, and third-party identifiers.
+                        </p>
                       </div>
-                      {unresolvedHighRiskCount > 0 && (
+                      <StatusBadge
+                        label={
+                          transcriptConfirmed ? "Confirmed" : "Needs review"
+                        }
+                      />
+                    </div>
+                    {sensitiveReviewItems.length > 0 && (
+                      <div className="privacy-review-list">
+                        <div className="category-header">
+                          <div>
+                            <span className="label">
+                              Sensitive information review
+                            </span>
+                            <p className="small">
+                              Review each detected placeholder before analysis.
+                              Please confirm, edit, or mark high-risk items as
+                              false positives before moving ahead.
+                            </p>
+                          </div>
+                          <button
+                            className="button"
+                            onClick={() =>
+                              setPrivacyReviewExpanded((value) => !value)
+                            }
+                            type="button"
+                          >
+                            {privacyReviewExpanded
+                              ? "Hide review list"
+                              : `Show ${sensitiveReviewItems.length} item${sensitiveReviewItems.length === 1 ? "" : "s"}`}
+                          </button>
+                        </div>
+                        {unresolvedHighRiskCount > 0 && (
+                          <div className="mini-card warning-card">
+                            <strong>
+                              This transcript may still contain identifiable or
+                              sensitive information.
+                            </strong>
+                            <p className="small">
+                              Please review these items before analysis.
+                            </p>
+                          </div>
+                        )}
+                        {privacyReviewExpanded && (
+                          <div className="sensitive-review-grid">
+                            {sensitiveReviewItems.map((item) => (
+                              <SensitiveReviewCard
+                                isActive={item.id === activeSensitiveItemId}
+                                item={item}
+                                key={item.id}
+                                onApplyConsistent={applyConsistentReplacement}
+                                onConfirm={(target) =>
+                                  updateSensitiveItemStatus(
+                                    target.id,
+                                    "confirmed",
+                                  )
+                                }
+                                onEdit={editSensitiveReplacement}
+                                onFocus={focusSensitiveItem}
+                                onIgnore={(target) =>
+                                  updateSensitiveItemStatus(
+                                    target.id,
+                                    "ignored",
+                                  )
+                                }
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {unresolvedHighRiskCount > 0 && (
+                      <label className="scope-option">
+                        <input
+                          checked={privacyOverrideAccepted}
+                          onChange={(event) =>
+                            setPrivacyOverrideAccepted(event.target.checked)
+                          }
+                          type="checkbox"
+                        />
+                        <span>
+                          I confirm that I have reviewed the transcript and
+                          accept responsibility for proceeding.
+                        </span>
+                      </label>
+                    )}
+                    {activeSensitiveItem && (
+                      <div className="mini-card soft">
+                        <span className="label">Selected sensitive item</span>
+                        <p className="small">
+                          <strong>{activeSensitiveItem.placeholder}</strong> ·{" "}
+                          {activeSensitiveItem.category} ·{" "}
+                          {activeSensitiveItem.riskLevel} risk
+                        </p>
+                        <p className="small">
+                          {activeSensitiveItem.explanation}
+                        </p>
+                        <div className="button-row">
+                          <button
+                            className="button"
+                            onClick={() =>
+                              updateSensitiveItemStatus(
+                                activeSensitiveItem.id,
+                                "confirmed",
+                              )
+                            }
+                            type="button"
+                          >
+                            Confirm anonymisation
+                          </button>
+                          <button
+                            className="button"
+                            onClick={() =>
+                              editSensitiveReplacement(activeSensitiveItem)
+                            }
+                            type="button"
+                          >
+                            Edit label
+                          </button>
+                          <button
+                            className="button"
+                            onClick={() =>
+                              updateSensitiveItemStatus(
+                                activeSensitiveItem.id,
+                                "ignored",
+                              )
+                            }
+                            type="button"
+                          >
+                            Ignore
+                          </button>
+                          <button
+                            className="button"
+                            onClick={() =>
+                              applyConsistentReplacement(activeSensitiveItem)
+                            }
+                            type="button"
+                          >
+                            Apply consistently
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {editableTranscript.trim() && (
+                      <div className="mini-card soft">
+                        <span className="label">
+                          Highlighted transcript review
+                        </span>
+                        <p className="small">
+                          Click a highlighted placeholder to locate it in the
+                          editable transcript and review its metadata.
+                        </p>
+                        <SensitiveTranscriptPreview
+                          activeItemId={activeSensitiveItemId}
+                          items={sensitiveReviewItems}
+                          onSelect={focusSensitiveItem}
+                          transcript={editableTranscript}
+                        />
+                      </div>
+                    )}
+                    {unresolvedHighRiskCount > 0 &&
+                      !privacyOverrideAccepted && (
                         <div className="mini-card warning-card">
                           <strong>
-                            This transcript may still contain identifiable or
-                            sensitive information.
+                            Analysis is paused for privacy review.
                           </strong>
                           <p className="small">
-                            Please review these items before analysis.
+                            Confirm, edit, or ignore all high-risk sensitive
+                            items before confirming this transcript for
+                            analysis.
                           </p>
                         </div>
                       )}
-                      {privacyReviewExpanded && (
-                        <div className="sensitive-review-grid">
-                          {sensitiveReviewItems.map((item) => (
-                            <SensitiveReviewCard
-                              isActive={item.id === activeSensitiveItemId}
-                              item={item}
-                              key={item.id}
-                              onApplyConsistent={applyConsistentReplacement}
-                              onConfirm={(target) =>
-                                updateSensitiveItemStatus(target.id, "confirmed")
-                              }
-                              onEdit={editSensitiveReplacement}
-                              onFocus={focusSensitiveItem}
-                              onIgnore={(target) =>
-                                updateSensitiveItemStatus(target.id, "ignored")
-                              }
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {unresolvedHighRiskCount > 0 && (
-                    <label className="scope-option">
-                      <input
-                        checked={privacyOverrideAccepted}
-                        onChange={(event) =>
-                          setPrivacyOverrideAccepted(event.target.checked)
-                        }
-                        type="checkbox"
-                      />
-                      <span>
-                        I confirm that I have reviewed the transcript and accept
-                        responsibility for proceeding.
-                      </span>
-                    </label>
-                  )}
-                  {activeSensitiveItem && (
-                    <div className="mini-card soft">
-                      <span className="label">Selected sensitive item</span>
-                      <p className="small">
-                        <strong>{activeSensitiveItem.placeholder}</strong> ·{" "}
-                        {activeSensitiveItem.category} ·{" "}
-                        {activeSensitiveItem.riskLevel} risk
-                      </p>
-                      <p className="small">{activeSensitiveItem.explanation}</p>
-                      <div className="button-row">
-                        <button
-                          className="button"
-                          onClick={() =>
-                            updateSensitiveItemStatus(
-                              activeSensitiveItem.id,
-                              "confirmed"
-                            )
-                          }
-                          type="button"
-                        >
-                          Confirm anonymisation
-                        </button>
-                        <button
-                          className="button"
-                          onClick={() =>
-                            editSensitiveReplacement(activeSensitiveItem)
-                          }
-                          type="button"
-                        >
-                          Edit label
-                        </button>
-                        <button
-                          className="button"
-                          onClick={() =>
-                            updateSensitiveItemStatus(
-                              activeSensitiveItem.id,
-                              "ignored"
-                            )
-                          }
-                          type="button"
-                        >
-                          Ignore
-                        </button>
-                        <button
-                          className="button"
-                          onClick={() =>
-                            applyConsistentReplacement(activeSensitiveItem)
-                          }
-                          type="button"
-                        >
-                          Apply consistently
-                        </button>
+                    {editableTranscript.trim() && (
+                      <div className="mini-card soft">
+                        <span className="label">Before saving</span>
+                        <p className="small">
+                          Raw transcripts may contain identifiable or sensitive
+                          information. Please review and anonymise the
+                          transcript before saving it for analysis.
+                        </p>
                       </div>
-                    </div>
+                    )}
+                    <TranscriptReviewHistory
+                      transcriptRecords={displayTranscriptRecords}
+                    />
+                    <button
+                      className="button primary"
+                      disabled={
+                        isConfirmingTranscript ||
+                        !editableTranscript.trim() ||
+                        dataSuitabilityBlocksAnalysis ||
+                        !canProceedWithTranscript
+                      }
+                      onClick={confirmTranscriptForAnalysis}
+                      type="button"
+                    >
+                      <Check size={18} />
+                      {isConfirmingTranscript
+                        ? "Confirming..."
+                        : "Confirm reviewed transcript for analysis"}
+                    </button>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      className="button soft"
+                      disabled={!latestAudioFile}
+                      onClick={loadAudioPreview}
+                      type="button"
+                    >
+                      <Play size={18} />
+                      Audio preview
+                    </button>
+                    <button
+                      className="button"
+                      disabled={!editableTranscript.trim()}
+                      onClick={cleanTranscript}
+                      type="button"
+                    >
+                      <RefreshCcw size={18} />
+                      Clean transcript
+                    </button>
+                    <button
+                      className="button"
+                      disabled={
+                        !editableTranscript.trim() ||
+                        dataSuitabilityBlocksAnalysis ||
+                        !canProceedWithTranscript
+                      }
+                      onClick={saveTranscriptVersion}
+                      type="button"
+                    >
+                      <Archive size={18} />
+                      Save reviewed transcript
+                    </button>
+                    <button
+                      className="button danger"
+                      disabled={
+                        !editableTranscript.trim() &&
+                        displayAudioFiles.length === 0 &&
+                        displaySegments.length === 0 &&
+                        units.length === 0 &&
+                        displayCategories.length === 0
+                      }
+                      onClick={() => void clearTranscriptAndDerivedOutputs()}
+                      type="button"
+                    >
+                      <Trash2 size={18} />
+                      Delete transcript + outputs
+                    </button>
+                  </div>
+                  <details className="workbook-details">
+                    <summary>Open editable transcript</summary>
+                    <label className="label" htmlFor="transcript-editor">
+                      Editable transcript
+                    </label>
+                    <textarea
+                      className="textarea transcript"
+                      id="transcript-editor"
+                      onChange={(event) => {
+                        const nextTranscript = event.target.value;
+                        setEditableTranscript(nextTranscript);
+                        setTranscriptConfirmed(false);
+                        setTranscriptStorageStatus(
+                          "Not saved yet — local draft only",
+                        );
+                        setPrivacyOverrideAccepted(false);
+                        setAiPrivacyFindings(
+                          extractPrivacyReviewMarkers(nextTranscript),
+                        );
+                      }}
+                      placeholder="Your uploaded audio transcript will appear here after local transcription."
+                      ref={transcriptTextAreaRef}
+                      value={editableTranscript}
+                    />
+                  </details>
+                  {audioPreviewUrl && (
+                    <audio
+                      className="audio-player"
+                      controls
+                      src={audioPreviewUrl}
+                    />
                   )}
-                  {editableTranscript.trim() && (
-                    <div className="mini-card soft">
-                      <span className="label">Highlighted transcript review</span>
-                      <p className="small">
-                        Click a highlighted placeholder to locate it in the
-                        editable transcript and review its metadata.
-                      </p>
-                      <SensitiveTranscriptPreview
-                        activeItemId={activeSensitiveItemId}
-                        items={sensitiveReviewItems}
-                        onSelect={focusSensitiveItem}
-                        transcript={editableTranscript}
-                      />
-                    </div>
-                  )}
-                  {unresolvedHighRiskCount > 0 && !privacyOverrideAccepted && (
-                    <div className="mini-card warning-card">
-                      <strong>Analysis is paused for privacy review.</strong>
-                      <p className="small">
-                        Confirm, edit, or ignore all high-risk sensitive items
-                        before confirming this transcript for analysis.
-                      </p>
-                    </div>
-                  )}
-                  {editableTranscript.trim() && (
-                    <div className="mini-card soft">
-                      <span className="label">Before saving</span>
-                      <p className="small">
-                        Raw transcripts may contain identifiable or sensitive
-                        information. Please review and anonymise the transcript
-                        before saving it for analysis.
-                      </p>
-                    </div>
-                  )}
-                  <TranscriptReviewHistory
-                    transcriptRecords={displayTranscriptRecords}
-                  />
-                  <button
-                    className="button primary"
-                    disabled={
-                      isConfirmingTranscript ||
-                      !editableTranscript.trim() ||
-                      dataSuitabilityBlocksAnalysis ||
-                      !canProceedWithTranscript
-                    }
-                    onClick={confirmTranscriptForAnalysis}
-                    type="button"
-                  >
-                    <Check size={18} />
-                    {isConfirmingTranscript
-                      ? "Confirming..."
-                      : "Confirm reviewed transcript for analysis"}
-                  </button>
-                </div>
-                <div className="button-row">
-                  <button
-                    className="button soft"
-                    disabled={!latestAudioFile}
-                    onClick={loadAudioPreview}
-                    type="button"
-                  >
-                    <Play size={18} />
-                    Audio preview
-                  </button>
-                  <button
-                    className="button"
-                    disabled={!editableTranscript.trim()}
-                    onClick={cleanTranscript}
-                    type="button"
-                  >
-                    <RefreshCcw size={18} />
-                    Clean transcript
-                  </button>
-                  <button
-                    className="button"
-                    disabled={
-                      !editableTranscript.trim() ||
-                      dataSuitabilityBlocksAnalysis ||
-                      !canProceedWithTranscript
-                    }
-                    onClick={saveTranscriptVersion}
-                    type="button"
-                  >
-                    <Archive size={18} />
-                    Save reviewed transcript
-                  </button>
-                  <button
-                    className="button danger"
-                    disabled={
-                      !editableTranscript.trim() &&
-                      displayAudioFiles.length === 0 &&
-                      displaySegments.length === 0 &&
-                      units.length === 0 &&
-                      displayCategories.length === 0
-                    }
-                    onClick={() => void clearTranscriptAndDerivedOutputs()}
-                    type="button"
-                  >
-                    <Trash2 size={18} />
-                    Delete transcript + outputs
-                  </button>
-                </div>
-                <details className="workbook-details">
-                  <summary>Open editable transcript</summary>
-                  <label className="label" htmlFor="transcript-editor">
-                    Editable transcript
-                  </label>
-                  <textarea
-                    className="textarea transcript"
-                    id="transcript-editor"
-                    onChange={(event) => {
-                      const nextTranscript = event.target.value;
-                      setEditableTranscript(nextTranscript);
-                      setTranscriptConfirmed(false);
-                      setTranscriptStorageStatus("Not saved yet — local draft only");
-                      setPrivacyOverrideAccepted(false);
-                      setAiPrivacyFindings(
-                        extractPrivacyReviewMarkers(nextTranscript)
-                      );
-                    }}
-                    placeholder="Your uploaded audio transcript will appear here after local transcription."
-                    ref={transcriptTextAreaRef}
-                    value={editableTranscript}
-                  />
-                </details>
-                {audioPreviewUrl && (
-                  <audio className="audio-player" controls src={audioPreviewUrl} />
-                )}
                 </details>
               </div>
             )}
 
             {activeStep === "understanding" && (
               <div className="section-body grid">
-                <div className="analysis-flow-story" aria-label="Understanding and translating flow">
+                <div
+                  className="analysis-flow-story"
+                  aria-label="Understanding and translating flow"
+                >
                   <span>Participant Account</span>
                   <em>optional assistant support</em>
                   <span>Meaning Unit</span>
@@ -5640,10 +6286,12 @@ export function GdiqrWorkspace({
                         const nextTranscript = event.target.value;
                         setEditableTranscript(nextTranscript);
                         setTranscriptConfirmed(false);
-                        setTranscriptStorageStatus("Not saved yet — local draft only");
+                        setTranscriptStorageStatus(
+                          "Not saved yet — local draft only",
+                        );
                         setPrivacyOverrideAccepted(false);
                         setAiPrivacyFindings(
-                          extractPrivacyReviewMarkers(nextTranscript)
+                          extractPrivacyReviewMarkers(nextTranscript),
                         );
                       }}
                       placeholder="Prepare and confirm a transcript in Step 1."
@@ -5658,13 +6306,208 @@ export function GdiqrWorkspace({
                         Review transcript
                       </button>
                       <StatusBadge
-                        label={transcriptConfirmed ? "Confirmed" : "Needs review"}
+                        label={
+                          transcriptConfirmed ? "Confirmed" : "Needs review"
+                        }
                       />
                     </div>
+                    <details className="workbook-details" open>
+                      <summary>Basic speaker / segment handling</summary>
+                      <p className="small">
+                        Split by speaker labels when the transcript uses labels
+                        such as Interviewer:, Participant:, Q:, or P:. Correct
+                        each segment type before generating meaning units;
+                        interviewer-only segments are ignored by default.
+                      </p>
+                      <div className="button-row">
+                        <button
+                          className="button"
+                          disabled={
+                            isSpeakerSplittingTranscript ||
+                            !editableTranscript.trim() ||
+                            !transcriptConfirmed
+                          }
+                          onClick={() => void speakerSplitTranscriptSegments()}
+                          type="button"
+                        >
+                          {isSpeakerSplittingTranscript
+                            ? "Splitting by speaker..."
+                            : "Split transcript by speaker labels"}
+                        </button>
+                        <select
+                          className="select"
+                          onChange={(event) =>
+                            setSegmentSplitMode(
+                              event.target.value as AutoSegmentMode,
+                            )
+                          }
+                          value={segmentSplitMode}
+                        >
+                          <option value="conservative">
+                            Conservative topic split
+                          </option>
+                          <option value="balanced">Balanced topic split</option>
+                          <option value="detailed">Detailed topic split</option>
+                        </select>
+                        <button
+                          className="button"
+                          disabled={
+                            isAutoSplittingTranscript ||
+                            !editableTranscript.trim() ||
+                            !transcriptConfirmed
+                          }
+                          onClick={() => void autoSplitTranscriptSegments()}
+                          type="button"
+                        >
+                          {isAutoSplittingTranscript
+                            ? "Auto-delineating..."
+                            : "Auto-delineate topic segments"}
+                        </button>
+                      </div>
+                      {displaySegments.length === 0 ? (
+                        <EmptyState text="No segments yet. Confirm the transcript, then split by speaker labels or topic boundaries." />
+                      ) : (
+                        <div className="mini-card soft">
+                          <div className="grid two">
+                            <label className="label">
+                              Segment
+                              <select
+                                className="select"
+                                onChange={(event) =>
+                                  setSelectedSegmentId(event.target.value)
+                                }
+                                value={selectedSegmentId}
+                              >
+                                {displaySegments.map((segment) => (
+                                  <option key={segment.id} value={segment.id}>
+                                    {segment.segmentId} ·{" "}
+                                    {segment.speakerRole ?? "unclear"} ·{" "}
+                                    {segment.topicLabel}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="label">
+                              Segment type
+                              <select
+                                className="select"
+                                onChange={(event) =>
+                                  setSegmentDraftRole(
+                                    event.target.value as SegmentSpeakerRole,
+                                  )
+                                }
+                                value={segmentDraftRole}
+                              >
+                                <option value="participant">Participant</option>
+                                <option value="interviewer">
+                                  Interviewer / prompt only
+                                </option>
+                                <option value="unclear">Unclear / mixed</option>
+                              </select>
+                            </label>
+                          </div>
+                          <label className="label" htmlFor="segment-title">
+                            Segment label
+                          </label>
+                          <input
+                            className="field"
+                            id="segment-title"
+                            onChange={(event) =>
+                              setSegmentDraftTitle(event.target.value)
+                            }
+                            value={segmentDraftTitle}
+                          />
+                          <label className="label" htmlFor="segment-text">
+                            Segment text
+                          </label>
+                          <textarea
+                            className="textarea compact-textarea"
+                            id="segment-text"
+                            onChange={(event) =>
+                              setSegmentDraftText(event.target.value)
+                            }
+                            ref={segmentTextAreaRef}
+                            value={segmentDraftText}
+                          />
+                          <div className="button-row">
+                            <button
+                              className="button primary"
+                              disabled={isSavingSegment || !selectedSegment}
+                              onClick={() => void saveSelectedSegment()}
+                              type="button"
+                            >
+                              {isSavingSegment
+                                ? "Saving..."
+                                : "Save segment edit"}
+                            </button>
+                            <button
+                              className="button"
+                              disabled={
+                                isSavingSegment ||
+                                !selectedSegment ||
+                                segmentDraftRole === "interviewer"
+                              }
+                              onClick={() =>
+                                void saveSelectedSegment(
+                                  "Ready for MU Analysis",
+                                )
+                              }
+                              type="button"
+                            >
+                              Mark ready for MU analysis
+                            </button>
+                            <button
+                              className="button"
+                              disabled={isSavingSegment || !selectedSegment}
+                              onClick={() => void runSegmentAction("split")}
+                              type="button"
+                            >
+                              Split at cursor
+                            </button>
+                            <button
+                              className="button"
+                              disabled={!previousSegment || isSavingSegment}
+                              onClick={() =>
+                                void runSegmentAction("merge", "previous")
+                              }
+                              type="button"
+                            >
+                              Merge previous
+                            </button>
+                            <button
+                              className="button"
+                              disabled={!nextSegment || isSavingSegment}
+                              onClick={() =>
+                                void runSegmentAction("merge", "next")
+                              }
+                              type="button"
+                            >
+                              Merge next
+                            </button>
+                            <button
+                              className="button danger"
+                              disabled={isSavingSegment || !selectedSegment}
+                              onClick={() => void deleteSelectedSegment()}
+                              type="button"
+                            >
+                              Delete segment
+                            </button>
+                          </div>
+                          <p className="small panel-note">
+                            Current selected segment:{" "}
+                            {selectedSegment?.segmentId} · type{" "}
+                            {segmentDraftRole}. Interviewer type is retained for
+                            context but ignored by MU generation.
+                          </p>
+                        </div>
+                      )}
+                    </details>
                   </section>
 
                   <section className="analysis-panel">
-                    <span className="flow-step">2 · Meaning unit delineation</span>
+                    <span className="flow-step">
+                      2 · Meaning unit delineation
+                    </span>
                     <span className="label">Meaning Units</span>
                     <h3>Delineate meaning shifts</h3>
                     <p className="small">
@@ -5763,8 +6606,8 @@ export function GdiqrWorkspace({
                       candidates and excluded by default where detected.
                     </p>
                     <p className="small panel-note">
-                      Accept only the reviewed summaries that accurately
-                      capture the participant meaning.
+                      Accept only the reviewed summaries that accurately capture
+                      the participant meaning.
                     </p>
                     <div className="button-row">
                       <button
@@ -5783,7 +6626,9 @@ export function GdiqrWorkspace({
                       </button>
                       <button
                         className="button"
-                        disabled={isSavingMeaningUnitAction || !transcriptConfirmed}
+                        disabled={
+                          isSavingMeaningUnitAction || !transcriptConfirmed
+                        }
                         onClick={() => void addManualMeaningUnit()}
                         type="button"
                       >
@@ -5807,10 +6652,16 @@ export function GdiqrWorkspace({
                                 onDelete={deleteMeaningUnitFromWorkspace}
                                 onExclude={excludeMeaningUnit}
                                 onMergeNext={(targetUnit) =>
-                                  void mergeMeaningUnitFromCard(targetUnit, "next")
+                                  void mergeMeaningUnitFromCard(
+                                    targetUnit,
+                                    "next",
+                                  )
                                 }
                                 onMergePrevious={(targetUnit) =>
-                                  void mergeMeaningUnitFromCard(targetUnit, "previous")
+                                  void mergeMeaningUnitFromCard(
+                                    targetUnit,
+                                    "previous",
+                                  )
                                 }
                                 onRestore={restoreMeaningUnit}
                                 onReturnToTranscript={returnToTranscriptForUnit}
@@ -5825,26 +6676,37 @@ export function GdiqrWorkspace({
                           {excludedMeaningUnits.length > 0 && (
                             <details className="workbook-details">
                               <summary>
-                                Context/excluded candidates ({excludedMeaningUnits.length})
+                                Context/excluded candidates (
+                                {excludedMeaningUnits.length})
                               </summary>
                               <div className="summary-list">
                                 {excludedMeaningUnits.map((unit) => (
                                   <MeaningUnitReviewCard
                                     key={unit.id}
                                     onAccept={markAccepted}
-                                    onEditExclusionReason={updateExclusionReason}
+                                    onEditExclusionReason={
+                                      updateExclusionReason
+                                    }
                                     onEditExcerpt={updateMeaningUnitExcerpt}
                                     onEditSummary={updateHumanSummary}
                                     onDelete={deleteMeaningUnitFromWorkspace}
                                     onExclude={excludeMeaningUnit}
                                     onMergeNext={(targetUnit) =>
-                                      void mergeMeaningUnitFromCard(targetUnit, "next")
+                                      void mergeMeaningUnitFromCard(
+                                        targetUnit,
+                                        "next",
+                                      )
                                     }
                                     onMergePrevious={(targetUnit) =>
-                                      void mergeMeaningUnitFromCard(targetUnit, "previous")
+                                      void mergeMeaningUnitFromCard(
+                                        targetUnit,
+                                        "previous",
+                                      )
                                     }
                                     onRestore={restoreMeaningUnit}
-                                    onReturnToTranscript={returnToTranscriptForUnit}
+                                    onReturnToTranscript={
+                                      returnToTranscriptForUnit
+                                    }
                                     onSaveExcerpt={saveMeaningUnitExcerpt}
                                     onSaveSummary={saveMeaningUnitHumanSummary}
                                     onSplit={(targetUnit) =>
@@ -5876,7 +6738,7 @@ export function GdiqrWorkspace({
                     onAddMemo={(issue) => {
                       const memo = window.prompt(
                         "Researcher note for this integrity issue:",
-                        issue.researcherMemo ?? ""
+                        issue.researcherMemo ?? "",
                       );
                       if (memo !== null) {
                         void updateReviewerIssue(issue.id, { memo });
@@ -5885,12 +6747,12 @@ export function GdiqrWorkspace({
                     onDismiss={(issue) => {
                       const memo = window.prompt(
                         "Dismissal memo: why is this not a Step 2 integrity concern?",
-                        issue.researcherMemo ?? ""
+                        issue.researcherMemo ?? "",
                       );
                       if (memo !== null) {
                         void updateReviewerIssue(issue.id, {
                           memo,
-                          status: "dismissed"
+                          status: "dismissed",
                         });
                       }
                     }}
@@ -5903,7 +6765,7 @@ export function GdiqrWorkspace({
                       setExpandedReviewIssueIds((current) =>
                         current.includes(issueId)
                           ? current.filter((id) => id !== issueId)
-                          : [...current, issueId]
+                          : [...current, issueId],
                       )
                     }
                     onView={viewReviewerTarget}
@@ -5940,12 +6802,19 @@ export function GdiqrWorkspace({
                     </span>
                     {displayCategories.length > 0 && (
                       <span className="badge blue">
-                        Researcher-confirmed categories: {confirmedCategoryCount} /{" "}
-                        {displayCategories.filter((item) => item.status !== "rejected").length}
+                        Researcher-confirmed categories:{" "}
+                        {confirmedCategoryCount} /{" "}
+                        {
+                          displayCategories.filter(
+                            (item) => item.status !== "rejected",
+                          ).length
+                        }
                       </span>
                     )}
                     {hasFallbackCategoryLabels && (
-                      <span className="badge blue">Assistant status available</span>
+                      <span className="badge blue">
+                        Assistant status available
+                      </span>
                     )}
                   </div>
                 </div>
@@ -5969,15 +6838,21 @@ export function GdiqrWorkspace({
                               <StatusBadge label={unit.humanStatus} />
                             </div>
                             <p className="small">
-                              {unit.humanSummary || unit.aiSummary || unit.excerpt}
+                              {unit.humanSummary ||
+                                unit.aiSummary ||
+                                unit.excerpt}
                             </p>
                             <p className="small">
                               Current categories:{" "}
                               {displayCategories
                                 .filter((category) =>
-                                  category.includedUnitIds.includes(unit.number)
+                                  category.includedUnitIds.includes(
+                                    unit.number,
+                                  ),
                                 )
-                                .map((category) => getCategoryDisplayTitle(category))
+                                .map((category) =>
+                                  getCategoryDisplayTitle(category),
+                                )
                                 .join(", ") || "Unassigned"}
                             </p>
                           </article>
@@ -6003,9 +6878,12 @@ export function GdiqrWorkspace({
                       <button
                         className="button"
                         disabled={
-                          confirmedMeaningUnits.length === 0 || isRunningCategories
+                          confirmedMeaningUnits.length === 0 ||
+                          isRunningCategories
                         }
-                        onClick={() => void runCategories({ modeOverride: "A" })}
+                        onClick={() =>
+                          void runCategories({ modeOverride: "A" })
+                        }
                         type="button"
                       >
                         <Play size={18} />
@@ -6018,7 +6896,9 @@ export function GdiqrWorkspace({
                           hasTemporaryFallbackCategories ||
                           isRunningCategories
                         }
-                        onClick={() => void runCategories({ modeOverride: "B" })}
+                        onClick={() =>
+                          void runCategories({ modeOverride: "B" })
+                        }
                         type="button"
                       >
                         <RefreshCcw size={18} />
@@ -6050,7 +6930,9 @@ export function GdiqrWorkspace({
                               onClick={() =>
                                 void runCategories({
                                   allowFallbackRegenerate: true,
-                                  modeOverride: displayCategories.length ? "B" : "A"
+                                  modeOverride: displayCategories.length
+                                    ? "B"
+                                    : "A",
                                 })
                               }
                               type="button"
@@ -6061,7 +6943,9 @@ export function GdiqrWorkspace({
                             <button
                               className="button"
                               disabled={isRunningCategories}
-                              onClick={() => void acceptTemporaryCategoryDraft()}
+                              onClick={() =>
+                                void acceptTemporaryCategoryDraft()
+                              }
                               type="button"
                             >
                               <Check size={18} />
@@ -6080,7 +6964,10 @@ export function GdiqrWorkspace({
                             A category groups related meaning units that appear
                             to share a common meaning.
                           </p>
-                          <div className="category-structure-diagram" aria-label="Category structure">
+                          <div
+                            className="category-structure-diagram"
+                            aria-label="Category structure"
+                          >
                             <strong>Category</strong>
                             <span>├─ Meaning Unit 1</span>
                             <span>├─ Meaning Unit 2</span>
@@ -6125,14 +7012,16 @@ export function GdiqrWorkspace({
                     onAddMemo={(issue) => {
                       const memo = window.prompt(
                         "Researcher note for this integrity issue:",
-                        issue.researcherMemo ?? ""
+                        issue.researcherMemo ?? "",
                       );
                       if (memo !== null) {
                         void updateReviewerIssue(issue.id, { memo });
                       }
                     }}
                     onDismiss={(issue) =>
-                      void updateReviewerIssue(issue.id, { status: "dismissed" })
+                      void updateReviewerIssue(issue.id, {
+                        status: "dismissed",
+                      })
                     }
                     onResolve={(issue) =>
                       void updateReviewerIssue(issue.id, { status: "resolved" })
@@ -6143,7 +7032,7 @@ export function GdiqrWorkspace({
                       setExpandedReviewIssueIds((current) =>
                         current.includes(issueId)
                           ? current.filter((id) => id !== issueId)
-                          : [...current, issueId]
+                          : [...current, issueId],
                       )
                     }
                     onView={viewReviewerTarget}
@@ -6157,16 +7046,18 @@ export function GdiqrWorkspace({
               <div className="section-body grid">
                 <div className="mini-card soft relationship-structure-card">
                   <span className="flow-step">1 · Relationship Structure</span>
-                  <span className="label">Provisional relationship structure</span>
+                  <span className="label">
+                    Provisional relationship structure
+                  </span>
                   <h3>
                     {integrationStructureTitle ||
                       "Generate or sketch a relationship structure"}
                   </h3>
                   <p className="small">
-                    Integration involves identifying how categories relate to one
-                    another and developing a coherent summary structure. Summary
-                    narratives should explain relationships among categories,
-                    not simply list them.
+                    Integration involves identifying how categories relate to
+                    one another and developing a coherent summary structure.
+                    Summary narratives should explain relationships among
+                    categories, not simply list them.
                   </p>
                   <p className="small">
                     The relationship structure is the primary analytic work in
@@ -6211,16 +7102,21 @@ export function GdiqrWorkspace({
                       onClick={() => void saveIntegrationDraft()}
                       type="button"
                     >
-                      {isSavingIntegration ? "Saving integration..." : "Save integration draft"}
+                      {isSavingIntegration
+                        ? "Saving integration..."
+                        : "Save integration draft"}
                     </button>
                     {integrationSavedAt && (
                       <span className="small">
-                        Last saved: {new Date(integrationSavedAt).toLocaleTimeString()}
+                        Last saved:{" "}
+                        {new Date(integrationSavedAt).toLocaleTimeString()}
                       </span>
                     )}
                   </div>
                   {integrationStructureNotice && (
-                    <p className="small panel-note">{integrationStructureNotice}</p>
+                    <p className="small panel-note">
+                      {integrationStructureNotice}
+                    </p>
                   )}
                   {integrationStructureExplanation && (
                     <label className="label">
@@ -6228,7 +7124,9 @@ export function GdiqrWorkspace({
                       <textarea
                         className="textarea compact-textarea"
                         onChange={(event) => {
-                          setIntegrationStructureExplanation(event.target.value);
+                          setIntegrationStructureExplanation(
+                            event.target.value,
+                          );
                           setIntegrationReviewed(false);
                         }}
                         value={integrationStructureExplanation}
@@ -6259,7 +7157,10 @@ export function GdiqrWorkspace({
                   {reviewedIntegrationCategories.length < 2 ? (
                     <div className="relationship-map-placeholder">
                       <EmptyState text="Not enough reviewed categories to generate an integration structure. Please return to Step 3 and accept or revise categories first." />
-                      <div className="relationship-example-map" aria-hidden="true">
+                      <div
+                        className="relationship-example-map"
+                        aria-hidden="true"
+                      >
                         <div className="example-map-node primary">
                           Reviewed category 1
                         </div>
@@ -6283,8 +7184,8 @@ export function GdiqrWorkspace({
                       <EmptyState text="No draft relationships yet. Generate a provisional structure or add a relationship to begin mapping how categories may connect." />
                       <p className="small">
                         This map should show possible relationships among
-                        categories. Evidence MUs appear only as secondary
-                        review references under each relationship.
+                        categories. Evidence MUs appear only as secondary review
+                        references under each relationship.
                       </p>
                     </div>
                   ) : (
@@ -6313,18 +7214,23 @@ export function GdiqrWorkspace({
                     }}
                     onConfirm={() => {
                       if (!narrative.trim()) {
-                        setApiStatus("Write or draft a summary narrative before confirming.");
+                        setApiStatus(
+                          "Write or draft a summary narrative before confirming.",
+                        );
                         return;
                       }
                       if (hasSensitivePlaceholder(narrative)) {
-                        setApiStatus("Summary narrative contains sensitive placeholders. Review before confirming.");
+                        setApiStatus(
+                          "Summary narrative contains sensitive placeholders. Review before confirming.",
+                        );
                         return;
                       }
                       setIntegrationReviewed(true);
                       void persistIntegrationWorkspace({
-                        action: "Confirmed researcher-reviewed integration narrative",
+                        action:
+                          "Confirmed researcher-reviewed integration narrative",
                         actionType: "relationship_updated",
-                        reviewed: true
+                        reviewed: true,
                       });
                     }}
                     onNoteChange={setIntegrationNote}
@@ -6363,7 +7269,12 @@ export function GdiqrWorkspace({
                       <ShieldCheck size={18} />
                       Review category and narrative integrity
                     </button>
-                    <button className="button" onClick={() => exportWorkspace("json")} type="button">
+                    <button
+                      className="button"
+                      disabled={Boolean(isExportingFormat)}
+                      onClick={() => void exportWorkspace("json")}
+                      type="button"
+                    >
                       <Download size={18} />
                       Export audit trail
                     </button>
@@ -6394,7 +7305,7 @@ export function GdiqrWorkspace({
                       onAddMemo={(issue) => {
                         const memo = window.prompt(
                           "Researcher note for this integrity issue:",
-                          issue.researcherMemo ?? ""
+                          issue.researcherMemo ?? "",
                         );
                         if (memo !== null) {
                           void updateReviewerIssue(issue.id, { memo });
@@ -6403,17 +7314,19 @@ export function GdiqrWorkspace({
                       onDismiss={(issue) => {
                         const memo = window.prompt(
                           "Dismissal memo: why is this not a Step 2 integrity concern?",
-                          issue.researcherMemo ?? ""
+                          issue.researcherMemo ?? "",
                         );
                         if (memo !== null) {
                           void updateReviewerIssue(issue.id, {
                             memo,
-                            status: "dismissed"
+                            status: "dismissed",
                           });
                         }
                       }}
                       onResolve={(issue) =>
-                        void updateReviewerIssue(issue.id, { status: "resolved" })
+                        void updateReviewerIssue(issue.id, {
+                          status: "resolved",
+                        })
                       }
                       onRun={() => void runReviewer("meaning-units")}
                       onToggle={() => setMuReviewOpen((value) => !value)}
@@ -6421,7 +7334,7 @@ export function GdiqrWorkspace({
                         setExpandedReviewIssueIds((current) =>
                           current.includes(issueId)
                             ? current.filter((id) => id !== issueId)
-                            : [...current, issueId]
+                            : [...current, issueId],
                         )
                       }
                       onView={viewReviewerTarget}
@@ -6440,17 +7353,21 @@ export function GdiqrWorkspace({
                       onAddMemo={(issue) => {
                         const memo = window.prompt(
                           "Researcher note for this integrity issue:",
-                          issue.researcherMemo ?? ""
+                          issue.researcherMemo ?? "",
                         );
                         if (memo !== null) {
                           void updateReviewerIssue(issue.id, { memo });
                         }
                       }}
                       onDismiss={(issue) =>
-                        void updateReviewerIssue(issue.id, { status: "dismissed" })
+                        void updateReviewerIssue(issue.id, {
+                          status: "dismissed",
+                        })
                       }
                       onResolve={(issue) =>
-                        void updateReviewerIssue(issue.id, { status: "resolved" })
+                        void updateReviewerIssue(issue.id, {
+                          status: "resolved",
+                        })
                       }
                       onRun={() => void runReviewer("categories")}
                       onToggle={() => setCategoryReviewOpen((value) => !value)}
@@ -6458,7 +7375,7 @@ export function GdiqrWorkspace({
                         setExpandedReviewIssueIds((current) =>
                           current.includes(issueId)
                             ? current.filter((id) => id !== issueId)
-                            : [...current, issueId]
+                            : [...current, issueId],
                         )
                       }
                       onView={viewReviewerTarget}
@@ -6483,30 +7400,34 @@ export function GdiqrWorkspace({
                 <div className="grid three">
                   {[
                     {
-                      description: "Current analysis record data for backup or audit.",
+                      description:
+                        "Current analysis record data for backup or audit.",
                       format: "json" as const,
-                      label: "JSON"
+                      label: "JSON",
                     },
                     {
                       description: "Meaning-unit table for spreadsheet review.",
                       format: "csv" as const,
-                      label: "CSV"
+                      label: "CSV",
                     },
                     {
-                      description: "Plain-text analysis record for quick review.",
+                      description:
+                        "Plain-text analysis record for quick review.",
                       format: "txt" as const,
-                      label: "TXT"
+                      label: "TXT",
                     },
                     {
-                      description: "Formatted Word document containing the complete analysis record.",
+                      description:
+                        "Formatted Word document containing the complete analysis record.",
                       format: "docx" as const,
-                      label: "DOCX"
+                      label: "DOCX",
                     },
                     {
-                      description: "Open a printable report that can be saved as PDF from the browser print dialog.",
+                      description:
+                        "Open a printable report that can be saved as PDF from the browser print dialog.",
                       format: "pdf" as const,
-                      label: "PDF / print"
-                    }
+                      label: "PDF / print",
+                    },
                   ].map((item) => (
                     <div className="mini-card" key={item.format}>
                       <Download size={26} />
@@ -6514,14 +7435,16 @@ export function GdiqrWorkspace({
                       <p className="small">{item.description}</p>
                       <button
                         className="button"
-                        disabled={!canExport}
-                        onClick={() => exportWorkspace(item.format)}
+                        disabled={!canExport || Boolean(isExportingFormat)}
+                        onClick={() => void exportWorkspace(item.format)}
                         type="button"
                       >
                         <Download size={18} />
-                        {item.format === "pdf"
-                          ? "Open printable report"
-                          : `Download ${item.label}`}
+                        {isExportingFormat === item.format
+                          ? "Exporting..."
+                          : item.format === "pdf"
+                            ? "Open printable report"
+                            : `Download ${item.label}`}
                       </button>
                     </div>
                   ))}
@@ -6529,9 +7452,10 @@ export function GdiqrWorkspace({
                 <div className="mini-card soft">
                   <span className="label">Review trail</span>
                   <p className="small">
-                    Exports may contain assistant-supported draft material. Review all outputs
-                    against transcript evidence before using them in reports,
-                    publications, supervision, or teaching materials.
+                    Exports may contain assistant-supported draft material.
+                    Review all outputs against transcript evidence before using
+                    them in reports, publications, supervision, or teaching
+                    materials.
                   </p>
                   {displayExportRecords.length > 0 && (
                     <div className="mini-card soft">
@@ -6543,9 +7467,12 @@ export function GdiqrWorkspace({
                               {new Date(record.generatedAt).toLocaleString()}
                             </span>
                             <div>
-                              <strong>{record.format.toUpperCase()} export</strong>
+                              <strong>
+                                {record.format.toUpperCase()} export
+                              </strong>
                               <p className="small">
-                                {record.storagePath || "Downloaded locally / generated from browser"}
+                                {record.storagePath ||
+                                  "Downloaded locally / generated from browser"}
                               </p>
                             </div>
                           </div>
@@ -6577,8 +7504,8 @@ export function GdiqrWorkspace({
             <div className="workbook-footer">
               <button
                 className="button"
-                disabled={!canExport}
-                onClick={() => exportWorkspace("json")}
+                disabled={!canExport || Boolean(isExportingFormat)}
+                onClick={() => void exportWorkspace("json")}
                 type="button"
               >
                 <Archive size={18} />
@@ -6603,8 +7530,226 @@ export function GdiqrWorkspace({
   );
 }
 
+function WorkflowErrorPanel({
+  message,
+  onClear,
+  onRetry,
+  retryAvailable,
+}: {
+  message: string;
+  onClear: () => void;
+  onRetry: () => void;
+  retryAvailable: boolean;
+}) {
+  return (
+    <div className="mini-card warning-card" role="alert">
+      <div className="category-header">
+        <div>
+          <span className="label">Recoverable error</span>
+          <p className="small">{message}</p>
+        </div>
+        <div className="button-row">
+          {retryAvailable && (
+            <button className="button" onClick={onRetry} type="button">
+              Retry
+            </button>
+          )}
+          <button className="button" onClick={onClear} type="button">
+            Dismiss
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GuidanceChatPanel({
+  activeStep,
+  isLoading,
+  messages,
+  onAsk,
+  onQuestionChange,
+  onSaveMemo,
+  question,
+  savedMemoCount,
+}: {
+  activeStep: WorkflowStep;
+  isLoading: boolean;
+  messages: GuidanceMessage[];
+  onAsk: () => void;
+  onQuestionChange: (value: string) => void;
+  onSaveMemo: (message: GuidanceMessage) => void;
+  question: string;
+  savedMemoCount: number;
+}) {
+  return (
+    <details className="workbook-details guidance-chat-panel">
+      <summary>Methodological guidance chat</summary>
+      <div className="mini-card soft">
+        <span className="label">
+          Current step: {getStepShortLabel(activeStep)}
+        </span>
+        <p className="small">
+          Ask reflective process questions. The guide can suggest checks,
+          prompts, and possible issues, but it does not produce final coding or
+          final interpretation.
+        </p>
+        <textarea
+          className="textarea compact-textarea"
+          onChange={(event) => onQuestionChange(event.target.value)}
+          placeholder="Example: Is this meaning unit too interpretive? What should I check before moving to Step 3?"
+          value={question}
+        />
+        <div className="button-row">
+          <button
+            className="button primary"
+            disabled={isLoading || !question.trim()}
+            onClick={onAsk}
+            type="button"
+          >
+            {isLoading ? "Preparing guidance..." : "Ask guidance question"}
+          </button>
+          <span className="small">Saved guidance memos: {savedMemoCount}</span>
+        </div>
+      </div>
+      {messages.length === 0 ? (
+        <EmptyState text="No guidance questions yet. Ask a methodological process question when you are unsure what to check next." />
+      ) : (
+        <div className="summary-list">
+          {messages.slice(0, 4).map((message) => (
+            <article className="summary-card" key={message.id}>
+              <div className="category-header">
+                <div>
+                  <span className="label">
+                    {getStepShortLabel(message.step)} ·{" "}
+                    {new Date(message.createdAt).toLocaleTimeString()}
+                  </span>
+                  <strong>{message.question}</strong>
+                </div>
+                <StatusBadge
+                  label={message.saved ? "Saved memo" : "Guidance draft"}
+                />
+              </div>
+              <p className="small preserve-lines">{message.answer}</p>
+              <button
+                className="button"
+                disabled={message.saved}
+                onClick={() => onSaveMemo(message)}
+                type="button"
+              >
+                {message.saved
+                  ? "Saved as memo"
+                  : "Save useful guidance as memo"}
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
+    </details>
+  );
+}
+
+function buildMethodologicalGuidanceAnswer({
+  activeStep,
+  categoryCount,
+  confirmedMeaningUnitCount,
+  hasTranscript,
+  question,
+  transcriptConfirmed,
+}: {
+  activeStep: WorkflowStep;
+  categoryCount: number;
+  confirmedMeaningUnitCount: number;
+  hasTranscript: boolean;
+  question: string;
+  transcriptConfirmed: boolean;
+}) {
+  const lowerQuestion = question.toLowerCase();
+  const boundaryReminder =
+    "Boundary: this is methodological guidance only. Treat the response as prompts for researcher judgement, not as final analysis.";
+  const stepPrompt = getStepGuidance(activeStep);
+  const checks: string[] = [];
+
+  if (activeStep === "pre-analysis") {
+    checks.push(
+      hasTranscript
+        ? "Check whether the transcript is anonymised, readable, and actually relevant to the research question."
+        : "Prepare or paste an anonymised transcript before asking for analytic support.",
+      transcriptConfirmed
+        ? "Because the transcript is confirmed, future edits should trigger re-confirmation before analysis."
+        : "Do not move into meaning-unit generation until the reviewed transcript is confirmed.",
+    );
+  }
+
+  if (activeStep === "understanding") {
+    checks.push(
+      "Compare each meaning-unit boundary with the participant account: is it one meaning, or does it contain two separable meanings?",
+      "A summary may be too interpretive if it adds motives, causes, or emotions not visible in the excerpt.",
+      "Interviewer-only segments should usually stay as context and should not become analytic MUs.",
+    );
+  }
+
+  if (activeStep === "categorizing") {
+    checks.push(
+      confirmedMeaningUnitCount > 0
+        ? `You have ${confirmedMeaningUnitCount} accepted MU(s). Check whether each category is grounded in more than a label similarity.`
+        : "Accept researcher-reviewed meaning units before treating any grouping as a category.",
+      "A useful category name should describe the shared meaning across MUs, not just the topic domain.",
+      categoryCount > 0
+        ? "Check category overlap: could one MU reasonably fit multiple categories, and what does that imply?"
+        : "Start with a small number of provisional evidence clusters, then name them after comparison.",
+    );
+  }
+
+  if (activeStep === "integrating") {
+    checks.push(
+      "Ask how categories relate: sequence, contrast, support, tension, condition, or shared context.",
+      "The integration narrative should explain relationships among categories rather than simply listing them.",
+      "Check whether each relationship has evidence MU numbers, not only an intuitive link.",
+    );
+  }
+
+  if (activeStep === "integrity" || activeStep === "export") {
+    checks.push(
+      "Check whether the audit trail makes researcher decisions visible enough for supervision or replication.",
+      "Look for unresolved issues, weak evidence support, over-broad categories, and missing reflexive notes.",
+      "Before export, confirm that draft assistant text is clearly labelled and researcher-reviewed.",
+    );
+  }
+
+  if (lowerQuestion.includes("name") || lowerQuestion.includes("category")) {
+    checks.push(
+      "For naming: try a concise phrase that captures the shared meaning, then test it against every included MU.",
+    );
+  }
+
+  if (
+    lowerQuestion.includes("interpretive") ||
+    lowerQuestion.includes("too much")
+  ) {
+    checks.push(
+      "For interpretation level: separate what the participant explicitly says from your tentative inference, then document the inference as provisional.",
+    );
+  }
+
+  return [
+    boundaryReminder,
+    "",
+    `Step-specific focus: ${stepPrompt.meaning}`,
+    "",
+    "Suggested checks:",
+    ...checks.map((check) => `- ${check}`),
+    "",
+    "Possible memo: Record what you checked, what you changed, and why you decided it was acceptable to continue.",
+  ].join("\n");
+}
+
+function getStepShortLabel(step: WorkflowStep) {
+  return steps.find((item) => item.id === step)?.label ?? step;
+}
+
 function TranscriptReviewHistory({
-  transcriptRecords
+  transcriptRecords,
 }: {
   transcriptRecords: TranscriptRecord[];
 }) {
@@ -6626,7 +7771,8 @@ function TranscriptReviewHistory({
       <span className="label">Transcript review record</span>
       <p className="small">
         Original upload, edited review drafts, and confirmed transcript versions
-        are stored separately for audit and export. Latest: {latest.versionLabel}
+        are stored separately for audit and export. Latest:{" "}
+        {latest.versionLabel}
         {latest.status ? ` · ${latest.status}` : ""}.
       </p>
       <div className="timeline compact-timeline">
@@ -6638,7 +7784,10 @@ function TranscriptReviewHistory({
             <div>
               <strong>{record.versionLabel}</strong>
               <p className="small">
-                {record.status ?? "Saved"} · raw {record.rawContent ? "saved" : "not saved"} · edited {record.cleanedContent ? "saved" : "not saved"} · confirmed {record.finalContent ? "saved" : "not saved"}
+                {record.status ?? "Saved"} · raw{" "}
+                {record.rawContent ? "saved" : "not saved"} · edited{" "}
+                {record.cleanedContent ? "saved" : "not saved"} · confirmed{" "}
+                {record.finalContent ? "saved" : "not saved"}
               </p>
             </div>
           </div>
@@ -6646,14 +7795,13 @@ function TranscriptReviewHistory({
       </div>
     </div>
   );
-
 }
 
 function getRecommendedActiveStep({
   categories,
   integratedNarrative,
   meaningUnits,
-  project
+  project,
 }: {
   categories: CategoryNode[];
   integratedNarrative: string;
@@ -6699,7 +7847,7 @@ function StatusBadge({ label }: { label: string }) {
 
 function getSegmentDisplayStatus(
   segment: TranscriptSegment,
-  counts?: { accepted: number; excluded: number; total: number }
+  counts?: { accepted: number; excluded: number; total: number },
 ) {
   const total = counts?.total ?? 0;
   const accepted = counts?.accepted ?? 0;
@@ -6727,7 +7875,7 @@ function getSegmentDisplayStatus(
 function formatSegmentMeaningUnitCounts({
   accepted,
   excluded,
-  total
+  total,
 }: {
   accepted: number;
   excluded: number;
@@ -6785,7 +7933,7 @@ function GdiqrTips({ step }: { step: WorkflowStep }) {
 function GuidanceCard({
   emphasis = false,
   text,
-  title
+  title,
 }: {
   emphasis?: boolean;
   text: string;
@@ -6804,7 +7952,7 @@ function MethodologicalIntegrityGuide({
   categoryCount,
   issueCount,
   meaningUnitCount,
-  transcriptConfirmed
+  transcriptConfirmed,
 }: {
   activeStep: WorkflowStep;
   categoryCount: number;
@@ -6857,7 +8005,7 @@ function buildIntegrityReviewItemsFromState({
   narrative,
   project,
   transcriptConfirmed,
-  unassignedMeaningUnits
+  unassignedMeaningUnits,
 }: {
   auditEvents: AuditEvent[];
   categories: CategoryNode[];
@@ -6875,36 +8023,36 @@ function buildIntegrityReviewItemsFromState({
 }): IntegrityReviewItem[] {
   const now = new Date().toISOString();
   const effectiveCategories = categories.filter(
-    (category) => category.status !== "rejected"
+    (category) => category.status !== "rejected",
   );
   const unreviewedMeaningUnits = meaningUnits.filter(
-    (unit) => !unit.analysisExcluded && unit.humanStatus !== "Accepted"
+    (unit) => !unit.analysisExcluded && unit.humanStatus !== "Accepted",
   );
   const unjustifiedExcludedUnits = excludedMeaningUnits.filter(
-    (unit) => !unit.exclusionReason?.trim()
+    (unit) => !unit.exclusionReason?.trim(),
   );
   const unsupportedCategories = effectiveCategories.filter(
-    (category) => category.includedUnitIds.length === 0
+    (category) => category.includedUnitIds.length === 0,
   );
   const broadCategories = effectiveCategories.filter((category) =>
-    categoryTitleNeedsIntegrityReview(category)
+    categoryTitleNeedsIntegrityReview(category),
   );
   const unresolvedReviewerIssues = [
     ...meaningUnitReviewIssues,
-    ...categoryReviewIssues
+    ...categoryReviewIssues,
   ].filter((issue) => issue.status === "unresolved");
   const interpretiveSummaryUnits = confirmedMeaningUnits.filter((unit) =>
     summaryPossiblyGoesBeyondExcerpt(
       unit.humanSummary || unit.aiSummary || "",
-      unit.excerpt
-    )
+      unit.excerpt,
+    ),
   );
 
   const buildItem = ({
     checkKey,
     prompt,
     response,
-    status
+    status,
   }: {
     checkKey: string;
     prompt: string;
@@ -6920,7 +8068,7 @@ function buildIntegrityReviewItemsFromState({
     researcherNote: "",
     generatedFromState: true,
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   });
 
   return [
@@ -6930,7 +8078,7 @@ function buildIntegrityReviewItemsFromState({
       response: transcriptConfirmed
         ? "Transcript is marked as reviewed and confirmed for analysis."
         : "Transcript has not yet been confirmed for analysis.",
-      status: transcriptConfirmed ? "pass" : "issue"
+      status: transcriptConfirmed ? "pass" : "issue",
     }),
     buildItem({
       checkKey: "meaning_units_reviewed",
@@ -6946,7 +8094,7 @@ function buildIntegrityReviewItemsFromState({
           ? "not_checked"
           : unreviewedMeaningUnits.length === 0
             ? "pass"
-            : "issue"
+            : "issue",
     }),
     buildItem({
       checkKey: "uncategorised_accepted_meaning_units",
@@ -6962,7 +8110,7 @@ function buildIntegrityReviewItemsFromState({
           ? "not_checked"
           : unassignedMeaningUnits.length === 0
             ? "pass"
-            : "issue"
+            : "issue",
     }),
     buildItem({
       checkKey: "unsupported_categories",
@@ -6978,7 +8126,7 @@ function buildIntegrityReviewItemsFromState({
           ? "not_checked"
           : unsupportedCategories.length === 0
             ? "pass"
-            : "issue"
+            : "issue",
     }),
     buildItem({
       checkKey: "excluded_items_justified",
@@ -6987,7 +8135,7 @@ function buildIntegrityReviewItemsFromState({
         unjustifiedExcludedUnits.length === 0
           ? "Excluded meaning units have researcher reasons or no exclusions are present."
           : `${unjustifiedExcludedUnits.length} excluded meaning unit(s) do not have a reason.`,
-      status: unjustifiedExcludedUnits.length === 0 ? "pass" : "issue"
+      status: unjustifiedExcludedUnits.length === 0 ? "pass" : "issue",
     }),
     buildItem({
       checkKey: "category_names_specificity",
@@ -7003,32 +8151,36 @@ function buildIntegrityReviewItemsFromState({
           ? "not_checked"
           : broadCategories.length === 0
             ? "pass"
-            : "issue"
+            : "issue",
     }),
     buildItem({
       checkKey: "potential_overinterpretation",
       prompt: "Are there potential over-interpretations?",
       response:
-        unresolvedReviewerIssues.length === 0 && interpretiveSummaryUnits.length === 0
+        unresolvedReviewerIssues.length === 0 &&
+        interpretiveSummaryUnits.length === 0
           ? "No unresolved reviewer issue or summary over-interpretation flag is currently active."
           : `${unresolvedReviewerIssues.length} unresolved reviewer issue(s) and ${interpretiveSummaryUnits.length} accepted summary/summaries may need an interpretation check.`,
       status:
-        unresolvedReviewerIssues.length === 0 && interpretiveSummaryUnits.length === 0
+        unresolvedReviewerIssues.length === 0 &&
+        interpretiveSummaryUnits.length === 0
           ? "pass"
-          : "issue"
+          : "issue",
     }),
     buildItem({
       checkKey: "interpretation_participant_wording",
-      prompt: "Is researcher interpretation clearly separated from participant wording?",
+      prompt:
+        "Is researcher interpretation clearly separated from participant wording?",
       response:
         interpretiveSummaryUnits.length === 0
           ? "Accepted summaries do not currently trigger the over-interpretation wording check."
           : `${interpretiveSummaryUnits.length} accepted meaning-unit summary/summaries may need closer grounding in the excerpt.`,
-      status: interpretiveSummaryUnits.length === 0 ? "pass" : "issue"
+      status: interpretiveSummaryUnits.length === 0 ? "pass" : "issue",
     }),
     buildItem({
       checkKey: "integration_reviewed",
-      prompt: "Has the integration narrative been reviewed against category evidence?",
+      prompt:
+        "Has the integration narrative been reviewed against category evidence?",
       response:
         effectiveCategories.length === 0
           ? "No active categories are available for integration yet."
@@ -7040,7 +8192,7 @@ function buildIntegrityReviewItemsFromState({
           ? "not_checked"
           : integrationReviewed && narrative.trim()
             ? "pass"
-            : "issue"
+            : "issue",
     }),
     buildItem({
       checkKey: "clear_audit_trail",
@@ -7049,17 +8201,17 @@ function buildIntegrityReviewItemsFromState({
         auditEvents.length > 0
           ? `${auditEvents.length} audit event(s) are available for export.`
           : "No audit events are currently visible.",
-      status: auditEvents.length > 0 ? "pass" : "issue"
-    })
+      status: auditEvents.length > 0 ? "pass" : "issue",
+    }),
   ];
 }
 
 function mergeIntegrityReviewItems(
   generatedItems: IntegrityReviewItem[],
-  storedItems: IntegrityReviewItem[]
+  storedItems: IntegrityReviewItem[],
 ) {
   const storedByCheckKey = new Map(
-    storedItems.map((item) => [item.checkKey, item])
+    storedItems.map((item) => [item.checkKey, item]),
   );
   const merged = generatedItems.map((generated) => {
     const stored = storedByCheckKey.get(generated.checkKey);
@@ -7076,13 +8228,13 @@ function mergeIntegrityReviewItems(
           ? stored.status
           : generated.status,
       createdAt: stored.createdAt || generated.createdAt,
-      updatedAt: stored.updatedAt || generated.updatedAt
+      updatedAt: stored.updatedAt || generated.updatedAt,
     } satisfies IntegrityReviewItem;
   });
 
   const generatedKeys = new Set(generatedItems.map((item) => item.checkKey));
   const customStoredItems = storedItems.filter(
-    (item) => !generatedKeys.has(item.checkKey)
+    (item) => !generatedKeys.has(item.checkKey),
   );
   return [...merged, ...customStoredItems];
 }
@@ -7093,7 +8245,7 @@ function formatIntegrityStatus(status: IntegrityReviewItemStatus) {
     issue: "Issue",
     not_checked: "Not checked",
     pass: "Passed",
-    resolved: "Resolved"
+    resolved: "Resolved",
   };
   return labels[status] ?? status;
 }
@@ -7122,7 +8274,7 @@ function MethodologicalIntegrityChecklist({
   lastSavedAt,
   onRefresh,
   onSave,
-  onUpdate
+  onUpdate,
 }: {
   isSaving: boolean;
   items: IntegrityReviewItem[];
@@ -7131,12 +8283,18 @@ function MethodologicalIntegrityChecklist({
   onSave: () => void;
   onUpdate: (
     itemId: string,
-    updates: Partial<Pick<IntegrityReviewItem, "researcherNote" | "response" | "status">>
+    updates: Partial<
+      Pick<IntegrityReviewItem, "researcherNote" | "response" | "status">
+    >,
   ) => void;
 }) {
   const issueCount = items.filter((item) => item.status === "issue").length;
-  const resolvedCount = items.filter((item) => item.status === "resolved").length;
-  const uncheckedCount = items.filter((item) => item.status === "not_checked").length;
+  const resolvedCount = items.filter(
+    (item) => item.status === "resolved",
+  ).length;
+  const uncheckedCount = items.filter(
+    (item) => item.status === "not_checked",
+  ).length;
 
   return (
     <div className="mini-card">
@@ -7166,7 +8324,9 @@ function MethodologicalIntegrityChecklist({
           onClick={onSave}
           type="button"
         >
-          {isSaving ? "Saving review..." : "Save methodological integrity review"}
+          {isSaving
+            ? "Saving review..."
+            : "Save methodological integrity review"}
         </button>
         {lastSavedAt && (
           <span className="small">
@@ -7180,7 +8340,9 @@ function MethodologicalIntegrityChecklist({
             <div className="category-header">
               <div>
                 <strong>{item.prompt}</strong>
-                <p className="small">{item.response || "No response recorded yet."}</p>
+                <p className="small">
+                  {item.response || "No response recorded yet."}
+                </p>
               </div>
               <StatusBadge label={formatIntegrityStatus(item.status)} />
             </div>
@@ -7191,7 +8353,7 @@ function MethodologicalIntegrityChecklist({
                   className="select"
                   onChange={(event) =>
                     onUpdate(item.id, {
-                      status: event.target.value as IntegrityReviewItemStatus
+                      status: event.target.value as IntegrityReviewItemStatus,
                     })
                   }
                   value={item.status}
@@ -7241,32 +8403,42 @@ function AuditTrailPanel({ auditEvents }: { auditEvents: AuditEvent[] }) {
           <span className="label">Audit trail</span>
           <h3>Visible research decision trail</h3>
           <p className="small">
-            Audit events show AI-generated suggestions separately from researcher
-            decisions. The full trail is included in JSON and text exports.
+            Audit events show AI-generated suggestions separately from
+            researcher decisions. The full trail is included in JSON and text
+            exports.
           </p>
         </div>
-        <StatusBadge label={`${auditEvents.length} event${auditEvents.length === 1 ? "" : "s"}`} />
+        <StatusBadge
+          label={`${auditEvents.length} event${auditEvents.length === 1 ? "" : "s"}`}
+        />
       </div>
       {auditEvents.length === 0 ? (
         <EmptyState text="No audit events yet." />
       ) : (
         <div className="timeline">
-          {auditEvents.slice().reverse().slice(0, 20).map((event) => (
-            <div className="timeline-item" key={event.id}>
-              <span className="mono small">{event.timestamp}</span>
-              <div>
-                <strong>
-                  {event.actor}: {event.action}
-                </strong>
-                <p className="small">
-                  {event.step ?? "unknown step"} · {event.actionType ?? "other"} · {event.target}
-                </p>
-                {event.researcherNote && (
-                  <p className="small">Researcher note: {event.researcherNote}</p>
-                )}
+          {auditEvents
+            .slice()
+            .reverse()
+            .slice(0, 20)
+            .map((event) => (
+              <div className="timeline-item" key={event.id}>
+                <span className="mono small">{event.timestamp}</span>
+                <div>
+                  <strong>
+                    {event.actor}: {event.action}
+                  </strong>
+                  <p className="small">
+                    {event.step ?? "unknown step"} ·{" "}
+                    {event.actionType ?? "other"} · {event.target}
+                  </p>
+                  {event.researcherNote && (
+                    <p className="small">
+                      Researcher note: {event.researcherNote}
+                    </p>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
         </div>
       )}
     </div>
@@ -7275,7 +8447,7 @@ function AuditTrailPanel({ auditEvents }: { auditEvents: AuditEvent[] }) {
 
 function StatusLine({
   label,
-  status
+  status,
 }: {
   label: string;
   status: "Passed" | "Needs review" | "Not addressed";
@@ -7294,13 +8466,13 @@ const segmentStatuses: SegmentStatus[] = [
   "Ready for MU Analysis",
   "Analysed",
   "Needs Revision",
-  "Completed"
+  "Completed",
 ];
 
 function ContextPreview({
   current,
   next,
-  previous
+  previous,
 }: {
   current: TranscriptSegment;
   next: TranscriptSegment | null;
@@ -7318,7 +8490,7 @@ function ContextPreview({
 function ContextItem({
   current = false,
   label,
-  segment
+  segment,
 }: {
   current?: boolean;
   label: string;
@@ -7353,7 +8525,7 @@ function normaliseResearcherFacingText(value: string) {
   return value
     .replace(
       /Local-only mode:\s*transcript data is processed and stored within the local environment\.?/gi,
-      ""
+      "",
     )
     .trim();
 }
@@ -7362,13 +8534,15 @@ function buildLocalTranscriptSegment({
   caseId,
   createdBy = "manual",
   segmentNumber,
+  speakerRole = "unclear",
   splittingMode,
   text,
-  topicLabel
+  topicLabel,
 }: {
   caseId: string;
   createdBy?: "auto" | "manual";
   segmentNumber: number;
+  speakerRole?: SegmentSpeakerRole;
   splittingMode?: AutoSegmentMode;
   text: string;
   topicLabel?: string;
@@ -7380,14 +8554,15 @@ function buildLocalTranscriptSegment({
     id: `local-seg-${String(segmentNumber).padStart(3, "0")}-${Date.now()}`,
     segmentId: `SEG-${String(segmentNumber).padStart(3, "0")}`,
     segmentNumber,
-    speakerInfo: "Local draft segment",
+    speakerInfo: topicLabel ?? "Local draft segment",
+    speakerRole,
     sourceTranscriptId: "active-transcript",
     splittingMode,
     startingMuNumber: (segmentNumber - 1) * 100 + 1,
     startTimestamp: "00:00",
     status: "Needs Review",
     text,
-    topicLabel: topicLabel ?? `Segment ${segmentNumber}`
+    topicLabel: topicLabel ?? `Segment ${segmentNumber}`,
   };
 }
 
@@ -7396,7 +8571,7 @@ function renumberLocalSegments(segments: TranscriptSegment[]) {
     ...segment,
     segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
     segmentNumber: index + 1,
-    startingMuNumber: index * 100 + 1
+    startingMuNumber: index * 100 + 1,
   }));
 }
 
@@ -7413,22 +8588,25 @@ function isConfirmedMeaningUnit(unit: MeaningUnit) {
   return (
     !unit.analysisExcluded &&
     unit.humanStatus === "Accepted" &&
-    (!containsNonTranscriptMaterial(unit.excerpt) || Boolean(unit.exclusionReason?.trim()))
+    (!containsNonTranscriptMaterial(unit.excerpt) ||
+      Boolean(unit.exclusionReason?.trim()))
   );
 }
 
 function normalizeMeaningUnitNumbersForSegments(
   units: MeaningUnit[],
-  segments: TranscriptSegment[]
+  segments: TranscriptSegment[],
 ) {
   const segmentOrder = new Map(
-    segments.map((segment, index) => [segment.segmentId, index])
+    segments.map((segment, index) => [segment.segmentId, index]),
   );
 
   return units
     .sort((left, right) => {
-      const leftSegment = segmentOrder.get(left.segmentId) ?? Number.MAX_SAFE_INTEGER;
-      const rightSegment = segmentOrder.get(right.segmentId) ?? Number.MAX_SAFE_INTEGER;
+      const leftSegment =
+        segmentOrder.get(left.segmentId) ?? Number.MAX_SAFE_INTEGER;
+      const rightSegment =
+        segmentOrder.get(right.segmentId) ?? Number.MAX_SAFE_INTEGER;
       if (leftSegment !== rightSegment) {
         return leftSegment - rightSegment;
       }
@@ -7436,12 +8614,12 @@ function normalizeMeaningUnitNumbersForSegments(
     })
     .map((unit, index) => ({
       ...unit,
-      number: index + 1
+      number: index + 1,
     }));
 }
 
 function getMeaningUnitValidationFlags(
-  unit: MeaningUnit
+  unit: MeaningUnit,
 ): MeaningUnitValidationFlag[] {
   const flags: MeaningUnitValidationFlag[] = [];
   const reviewedSummary = (unit.humanSummary || "").trim();
@@ -7450,7 +8628,10 @@ function getMeaningUnitValidationFlags(
   const speaker = unit.speaker.toLowerCase();
 
   if (unit.uncertainty?.toLowerCase().includes("rule-based draft")) {
-    flags.push({ label: "Rule-based draft — review required", tone: "warning" });
+    flags.push({
+      label: "Rule-based draft — review required",
+      tone: "warning",
+    });
   }
   if (
     unit.uncertainty?.toLowerCase().includes("summary needs researcher review")
@@ -7467,7 +8648,10 @@ function getMeaningUnitValidationFlags(
     flags.push({ label: "Meaning unit may be incomplete", tone: "danger" });
   }
   if (reviewedSummary && summaryIsTooCloseToExcerpt(reviewedSummary, excerpt)) {
-    flags.push({ label: "Summary may be too close to excerpt", tone: "warning" });
+    flags.push({
+      label: "Summary may be too close to excerpt",
+      tone: "warning",
+    });
   }
   if (reviewedSummary && summaryIsTooGeneric(reviewedSummary)) {
     flags.push({ label: "Summary too generic", tone: "warning" });
@@ -7492,7 +8676,10 @@ function getMeaningUnitValidationFlags(
     flags.push({ label: "Source reference missing", tone: "danger" });
   }
   if (containsNonTranscriptMaterial(excerpt)) {
-    flags.push({ label: "Possible non-transcript material included", tone: "danger" });
+    flags.push({
+      label: "Possible non-transcript material included",
+      tone: "danger",
+    });
   }
 
   return flags;
@@ -7507,7 +8694,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
     severity: ReviewerComment["severity"],
     comment: string,
     suggestedAction: string,
-    targetType: ReviewerComment["targetType"] = "meaning_unit"
+    targetType: ReviewerComment["targetType"] = "meaning_unit",
   ) => {
     issues.push({
       agent: "Meaning Unit Integrity Support",
@@ -7524,7 +8711,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
       target: `MU ${unit.number}`,
       targetId: `MU${unit.number}`,
       targetType,
-      workspace: "meaning-units"
+      workspace: "meaning-units",
     });
   };
 
@@ -7542,7 +8729,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "warning",
         "This MU does not yet have a researcher-reviewed summary.",
         "What concise participant-close wording best captures this MU?",
-        "summary"
+        "summary",
       );
     }
     if (excerpt && meaningUnitEndsMidSentence(excerpt)) {
@@ -7551,7 +8738,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "Meaning unit ends mid-sentence",
         "major",
         "This MU appears to end with an incomplete phrase rather than a complete participant meaning.",
-        "Should the boundary be extended to include the next sentence, or should this MU be redrafted?"
+        "Should the boundary be extended to include the next sentence, or should this MU be redrafted?",
       );
     } else if (unit.uncertainty?.toLowerCase().includes("may be incomplete")) {
       addIssue(
@@ -7559,7 +8746,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "Meaning unit may be incomplete",
         "warning",
         "This MU was generated by fallback logic and may need a boundary check.",
-        "Does this MU stand alone as a clear meaning, or does it need surrounding participant text?"
+        "Does this MU stand alone as a clear meaning, or does it need surrounding participant text?",
       );
     }
     if (wordCount > 0 && wordCount < 3) {
@@ -7568,7 +8755,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "Excerpt may be too short",
         "info",
         "This MU excerpt is very short and may not communicate a clear meaning on its own.",
-        "Would including surrounding participant text better represent the intended meaning?"
+        "Would including surrounding participant text better represent the intended meaning?",
       );
     }
     if (wordCount > 140) {
@@ -7577,7 +8764,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "MU may contain several meanings",
         "major",
         "This MU is long enough that it may contain several shifts in meaning.",
-        "Can this MU be split into smaller meaning-based units?"
+        "Can this MU be split into smaller meaning-based units?",
       );
     } else if (wordCount > 80) {
       addIssue(
@@ -7585,7 +8772,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "Excerpt may be long",
         "info",
         "This MU excerpt is relatively long and may benefit from a boundary check.",
-        "Does this still communicate one coherent meaning, or are there multiple meanings here?"
+        "Does this still communicate one coherent meaning, or are there multiple meanings here?",
       );
     }
     if (
@@ -7604,7 +8791,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         acceptedInterviewerPrompt
           ? "This MU appears to contain an interviewer or researcher prompt, but it has been accepted as a participant meaning unit."
           : "This MU may contain interviewer prompt or contextual material and should be reviewed before analysis.",
-        "Should this be treated as context rather than a participant meaning unit?"
+        "Should this be treated as context rather than a participant meaning unit?",
       );
     }
     if (unit.analysisExcluded && !unit.exclusionReason?.trim()) {
@@ -7613,7 +8800,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "Excluded without reason",
         "warning",
         "This MU is excluded but does not include a researcher reason.",
-        "What methodological reason explains the exclusion?"
+        "What methodological reason explains the exclusion?",
       );
     }
     if (!unit.caseId || !unit.segmentId) {
@@ -7622,7 +8809,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "Source reference missing",
         unit.humanStatus === "Accepted" ? "major" : "info",
         "This MU is missing a source reference, making auditability weaker.",
-        "Can you link this MU back to the transcript source reference?"
+        "Can you link this MU back to the transcript source reference?",
       );
     }
     if (containsNonTranscriptMaterial(excerpt)) {
@@ -7631,12 +8818,14 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "Possible non-transcript material included",
         "major",
         "This MU excerpt appears to contain project setup, research question, domain labels, demo metadata, file labels, or another non-transcript source.",
-        "Should this be removed from analysis or explicitly justified as part of the participant account?"
+        "Should this be removed from analysis or explicitly justified as part of the participant account?",
       );
     }
     if (
       unit.humanStatus === "Accepted" &&
-      (!summary || summary === aiSummary || summary.toLowerCase() === "same as aisummary")
+      (!summary ||
+        summary === aiSummary ||
+        summary.toLowerCase() === "same as aisummary")
     ) {
       addIssue(
         unit,
@@ -7644,7 +8833,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "warning",
         "This MU is accepted but the summary appears unchanged or missing.",
         "Have you reviewed the summary wording and confirmed it represents the participant account?",
-        "summary"
+        "summary",
       );
     }
     if (summary && summaryIsTooCloseToExcerpt(summary, excerpt)) {
@@ -7654,7 +8843,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "warning",
         "The researcher summary appears to repeat the MU excerpt rather than condensing the participant's main meaning.",
         "Could this be condensed into a brief statement of the participant's main meaning?",
-        "summary"
+        "summary",
       );
     }
     if (summary && summaryIsTooGeneric(summary)) {
@@ -7664,7 +8853,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "warning",
         "The summary appears too generic to capture the specific meaning in this MU.",
         "Can the summary name the participant's main meaning more specifically while staying close to their account?",
-        "summary"
+        "summary",
       );
     }
     if (summary && summaryPossiblyGoesBeyondExcerpt(summary, excerpt)) {
@@ -7674,7 +8863,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "major",
         "The summary may introduce wording that is not clearly grounded in the MU excerpt.",
         "Can the summary be revised closer to the participant's words?",
-        "summary"
+        "summary",
       );
     }
   });
@@ -7692,7 +8881,7 @@ function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
         "Duplicate or overlapping MU",
         "warning",
         `This MU appears to overlap strongly with MU ${previous.number}.`,
-        "Should these MUs be merged, revised, or kept separate for a methodological reason?"
+        "Should these MUs be merged, revised, or kept separate for a methodological reason?",
       );
     } else {
       seen.set(key, unit);
@@ -7713,27 +8902,30 @@ function normalizeForOverlapCheck(text: string) {
 
 function buildMeaningUnitIssueContextById(
   issues: ReviewerComment[],
-  units: MeaningUnit[]
+  units: MeaningUnit[],
 ) {
   const unitsByTargetId = new Map(
-    units.map((unit) => [`MU${unit.number}`, unit])
+    units.map((unit) => [`MU${unit.number}`, unit]),
   );
 
-  return issues.reduce<Record<string, ReviewerIssueContext>>((contexts, issue) => {
-    const unit = unitsByTargetId.get(issue.targetId);
-    if (!unit) {
+  return issues.reduce<Record<string, ReviewerIssueContext>>(
+    (contexts, issue) => {
+      const unit = unitsByTargetId.get(issue.targetId);
+      if (!unit) {
+        return contexts;
+      }
+      const isSummaryIssue = issue.targetType === "summary";
+      const text = isSummaryIssue
+        ? unit.humanSummary || unit.aiSummary || "No summary available yet."
+        : unit.excerpt || unit.aiExcerpt || "No excerpt available yet.";
+      contexts[issue.id] = {
+        label: isSummaryIssue ? "Current summary" : "Current excerpt",
+        text: truncateForReviewSnippet(text),
+      };
       return contexts;
-    }
-    const isSummaryIssue = issue.targetType === "summary";
-    const text = isSummaryIssue
-      ? unit.humanSummary || unit.aiSummary || "No summary available yet."
-      : unit.excerpt || unit.aiExcerpt || "No excerpt available yet.";
-    contexts[issue.id] = {
-      label: isSummaryIssue ? "Current summary" : "Current excerpt",
-      text: truncateForReviewSnippet(text)
-    };
-    return contexts;
-  }, {});
+    },
+    {},
+  );
 }
 
 function truncateForReviewSnippet(text: string, maxLength = 220) {
@@ -7755,10 +8947,10 @@ function summaryPossiblyGoesBeyondExcerpt(summary: string, excerpt: string) {
     "psychological",
     "therapeutic",
     "trauma",
-    "treatment"
+    "treatment",
   ];
   return interpretiveTerms.some(
-    (term) => lowerSummary.includes(term) && !lowerExcerpt.includes(term)
+    (term) => lowerSummary.includes(term) && !lowerExcerpt.includes(term),
   );
 }
 
@@ -7781,7 +8973,7 @@ function summaryIsTooCloseToExcerpt(summary: string, excerpt: string) {
       return false;
     }
     const overlap = [...summaryChars].filter((char) =>
-      excerptChars.has(char)
+      excerptChars.has(char),
     ).length;
     return overlap / summaryChars.size > 0.9 && normalizedSummary.length > 24;
   }
@@ -7791,7 +8983,7 @@ function summaryIsTooCloseToExcerpt(summary: string, excerpt: string) {
     return false;
   }
   const overlap = [...summaryTokens].filter((token) =>
-    excerptTokens.has(token)
+    excerptTokens.has(token),
   ).length;
   return overlap / summaryTokens.size > 0.86 && summaryTokens.size > 10;
 }
@@ -7805,7 +8997,7 @@ function meaningUnitEndsMidSentence(text: string) {
     return false;
   }
   return /\b(and|but|because|because of|when|while|where|which|that|so|so that|then|with|without|to|for|from|into|about|if|although|though|as)\s*$/i.test(
-    trimmed
+    trimmed,
   );
 }
 
@@ -7817,10 +9009,10 @@ function summaryIsTooGeneric(summary: string) {
   }
   return (
     /^participant (described|expressed|talked about|shared|said|mentioned)( at the beginning| in the beginning| initially)?\.?$/i.test(
-      trimmed
+      trimmed,
     ) ||
     /^participant (described|expressed|talked about|shared|said|mentioned) (at the beginning|in the beginning|initially)\b/i.test(
-      trimmed
+      trimmed,
     ) ||
     normalized === "participant described" ||
     normalized === "participant expressed"
@@ -7830,7 +9022,10 @@ function summaryIsTooGeneric(summary: string) {
 function normalizeForSummarySimilarity(text: string) {
   return text
     .toLowerCase()
-    .replace(/^(interviewer|researcher|moderator|facilitator|participant|interviewee|student|[IQPA])\s*[:：]\s*/i, "")
+    .replace(
+      /^(interviewer|researcher|moderator|facilitator|participant|interviewee|student|[IQPA])\s*[:：]\s*/i,
+      "",
+    )
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -7876,10 +9071,10 @@ function getSegmentSplitIndex(text: string, cursorPosition?: number | null) {
 function extractPrivacyReviewMarkers(transcript: string) {
   return Array.from(
     new Set(
-      transcript.match(/\[\[PRIVACY_REVIEW:[^\]]+\]\]/g)?.map((item) =>
-        item.trim()
-      ) ?? []
-    )
+      transcript
+        .match(/\[\[PRIVACY_REVIEW:[^\]]+\]\]/g)
+        ?.map((item) => item.trim()) ?? [],
+    ),
   );
 }
 
@@ -7894,10 +9089,10 @@ function countUnresolvedPrivacyMarkers(transcript: string) {
 function buildSensitiveReviewItems(
   transcript: string,
   findings: string[],
-  existingItems: SensitiveReviewItem[] = []
+  existingItems: SensitiveReviewItem[] = [],
 ): SensitiveReviewItem[] {
   const existingByKey = new Map(
-    existingItems.map((item) => [sensitiveItemKey(item), item])
+    existingItems.map((item) => [sensitiveItemKey(item), item]),
   );
   const items: SensitiveReviewItem[] = [];
   const markerCounters = new Map<string, number>();
@@ -7909,7 +9104,7 @@ function buildSensitiveReviewItems(
     const fullMatch = match[0];
     const markerCategory = match[2];
     const categoryKey = normaliseSensitiveCategory(
-      markerCategory ?? match[4] ?? "OTHER_PRIVATE_DETAIL"
+      markerCategory ?? match[4] ?? "OTHER_PRIVATE_DETAIL",
     );
     const safePlaceholderCategory = safePlaceholderCategoryName(categoryKey);
     const markerNumber = (markerCounters.get(safePlaceholderCategory) ?? 0) + 1;
@@ -7932,14 +9127,14 @@ function buildSensitiveReviewItems(
       status: "pending",
       explanation:
         findMatchingPrivacyFinding(findings, fullMatch, placeholder) ??
-        metadata.explanation
+        metadata.explanation,
     };
     const existing =
       existingByKey.get(sensitiveItemKey(base)) ??
       existingItems.find(
         (item) =>
           item.placeholder === base.placeholder &&
-          item.startOffset === base.startOffset
+          item.startOffset === base.startOffset,
       );
     items.push(
       existing
@@ -7948,9 +9143,9 @@ function buildSensitiveReviewItems(
             ...existing,
             matchedText: base.matchedText,
             startOffset,
-            endOffset
+            endOffset,
           }
-        : base
+        : base,
     );
   }
 
@@ -7970,12 +9165,12 @@ function prepareTranscriptForStorage(transcript: string) {
     /\[\[PRIVACY_REVIEW:([A-Z_ -]+):[^\]]+\]\]/g,
     (_marker, rawCategory: string) => {
       const category = safePlaceholderCategoryName(
-        normaliseSensitiveCategory(rawCategory)
+        normaliseSensitiveCategory(rawCategory),
       );
       const nextNumber = (markerCounters.get(category) ?? 0) + 1;
       markerCounters.set(category, nextNumber);
       return `[${category}_${nextNumber}]`;
-    }
+    },
   );
 }
 
@@ -7990,7 +9185,7 @@ function serialiseSensitiveItemsForStorage(items: SensitiveReviewItem[]) {
       replacementText,
       riskLevel,
       startOffset,
-      status
+      status,
     }) => ({
       category,
       endOffset,
@@ -8000,8 +9195,8 @@ function serialiseSensitiveItemsForStorage(items: SensitiveReviewItem[]) {
       replacementText,
       riskLevel,
       startOffset,
-      status
-    })
+      status,
+    }),
   );
 }
 
@@ -8012,10 +9207,10 @@ function sensitiveItemKey(item: SensitiveReviewItem) {
 function findMatchingPrivacyFinding(
   findings: string[],
   rawMarker: string,
-  placeholder: string
+  placeholder: string,
 ) {
   const finding = findings.find(
-    (finding) => finding.includes(rawMarker) || finding.includes(placeholder)
+    (finding) => finding.includes(rawMarker) || finding.includes(placeholder),
   );
   if (!finding) {
     return undefined;
@@ -8044,7 +9239,11 @@ function normaliseSensitiveCategory(category: string) {
           ? "ORGANIZATION"
           : "LOCATION";
   }
-  if (upper.includes("CONTACT") || upper.includes("EMAIL") || upper.includes("PHONE")) {
+  if (
+    upper.includes("CONTACT") ||
+    upper.includes("EMAIL") ||
+    upper.includes("PHONE")
+  ) {
     return "CONTACT";
   }
   if (upper.includes("HEALTH") || upper.includes("CLINICAL")) {
@@ -8072,60 +9271,64 @@ function sensitiveCategoryMetadata(categoryKey: string): {
     { explanation: string; label: string; riskLevel: SensitiveRiskLevel }
   > = {
     PERSON: {
-      explanation: "May identify a participant, interviewer, or third-party person.",
+      explanation:
+        "May identify a participant, interviewer, or third-party person.",
       label: "person name or third-party identifier",
-      riskLevel: "high"
+      riskLevel: "high",
     },
     LOCATION: {
       explanation: "May reveal a specific location or institution.",
       label: "location or institution",
-      riskLevel: "medium"
+      riskLevel: "medium",
     },
     ADDRESS: {
       explanation: "May reveal a specific address.",
       label: "address",
-      riskLevel: "high"
+      riskLevel: "high",
     },
     POSTCODE: {
       explanation: "May reveal a precise geographic area.",
       label: "postcode",
-      riskLevel: "high"
+      riskLevel: "high",
     },
     ORGANIZATION: {
-      explanation: "May identify a workplace, school, service, or organisation.",
+      explanation:
+        "May identify a workplace, school, service, or organisation.",
       label: "organisation or institution",
-      riskLevel: "medium"
+      riskLevel: "medium",
     },
     CONTACT: {
       explanation: "May reveal direct contact details.",
       label: "contact detail",
-      riskLevel: "high"
+      riskLevel: "high",
     },
     HEALTH: {
       explanation: "May reveal sensitive health-related information.",
       label: "health-related disclosure",
-      riskLevel: "high"
+      riskLevel: "high",
     },
     FINANCIAL: {
       explanation: "May reveal sensitive financial detail.",
       label: "financial detail",
-      riskLevel: "high"
+      riskLevel: "high",
     },
     IMMIGRATION_LEGAL: {
-      explanation: "May reveal immigration, legal, or status-related information.",
+      explanation:
+        "May reveal immigration, legal, or status-related information.",
       label: "immigration/legal detail",
-      riskLevel: "high"
+      riskLevel: "high",
     },
     IDENTIFIER: {
-      explanation: "May reveal an ID, account, social handle, or unique identifier.",
+      explanation:
+        "May reveal an ID, account, social handle, or unique identifier.",
       label: "identifier",
-      riskLevel: "high"
+      riskLevel: "high",
     },
     OTHER_PRIVATE_DETAIL: {
       explanation: "May contain identifying or sensitive contextual detail.",
       label: "other private detail",
-      riskLevel: "medium"
-    }
+      riskLevel: "medium",
+    },
   };
 
   return map[categoryKey] ?? map.OTHER_PRIVATE_DETAIL;
@@ -8140,24 +9343,26 @@ function isFallbackCategory(category: CategoryNode): boolean {
 }
 
 function markCategoriesResearcherConfirmed(
-  categories: CategoryNode[]
+  categories: CategoryNode[],
 ): CategoryNode[] {
   return categories.map((category) => ({
     ...category,
     source: "researcher_confirmed" as const,
     subcategories: category.subcategories
       ? markCategoriesResearcherConfirmed(category.subcategories)
-      : undefined
+      : undefined,
   }));
 }
 
-function markCategoriesEditableDraft(categories: CategoryNode[]): CategoryNode[] {
+function markCategoriesEditableDraft(
+  categories: CategoryNode[],
+): CategoryNode[] {
   return categories.map((category) => ({
     ...category,
     status: isFallbackCategory(category) ? "fallback_draft" : "needs_review",
     subcategories: category.subcategories
       ? markCategoriesEditableDraft(category.subcategories)
-      : undefined
+      : undefined,
   }));
 }
 
@@ -8168,14 +9373,14 @@ function formatCategoryStatus(status: NonNullable<CategoryNode["status"]>) {
     confirmed: "Confirmed",
     fallback_draft: "Fallback draft",
     needs_review: "Needs review",
-    rejected: "Rejected"
+    rejected: "Rejected",
   };
   return labels[status] ?? "Needs review";
 }
 
 function hasSensitivePlaceholder(text: string) {
   return /\[(PERSON|CONTACT|LOCATION|POSTCODE|ADDRESS|IDENTIFIER|HEALTH|FINANCIAL|LEGAL_STATUS)_\d+\]/i.test(
-    text
+    text,
   );
 }
 
@@ -8184,7 +9389,7 @@ function getCategoryRunDisabledReason({
   categoryCount,
   confirmedMeaningUnits,
   hasTemporaryFallbackCategories,
-  mode
+  mode,
 }: {
   allSegmentsProcessedForModeC: boolean;
   categoryCount: number;
@@ -8214,7 +9419,7 @@ function getCategoryRunLabel(mode: CategoryMode, running = false) {
   const labels: Record<CategoryMode, string> = {
     A: "Optional assistant suggestion: provisional categories",
     B: "Refine categories",
-    C: "Optional assistant suggestion: structure and summary narrative"
+    C: "Optional assistant suggestion: structure and summary narrative",
   };
   return running ? `${labels[mode]}...` : labels[mode];
 }
@@ -8244,63 +9449,51 @@ function getStepGuidance(step: WorkflowStep) {
     "pre-analysis": {
       meaning:
         "Pre-analysis helps you prepare your material before detailed analysis begins. You will organise data into domains of investigation, prepare your transcript, and make initial judgements about relevance.",
-      task:
-        "Define the research question, domains of investigation, researcher expectations, notes, and relevance guideline. Upload or paste a transcript and review it before analysis.",
-      ai:
-        "I can help you structure your domains, prepare transcript material, and flag sections that may need your attention. You remain the final decision-maker.",
+      task: "Define the research question, domains of investigation, researcher expectations, notes, and relevance guideline. Upload or paste a transcript and review it before analysis.",
+      ai: "I can help you structure your domains, prepare transcript material, and flag sections that may need your attention. You remain the final decision-maker.",
       judgment:
-        "You decide how to define your domains, what counts as relevant study data, and what preparation decisions are appropriate for your research question."
+        "You decide how to define your domains, what counts as relevant study data, and what preparation decisions are appropriate for your research question.",
     },
     understanding: {
       meaning:
         "In this step, you work closely with meaning units. The aim is to understand what each meaning unit says and translate it into a more manageable analytic form.",
-      task:
-        "Review, split, merge, delete, and confirm meaning units. Edit summaries and implicit meaning notes before accepting them.",
-      ai:
-        "I can help suggest possible meaning unit boundaries, concise summaries, and context-based implicit meanings. These are draft suggestions for your review.",
+      task: "Review, split, merge, delete, and confirm meaning units. Edit summaries and implicit meaning notes before accepting them.",
+      ai: "I can help suggest possible meaning unit boundaries, concise summaries, and context-based implicit meanings. These are draft suggestions for your review.",
       judgment:
-        "You decide whether each meaning unit is clear, whether the summary stays close to the participant’s account, and whether any implicit meaning is justified by the context."
+        "You decide whether each meaning unit is clear, whether the summary stays close to the participant’s account, and whether any implicit meaning is justified by the context.",
     },
     categorizing: {
       meaning:
         "Categorizing involves comparing meaning units, grouping similar meanings, naming categories, and revising them as the analysis develops.",
-      task:
-        "Review category names, descriptions, linked meaning units, participant count, supporting quotes, and researcher notes.",
-      ai:
-        "I can help notice possible similarities across meaning units and suggest provisional category names. You can rename, merge, split, or reject any suggestion.",
+      task: "Review category names, descriptions, linked meaning units, participant count, supporting quotes, and researcher notes.",
+      ai: "I can help notice possible similarities across meaning units and suggest provisional category names. You can rename, merge, split, or reject any suggestion.",
       judgment:
-        "You decide whether a category captures the shared meaning across meaning units, whether it needs to be revised, and how it should be named."
+        "You decide whether a category captures the shared meaning across meaning units, whether it needs to be revised, and how it should be named.",
     },
     integrating: {
       meaning:
         "Integrating means moving beyond a list of categories. The aim is to depict the structure of your findings and develop a coherent summary narrative.",
-      task:
-        "Review the category relationship map, edit relationships, reorder categories, and confirm the summary narrative.",
-      ai:
-        "I can help sketch possible relationships among categories and draft a provisional summary narrative. You decide whether the structure is convincing and grounded in the data.",
+      task: "Review the category relationship map, edit relationships, reorder categories, and confirm the summary narrative.",
+      ai: "I can help sketch possible relationships among categories and draft a provisional summary narrative. You decide whether the structure is convincing and grounded in the data.",
       judgment:
-        "You decide how categories relate to one another, what structure best represents your findings, and which claims are supported by the evidence."
+        "You decide how categories relate to one another, what structure best represents your findings, and which claims are supported by the evidence.",
     },
     integrity: {
       meaning:
         "Methodological integrity helps you review whether the analysis is transparent, coherent, credible, and respectful of participants.",
-      task:
-        "Review checklist items, address flagged issues, add researcher notes, and export the audit trail.",
-      ai:
-        "I can help flag places where the analysis may need more evidence, clearer context, or closer attention to contradictory cases. These flags are prompts for reflection, not final judgements.",
+      task: "Review checklist items, address flagged issues, add researcher notes, and export the audit trail.",
+      ai: "I can help flag places where the analysis may need more evidence, clearer context, or closer attention to contradictory cases. These flags are prompts for reflection, not final judgements.",
       judgment:
-        "You decide how to address each issue, what needs revision, and how to make the analysis more transparent and credible."
+        "You decide how to address each issue, what needs revision, and how to make the analysis more transparent and credible.",
     },
     export: {
       meaning:
         "Export preserves the analysis record and audit trail for review, supervision, and reporting.",
-      task:
-        "Export the research question, domains, expectations, relevance guideline, meaning units, summaries, categories, structure, narrative, checklist, and audit trail.",
-      ai:
-        "I can help package the current analysis record into export formats.",
+      task: "Export the research question, domains, expectations, relevance guideline, meaning units, summaries, categories, structure, narrative, checklist, and audit trail.",
+      ai: "I can help package the current analysis record into export formats.",
       judgment:
-        "Take a final look before using exported material in reports, publications, supervision, or teaching."
-    }
+        "Take a final look before using exported material in reports, publications, supervision, or teaching.",
+    },
   };
   return guidance[step];
 }
@@ -8310,33 +9503,33 @@ function getGdiqrTips(step: WorkflowStep) {
     "pre-analysis": [
       "Domains of investigation help organise the data, but they are not findings.",
       "Data preparation should preserve participants’ meaning and context.",
-      "Judgement of relevance is guided by the research problem and research questions."
+      "Judgement of relevance is guided by the research problem and research questions.",
     ],
     understanding: [
       "Meaning units should be large enough to communicate a clear message and small enough to remain manageable.",
       "Summaries should stay close to the participant's account.",
-      "Implicit meaning should clarify context-based meaning, not become speculation."
+      "Implicit meaning should clarify context-based meaning, not become speculation.",
     ],
     categorizing: [
       "Categories are provisional and may be renamed, merged, divided, or reorganised.",
       "Categories emerge from meaning units.",
-      "Domains are not findings; categories are analytic findings developed from the data."
+      "Domains are not findings; categories are analytic findings developed from the data.",
     ],
     integrating: [
       "Integration shows how categories relate to one another.",
       "Summary narratives help readers understand the structure of the findings.",
-      "Narrative claims should remain linked to category and meaning-unit evidence."
+      "Narrative claims should remain linked to category and meaning-unit evidence.",
     ],
     integrity: [
       "The analytic process should be transparent and traceable.",
       "Coherence matters: findings should fit together while preserving complexity.",
-      "Contradictory or negative cases should be considered rather than smoothed over."
+      "Contradictory or negative cases should be considered rather than smoothed over.",
     ],
     export: [
       "The analysis record should preserve decisions, evidence, and revisions.",
       "Audit trails support transparency and supervision.",
-      "Exported material should be reviewed before use in reporting."
-    ]
+      "Exported material should be reviewed before use in reporting.",
+    ],
   };
   return tips[step];
 }
@@ -8347,7 +9540,7 @@ function EmptyState({ text }: { text: string }) {
 
 function RunLogPanel({
   logs,
-  onClear
+  onClear,
 }: {
   logs: RunLog[];
   onClear: () => void;
@@ -8426,7 +9619,7 @@ function formatRunStatus(status: RunLog["status"]) {
 
 async function fetchWithTimeout(
   url: string,
-  options: RequestInit & { timeoutMs: number }
+  options: RequestInit & { timeoutMs: number },
 ) {
   const controller = new AbortController();
   if (options.signal) {
@@ -8434,17 +9627,20 @@ async function fetchWithTimeout(
       controller.abort();
     } else {
       options.signal.addEventListener("abort", () => controller.abort(), {
-        once: true
+        once: true,
       });
     }
   }
-  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs);
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    options.timeoutMs,
+  );
 
   try {
     const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
     return await fetch(url, {
       ...fetchOptions,
-      signal: controller.signal
+      signal: controller.signal,
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
@@ -8452,7 +9648,7 @@ async function fetchWithTimeout(
         throw new Error("Generation stopped by user.");
       }
       throw new Error(
-        "Local AI request timed out in the browser. Check the live log panel to see whether the server is still processing chunks, or increase OLLAMA_API_TIMEOUT_MS / reduce TRANSCRIPT_MU_CHUNK_CHARS."
+        "Local AI request timed out in the browser. Check the live log panel to see whether the server is still processing chunks, or increase OLLAMA_API_TIMEOUT_MS / reduce TRANSCRIPT_MU_CHUNK_CHARS.",
       );
     }
     throw error;
@@ -8461,13 +9657,14 @@ async function fetchWithTimeout(
   }
 }
 
-
 function slugifyFilename(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9\u3400-\u9fff]+/gi, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "gdi-qr-project";
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9\u3400-\u9fff]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "gdi-qr-project"
+  );
 }
 
 function downloadBlob(filename: string, blob: Blob) {
@@ -8521,23 +9718,23 @@ function buildDocxBlobFromText(reportText: string) {
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-</Types>`
+</Types>`,
     },
     {
       name: "_rels/.rels",
       content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-</Relationships>`
+</Relationships>`,
     },
     {
       name: "word/document.xml",
-      content: documentXml
-    }
+      content: documentXml,
+    },
   ];
 
   return new Blob([createZipArchive(files)], {
-    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   });
 }
 
@@ -8552,7 +9749,7 @@ function buildWordDocumentXml(reportText: string) {
     "Step 4 Integration",
     "Summary Narrative",
     "Export History",
-    "Audit Trail"
+    "Audit Trail",
   ]);
   const lines = reportText.split("\n");
   const paragraphs = lines
@@ -8565,7 +9762,7 @@ function buildWordDocumentXml(reportText: string) {
       const isHeading = sectionHeadings.has(trimmed);
       return buildWordParagraphXml(trimmed, { isHeading, isTitle });
     })
-    .join("");
+    .join("\n\n");
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -8581,11 +9778,14 @@ function buildWordDocumentXml(reportText: string) {
 
 function buildWordParagraphXml(
   text: string,
-  options: { isHeading?: boolean; isTitle?: boolean } = {}
+  options: { isHeading?: boolean; isTitle?: boolean } = {},
 ) {
   const size = options.isTitle ? "32" : options.isHeading ? "26" : "22";
   const bold = options.isTitle || options.isHeading ? "<w:b/>" : "";
-  const spacing = options.isTitle || options.isHeading ? "<w:spacing w:before=\"240\" w:after=\"120\"/>" : "<w:spacing w:after=\"80\"/>";
+  const spacing =
+    options.isTitle || options.isHeading
+      ? '<w:spacing w:before="240" w:after="120"/>'
+      : '<w:spacing w:after="80"/>';
   return `<w:p>
     <w:pPr>${spacing}</w:pPr>
     <w:r>
@@ -8724,7 +9924,7 @@ function buildMeaningUnitCsv(units: MeaningUnit[]) {
       "reviewerStatus",
       "analysisExcluded",
       "exclusionReason",
-      "uncertainty"
+      "uncertainty",
     ],
     ...units.map((unit) => [
       String(unit.number),
@@ -8738,8 +9938,8 @@ function buildMeaningUnitCsv(units: MeaningUnit[]) {
       unit.reviewerStatus,
       unit.analysisExcluded ? "true" : "false",
       unit.exclusionReason ?? "",
-      unit.uncertainty ?? ""
-    ])
+      unit.uncertainty ?? "",
+    ]),
   ];
 
   return rows.map((row) => row.map(csvEscape).join(",")).join("\n");
@@ -8756,7 +9956,7 @@ function SensitiveReviewCard({
   onConfirm,
   onEdit,
   onFocus,
-  onIgnore
+  onIgnore,
 }: {
   isActive: boolean;
   item: SensitiveReviewItem;
@@ -8782,7 +9982,11 @@ function SensitiveReviewCard({
       </button>
       <p className="small">{item.explanation}</p>
       <div className="button-row">
-        <button className="button" onClick={() => onConfirm(item)} type="button">
+        <button
+          className="button"
+          onClick={() => onConfirm(item)}
+          type="button"
+        >
           Confirm
         </button>
         <button className="button" onClick={() => onEdit(item)} type="button">
@@ -8807,7 +10011,7 @@ function SensitiveTranscriptPreview({
   activeItemId,
   items,
   onSelect,
-  transcript
+  transcript,
 }: {
   activeItemId: string;
   items: SensitiveReviewItem[];
@@ -8817,7 +10021,9 @@ function SensitiveTranscriptPreview({
   if (!items.length) {
     return (
       <div className="transcript-highlight-preview">
-        <p className="small">No detected placeholders in the current transcript.</p>
+        <p className="small">
+          No detected placeholders in the current transcript.
+        </p>
       </div>
     );
   }
@@ -8826,7 +10032,7 @@ function SensitiveTranscriptPreview({
     .filter(
       (item) =>
         typeof item.startOffset === "number" &&
-        typeof item.endOffset === "number"
+        typeof item.endOffset === "number",
     )
     .sort((left, right) => (left.startOffset ?? 0) - (right.startOffset ?? 0));
   const parts: ReactNode[] = [];
@@ -8840,7 +10046,9 @@ function SensitiveTranscriptPreview({
     }
     if (start > cursor) {
       parts.push(
-        <span key={`${item.id}-text-before`}>{transcript.slice(cursor, start)}</span>
+        <span key={`${item.id}-text-before`}>
+          {transcript.slice(cursor, start)}
+        </span>,
       );
     }
     parts.push(
@@ -8854,7 +10062,7 @@ function SensitiveTranscriptPreview({
         type="button"
       >
         {transcript.slice(start, end)}
-      </button>
+      </button>,
     );
     cursor = end;
   });
@@ -8890,7 +10098,7 @@ function ModeButton({
   active,
   description,
   label,
-  onClick
+  onClick,
 }: {
   active: boolean;
   description: string;
@@ -8931,7 +10139,7 @@ function ReviewerPanel({
   runButtonLabel = "Review methodological integrity",
   showAddMemoAction = true,
   title,
-  viewActionLabel = "View target"
+  viewActionLabel = "View target",
 }: {
   dismissActionLabel?: string;
   emptyText?: string;
@@ -8958,16 +10166,20 @@ function ReviewerPanel({
 }) {
   const activeIssues = issues.filter((issue) => issue.status === "unresolved");
   const warningCount = activeIssues.filter(
-    (issue) => issue.severity === "warning"
+    (issue) => issue.severity === "warning",
   ).length;
-  const infoCount = activeIssues.filter((issue) => issue.severity === "info")
-    .length;
-  const majorCount = activeIssues.filter((issue) => issue.severity === "major")
-    .length;
-  const resolvedCount = issues.filter((issue) => issue.status === "resolved")
-    .length;
-  const dismissedCount = issues.filter((issue) => issue.status === "dismissed")
-    .length;
+  const infoCount = activeIssues.filter(
+    (issue) => issue.severity === "info",
+  ).length;
+  const majorCount = activeIssues.filter(
+    (issue) => issue.severity === "major",
+  ).length;
+  const resolvedCount = issues.filter(
+    (issue) => issue.status === "resolved",
+  ).length;
+  const dismissedCount = issues.filter(
+    (issue) => issue.status === "dismissed",
+  ).length;
   const groupedIssues = groupReviewerIssues(activeIssues);
 
   return (
@@ -8984,7 +10196,7 @@ function ReviewerPanel({
                   infoCount,
                   warningCount,
                   majorCount,
-                  resolvedCount
+                  resolvedCount,
                 )}
           </p>
         </div>
@@ -9012,7 +10224,9 @@ function ReviewerPanel({
             )}
           </div>
           {responsibilityText && (
-            <p className="small review-responsibility-note">{responsibilityText}</p>
+            <p className="small review-responsibility-note">
+              {responsibilityText}
+            </p>
           )}
           {issues.length === 0 ? (
             <EmptyState
@@ -9051,17 +10265,22 @@ function ReviewerPanel({
                         <div className="review-issue-body">
                           {issueContext && (
                             <div className="review-issue-snippet">
-                              <span className="label">{issueContext.label}</span>
+                              <span className="label">
+                                {issueContext.label}
+                              </span>
                               <p>{issueContext.text}</p>
                             </div>
                           )}
                           <div>
-                            <span className="label">Why this may need review</span>
+                            <span className="label">
+                              Why this may need review
+                            </span>
                             <p>{issue.comment}</p>
                           </div>
                           <p className="small">
                             <strong>Reflection question:</strong>{" "}
-                            {issue.suggestedAction || "Researcher review needed."}
+                            {issue.suggestedAction ||
+                              "Researcher review needed."}
                           </p>
                           {issue.researcherMemo && (
                             <p className="small">
@@ -9129,7 +10348,7 @@ function MeaningUnitReviewCard({
   onSaveExcerpt,
   onSaveSummary,
   onSplit,
-  unit
+  unit,
 }: {
   onAccept: (unitId: string) => void;
   onDelete: (unit: MeaningUnit) => void;
@@ -9159,13 +10378,16 @@ function MeaningUnitReviewCard({
       </div>
       <p className="small">
         Source reference: {unit.caseId || "No case"} ·{" "}
-        {unit.segmentId || "Transcript source"} ·
-        Speaker: {unit.speaker || "Unspecified"}
+        {unit.segmentId || "Transcript source"} · Speaker:{" "}
+        {unit.speaker || "Unspecified"}
       </p>
       {validationFlags.length > 0 && (
         <div className="button-row">
           {validationFlags.map((flag) => (
-            <span className={`badge ${flag.tone ?? ""}`.trim()} key={flag.label}>
+            <span
+              className={`badge ${flag.tone ?? ""}`.trim()}
+              key={flag.label}
+            >
               {flag.label}
             </span>
           ))}
@@ -9290,7 +10512,7 @@ function reviewSummaryText(
   infoCount: number,
   warningCount: number,
   majorCount: number,
-  resolvedCount: number
+  resolvedCount: number,
 ) {
   if (issues.length === 0) {
     return "No integrity review yet";
@@ -9312,10 +10534,16 @@ function reviewerIssueTitle(issue: ReviewerComment) {
   if (normalized.includes("may be incomplete")) {
     return `${target} may be incomplete`;
   }
-  if (normalized.includes("too long") || normalized.includes("several meanings")) {
+  if (
+    normalized.includes("too long") ||
+    normalized.includes("several meanings")
+  ) {
     return `${target} may contain more than one meaning`;
   }
-  if (normalized.includes("summary missing") || normalized.includes("summary needed")) {
+  if (
+    normalized.includes("summary missing") ||
+    normalized.includes("summary needed")
+  ) {
     return `${target} needs a researcher summary`;
   }
   if (normalized.includes("too close to excerpt")) {
@@ -9431,14 +10659,17 @@ function getCategoryAssistantStatusItems(category: CategoryNode) {
     return [
       "Assistant suggestion unavailable",
       "Fallback grouping used",
-      "Redraft available"
+      "Redraft available",
     ];
   }
   if (category.status === "confirmed") {
     return ["Researcher-confirmed category"];
   }
   if (category.status === "edited") {
-    return ["Researcher edits present", "Assistant suggestion remains provisional"];
+    return [
+      "Researcher edits present",
+      "Assistant suggestion remains provisional",
+    ];
   }
   if (category.status === "rejected") {
     return ["Category rejected by researcher"];
@@ -9476,7 +10707,7 @@ function isSystemGeneratedCategoryDescription(description: string) {
 
 function getOptionalCategoryDraft(
   category: CategoryNode,
-  includedUnits: MeaningUnit[]
+  includedUnits: MeaningUnit[],
 ) {
   const assistantLabel =
     !isAutomaticCategoryTitle(category.name) &&
@@ -9494,13 +10725,14 @@ function getOptionalCategoryDraft(
       : "";
   const evidenceText = includedUnits
     .map((unit) => `${unit.humanSummary || unit.aiSummary} ${unit.excerpt}`)
-    .join(" ")
+    .join("\n\n")
     .toLowerCase();
   const evidenceSuggestion = buildEvidenceBasedCategorySuggestion(evidenceText);
   const label = assistantLabel || evidenceSuggestion.label;
   const definition = assistantDefinition || evidenceSuggestion.definition;
   const rationale =
-    category.rationale && !isSystemGeneratedCategoryDescription(category.rationale)
+    category.rationale &&
+    !isSystemGeneratedCategoryDescription(category.rationale)
       ? category.rationale
       : evidenceSuggestion.rationale;
 
@@ -9511,7 +10743,7 @@ function getOptionalCategoryDraft(
     rationale,
     statusNote: isFallbackCategory(category)
       ? "Assistant draft label unavailable; this cautious suggestion is derived from the assigned MUs for review."
-      : "Assistant suggestion only · researcher confirmation required"
+      : "Assistant suggestion only · researcher confirmation required",
   };
 }
 
@@ -9520,12 +10752,12 @@ function buildEvidenceBasedCategorySuggestion(evidenceText: string) {
     return {
       definition: "",
       label: "",
-      rationale: ""
+      rationale: "",
     };
   }
   if (
     /(safe|safety|trust|therapist|therapy|pace|overwhelm|emotion|emotional)/i.test(
-      evidenceText
+      evidenceText,
     )
   ) {
     return {
@@ -9533,34 +10765,46 @@ function buildEvidenceBasedCategorySuggestion(evidenceText: string) {
         "These MUs may share a meaning around feeling sufficiently safe to approach difficult emotional experience.",
       label: "Feeling safe enough to engage with difficult emotions",
       rationale:
-        "The assigned MUs appear to connect emotional difficulty with conditions that made engagement feel safer. Review whether this wording fits the participant account."
+        "The assigned MUs appear to connect emotional difficulty with conditions that made engagement feel safer. Review whether this wording fits the participant account.",
     };
   }
-  if (/(confidence|confident|capable|able|ability|self-confidence)/i.test(evidenceText)) {
+  if (
+    /(confidence|confident|capable|able|ability|self-confidence)/i.test(
+      evidenceText,
+    )
+  ) {
     return {
       definition:
         "These MUs may share a meaning around developing a stronger sense of personal capability.",
       label: "Developing a stronger sense of capability",
       rationale:
-        "Several assigned MUs appear to describe shifts in confidence or perceived ability. Review similarities and exceptions before naming."
+        "Several assigned MUs appear to describe shifts in confidence or perceived ability. Review similarities and exceptions before naming.",
     };
   }
-  if (/(uncertain|uncertainty|change|changing|transition|different)/i.test(evidenceText)) {
+  if (
+    /(uncertain|uncertainty|change|changing|transition|different)/i.test(
+      evidenceText,
+    )
+  ) {
     return {
       definition:
         "These MUs may share a meaning around making sense of uncertainty or change in experience.",
       label: "Making sense of uncertainty and change",
       rationale:
-        "The assigned MUs appear to involve uncertainty, transition, or changing self-understanding. Check whether they belong together."
+        "The assigned MUs appear to involve uncertainty, transition, or changing self-understanding. Check whether they belong together.",
     };
   }
-  if (/(stress|body|physical|symptom|tired|sleep|pain|breath|breathing)/i.test(evidenceText)) {
+  if (
+    /(stress|body|physical|symptom|tired|sleep|pain|breath|breathing)/i.test(
+      evidenceText,
+    )
+  ) {
     return {
       definition:
         "These MUs may share a meaning around how experience is noticed or expressed through the body.",
       label: "Noticing experience through the body",
       rationale:
-        "Several assigned MUs appear to connect participant experience with bodily sensations or physical states. Review for fit."
+        "Several assigned MUs appear to connect participant experience with bodily sensations or physical states. Review for fit.",
     };
   }
   return {
@@ -9568,7 +10812,7 @@ function buildEvidenceBasedCategorySuggestion(evidenceText: string) {
       "These MUs may share a related meaning. Compare their summaries and excerpts before deciding how to name the category.",
     label: "Possible shared meaning across accepted MUs",
     rationale:
-      "This is a structural draft to support comparison, not a confirmed category name."
+      "This is a structural draft to support comparison, not a confirmed category name.",
   };
 }
 
@@ -9583,7 +10827,7 @@ function CategoryBlock({
   onRemoveUnit,
   onSplit,
   onUpdate,
-  units
+  units,
 }: {
   categories: CategoryNode[];
   category: CategoryNode;
@@ -9599,7 +10843,7 @@ function CategoryBlock({
 }) {
   const isFallback = isFallbackCategory(category);
   const includedUnits = units.filter((unit) =>
-    category.includedUnitIds.includes(unit.number)
+    category.includedUnitIds.includes(unit.number),
   );
   const isConfirmedCategory = category.status === "confirmed";
   const clusterStatusLabel = isConfirmedCategory
@@ -9630,7 +10874,8 @@ function CategoryBlock({
         <div className="button-row">
           <span className="badge blue">{clusterStatusLabel}</span>
           <span className="badge">
-            Units {includedUnits.map((unit) => unit.number).join(", ") || "None"}
+            Units{" "}
+            {includedUnits.map((unit) => unit.number).join(", ") || "None"}
           </span>
         </div>
       </div>
@@ -9667,7 +10912,9 @@ function CategoryBlock({
                     onClick={() => onRemoveUnit(category.id, unit.number)}
                     type="button"
                   >
-                    {isConfirmedCategory ? "Remove from category" : "Remove from cluster"}
+                    {isConfirmedCategory
+                      ? "Remove from category"
+                      : "Remove from cluster"}
                   </button>
                   <select
                     className="select compact"
@@ -9749,7 +10996,9 @@ function CategoryBlock({
             </div>
             <div>
               <span className="label">Draft shared-meaning definition</span>
-              <p className="assistant-draft-text">{assistantDraft.definition}</p>
+              <p className="assistant-draft-text">
+                {assistantDraft.definition}
+              </p>
             </div>
             <div>
               <span className="label">Why these MUs may belong together</span>
@@ -9760,7 +11009,9 @@ function CategoryBlock({
               <button
                 className="button"
                 disabled={!assistantDraft.label}
-                onClick={() => onUpdate(category.id, { name: assistantDraft.label })}
+                onClick={() =>
+                  onUpdate(category.id, { name: assistantDraft.label })
+                }
                 type="button"
               >
                 Use label
@@ -9769,7 +11020,9 @@ function CategoryBlock({
                 className="button"
                 disabled={!assistantDraft.definition}
                 onClick={() =>
-                  onUpdate(category.id, { definition: assistantDraft.definition })
+                  onUpdate(category.id, {
+                    definition: assistantDraft.definition,
+                  })
                 }
                 type="button"
               >
@@ -9781,7 +11034,7 @@ function CategoryBlock({
                 onClick={() =>
                   onUpdate(category.id, {
                     definition: assistantDraft.definition,
-                    name: assistantDraft.label
+                    name: assistantDraft.label,
                   })
                 }
                 type="button"
@@ -9847,12 +11100,13 @@ function CategoryBlock({
             <li key={item}>{item}</li>
           ))}
         </ul>
-        {category.rationale && (category.status === "ai_draft" || isFallback) && (
-          <p className="small">
-            Assistant rationale available for review; keep analytic wording in
-            the category title, definition, and researcher memo.
-          </p>
-        )}
+        {category.rationale &&
+          (category.status === "ai_draft" || isFallback) && (
+            <p className="small">
+              Assistant rationale available for review; keep analytic wording in
+              the category title, definition, and researcher memo.
+            </p>
+          )}
       </details>
       <div className="button-row">
         <button
@@ -9862,16 +11116,32 @@ function CategoryBlock({
         >
           Confirm as provisional category
         </button>
-        <button className="button" onClick={() => setClusterDecision("partly")} type="button">
+        <button
+          className="button"
+          onClick={() => setClusterDecision("partly")}
+          type="button"
+        >
           Revise grouping
         </button>
-        <button className="button" onClick={() => onMerge(category)} type="button">
+        <button
+          className="button"
+          onClick={() => onMerge(category)}
+          type="button"
+        >
           Merge with another cluster
         </button>
-        <button className="button" onClick={() => onSplit(category)} type="button">
+        <button
+          className="button"
+          onClick={() => onSplit(category)}
+          type="button"
+        >
           Split cluster
         </button>
-        <button className="button" onClick={() => onReject(category)} type="button">
+        <button
+          className="button"
+          onClick={() => onReject(category)}
+          type="button"
+        >
           Reject grouping
         </button>
         <button
@@ -9903,7 +11173,7 @@ function UnassignedMeaningUnits({
   categories,
   onAssign,
   onCreateCategory,
-  units
+  units,
 }: {
   categories: CategoryNode[];
   onAssign: (unitNumber: number, categoryId: string) => void;
@@ -9975,11 +11245,11 @@ const relationshipTypeOptions: IntegrationRelationshipLabel[] = [
   "is part of",
   "leads to",
   "contextualises",
-  "unclear relationship"
+  "unclear relationship",
 ];
 
 function toIntegrationRelationshipLabel(
-  value: string
+  value: string,
 ): IntegrationRelationshipLabel {
   if (relationshipTypeOptions.includes(value as IntegrationRelationshipLabel)) {
     return value as IntegrationRelationshipLabel;
@@ -10009,7 +11279,7 @@ function parseIntegrationMemoPayload(memo: string) {
     return {
       evidenceUnitNumbers: Array.isArray(parsed.evidenceUnitNumbers)
         ? parsed.evidenceUnitNumbers.filter(
-            (item): item is number => typeof item === "number"
+            (item): item is number => typeof item === "number",
           )
         : undefined,
       rationale:
@@ -10017,7 +11287,7 @@ function parseIntegrationMemoPayload(memo: string) {
       researcherNote:
         typeof parsed.researcherNote === "string"
           ? parsed.researcherNote
-          : undefined
+          : undefined,
     };
   } catch {
     return { rationale: memo };
@@ -10027,39 +11297,46 @@ function parseIntegrationMemoPayload(memo: string) {
 function buildIntegrationRelationshipDrafts({
   categories,
   storedRelationships,
-  units
+  units,
 }: {
   categories: CategoryNode[];
   storedRelationships: StoredIntegrationRelationship[];
   units: MeaningUnit[];
 }): IntegrationRelationshipDraft[] {
   const acceptedUnitNumbers = new Set(
-    units.filter(isConfirmedMeaningUnit).map((unit) => unit.number)
+    units.filter(isConfirmedMeaningUnit).map((unit) => unit.number),
   );
 
   return storedRelationships
-    .filter((relationship) =>
-      categories.some((category) => category.id === relationship.sourceCategoryId) &&
-      categories.some((category) => category.id === relationship.targetCategoryId)
+    .filter(
+      (relationship) =>
+        categories.some(
+          (category) => category.id === relationship.sourceCategoryId,
+        ) &&
+        categories.some(
+          (category) => category.id === relationship.targetCategoryId,
+        ),
     )
     .map((relationship) => {
       const payload = parseIntegrationMemoPayload(relationship.memo);
       const source = categories.find(
-        (category) => category.id === relationship.sourceCategoryId
+        (category) => category.id === relationship.sourceCategoryId,
       );
       const target = categories.find(
-        (category) => category.id === relationship.targetCategoryId
+        (category) => category.id === relationship.targetCategoryId,
       );
       const fallbackEvidence = [
         ...(source?.includedUnitIds ?? []),
-        ...(target?.includedUnitIds ?? [])
+        ...(target?.includedUnitIds ?? []),
       ].filter(
         (unitNumber, index, array) =>
-          acceptedUnitNumbers.has(unitNumber) && array.indexOf(unitNumber) === index
+          acceptedUnitNumbers.has(unitNumber) &&
+          array.indexOf(unitNumber) === index,
       );
 
       return {
-        evidenceUnitNumbers: payload.evidenceUnitNumbers ?? fallbackEvidence.slice(0, 6),
+        evidenceUnitNumbers:
+          payload.evidenceUnitNumbers ?? fallbackEvidence.slice(0, 6),
         id: relationship.id,
         label: relationship.label,
         rationale:
@@ -10068,16 +11345,18 @@ function buildIntegrationRelationshipDrafts({
           "Review the category evidence before treating this as an analytic relationship.",
         researcherNote: payload.researcherNote ?? "",
         sourceCategoryId: relationship.sourceCategoryId,
-        targetCategoryId: relationship.targetCategoryId
+        targetCategoryId: relationship.targetCategoryId,
       };
     });
 }
 
-function encodeIntegrationRelationshipDraft(relationship: IntegrationRelationshipDraft) {
+function encodeIntegrationRelationshipDraft(
+  relationship: IntegrationRelationshipDraft,
+) {
   return JSON.stringify({
     evidenceUnitNumbers: relationship.evidenceUnitNumbers,
     rationale: relationship.rationale,
-    researcherNote: relationship.researcherNote
+    researcherNote: relationship.researcherNote,
   });
 }
 
@@ -10085,7 +11364,7 @@ function buildRelationshipEvidenceGroups({
   relationship,
   sourceCategory,
   targetCategory,
-  units
+  units,
 }: {
   relationship: IntegrationRelationshipDraft;
   sourceCategory: CategoryNode | undefined;
@@ -10113,17 +11392,17 @@ function buildRelationshipEvidenceGroups({
   const otherUnits = units.filter(
     (unit) =>
       !assignedNumbers.has(unit.number) ||
-      relationship.evidenceUnitNumbers.includes(unit.number)
+      relationship.evidenceUnitNumbers.includes(unit.number),
   );
 
   return [
     {
       label: `Source category MUs · ${sourceCategory?.name ?? "Source category"}`,
-      units: sourceUnits
+      units: sourceUnits,
     },
     {
       label: `Target category MUs · ${targetCategory?.name ?? "Target category"}`,
-      units: targetUnits
+      units: targetUnits,
     },
     {
       label: "Other accepted MUs",
@@ -10131,9 +11410,9 @@ function buildRelationshipEvidenceGroups({
         (unit, index, array) =>
           array.findIndex((item) => item.number === unit.number) === index &&
           !sourceNumbers.has(unit.number) &&
-          !targetNumbers.has(unit.number)
-      )
-    }
+          !targetNumbers.has(unit.number),
+      ),
+    },
   ];
 }
 
@@ -10149,39 +11428,43 @@ function IntegrationRelationshipCard({
   onRemove,
   onUpdate,
   relationship,
-  units
+  units,
 }: {
   categories: CategoryNode[];
   onRemove: (relationshipId: string) => void;
   onUpdate: (
     relationshipId: string,
-    updates: Partial<IntegrationRelationshipDraft>
+    updates: Partial<IntegrationRelationshipDraft>,
   ) => void;
   relationship: IntegrationRelationshipDraft;
   units: MeaningUnit[];
 }) {
   const sourceCategory = categories.find(
-    (category) => category.id === relationship.sourceCategoryId
+    (category) => category.id === relationship.sourceCategoryId,
   );
   const targetCategory = categories.find(
-    (category) => category.id === relationship.targetCategoryId
+    (category) => category.id === relationship.targetCategoryId,
   );
   const evidenceUnits = units.filter((unit) =>
-    relationship.evidenceUnitNumbers.includes(unit.number)
+    relationship.evidenceUnitNumbers.includes(unit.number),
   );
   const evidenceGroups = buildRelationshipEvidenceGroups({
     relationship,
     sourceCategory,
     targetCategory,
-    units
+    units,
   });
   const selectedEvidenceNumbers = new Set(relationship.evidenceUnitNumbers);
   const updateEvidenceSelection = (unitNumber: number, selected: boolean) => {
     const nextEvidenceNumbers = selected
       ? Array.from(new Set([...relationship.evidenceUnitNumbers, unitNumber]))
-      : relationship.evidenceUnitNumbers.filter((number) => number !== unitNumber);
+      : relationship.evidenceUnitNumbers.filter(
+          (number) => number !== unitNumber,
+        );
     onUpdate(relationship.id, {
-      evidenceUnitNumbers: nextEvidenceNumbers.sort((left, right) => left - right)
+      evidenceUnitNumbers: nextEvidenceNumbers.sort(
+        (left, right) => left - right,
+      ),
     });
   };
 
@@ -10203,7 +11486,9 @@ function IntegrationRelationshipCard({
           <select
             className="select"
             onChange={(event) =>
-              onUpdate(relationship.id, { sourceCategoryId: event.target.value })
+              onUpdate(relationship.id, {
+                sourceCategoryId: event.target.value,
+              })
             }
             value={relationship.sourceCategoryId}
           >
@@ -10219,7 +11504,9 @@ function IntegrationRelationshipCard({
           <select
             className="select"
             onChange={(event) =>
-              onUpdate(relationship.id, { label: event.target.value as IntegrationRelationshipLabel })
+              onUpdate(relationship.id, {
+                label: event.target.value as IntegrationRelationshipLabel,
+              })
             }
             value={relationship.label}
           >
@@ -10235,7 +11522,9 @@ function IntegrationRelationshipCard({
           <select
             className="select"
             onChange={(event) =>
-              onUpdate(relationship.id, { targetCategoryId: event.target.value })
+              onUpdate(relationship.id, {
+                targetCategoryId: event.target.value,
+              })
             }
             value={relationship.targetCategoryId}
           >
@@ -10272,7 +11561,8 @@ function IntegrationRelationshipCard({
             </span>
           ) : (
             <span className="badge blue">
-              {evidenceUnits.length} selected MU{evidenceUnits.length === 1 ? "" : "s"}
+              {evidenceUnits.length} selected MU
+              {evidenceUnits.length === 1 ? "" : "s"}
             </span>
           )}
         </div>
@@ -10310,7 +11600,10 @@ function IntegrationRelationshipCard({
                     <input
                       checked={selectedEvidenceNumbers.has(unit.number)}
                       onChange={(event) =>
-                        updateEvidenceSelection(unit.number, event.target.checked)
+                        updateEvidenceSelection(
+                          unit.number,
+                          event.target.checked,
+                        )
                       }
                       type="checkbox"
                     />
@@ -10318,9 +11611,7 @@ function IntegrationRelationshipCard({
                       <strong>
                         MU {unit.number} · {unit.speaker || "Speaker unknown"}
                       </strong>
-                      <small>
-                        {buildRelationshipEvidenceOptionText(unit)}
-                      </small>
+                      <small>{buildRelationshipEvidenceOptionText(unit)}</small>
                     </span>
                   </label>
                 ))
@@ -10354,20 +11645,20 @@ function IntegrationRelationshipCard({
 function RelationshipFlowRow({
   categories,
   relationship,
-  units
+  units,
 }: {
   categories: CategoryNode[];
   relationship: IntegrationRelationshipDraft;
   units: MeaningUnit[];
 }) {
   const sourceCategory = categories.find(
-    (category) => category.id === relationship.sourceCategoryId
+    (category) => category.id === relationship.sourceCategoryId,
   );
   const targetCategory = categories.find(
-    (category) => category.id === relationship.targetCategoryId
+    (category) => category.id === relationship.targetCategoryId,
   );
   const evidenceUnits = units.filter((unit) =>
-    relationship.evidenceUnitNumbers.includes(unit.number)
+    relationship.evidenceUnitNumbers.includes(unit.number),
   );
 
   return (
@@ -10391,14 +11682,19 @@ function RelationshipFlowRow({
       </p>
       <details className="relationship-evidence-details">
         <summary>
-          Review MU evidence ({evidenceUnits.length || relationship.evidenceUnitNumbers.length})
+          Review MU evidence (
+          {evidenceUnits.length || relationship.evidenceUnitNumbers.length})
         </summary>
         <div className="evidence-strip">
           {evidenceUnits.length === 0 ? (
             <span className="badge warning">No linked MU evidence yet</span>
           ) : (
             evidenceUnits.map((unit) => (
-              <span className="badge blue" key={unit.id} title={unit.humanSummary || unit.aiSummary}>
+              <span
+                className="badge blue"
+                key={unit.id}
+                title={unit.humanSummary || unit.aiSummary}
+              >
                 MU {unit.number}
               </span>
             ))
@@ -10421,7 +11717,7 @@ function IntegrationDraftPanel({
   onChangeNarrative,
   onConfirm,
   onNoteChange,
-  units
+  units,
 }: {
   categories: CategoryNode[];
   integrationNote: string;
@@ -10433,13 +11729,17 @@ function IntegrationDraftPanel({
   units: MeaningUnit[];
 }) {
   const linkedUnits = units.filter((unit) =>
-    categories.some((category) => category.includedUnitIds.includes(unit.number))
+    categories.some((category) =>
+      category.includedUnitIds.includes(unit.number),
+    ),
   );
   return (
     <div className="mini-card soft">
       <div className="category-header">
         <div>
-          <span className="label">Provisional summary of the category structure</span>
+          <span className="label">
+            Provisional summary of the category structure
+          </span>
           <h3>Editable summary narrative</h3>
           <p className="small">
             This narrative should explain the relationships among categories.
@@ -10448,7 +11748,9 @@ function IntegrationDraftPanel({
           </p>
         </div>
         <StatusBadge
-          label={integrationReviewed ? "Confirmed by researcher" : "Needs review"}
+          label={
+            integrationReviewed ? "Confirmed by researcher" : "Needs review"
+          }
         />
       </div>
       <textarea
@@ -10504,48 +11806,48 @@ function IntegrationDraftPanel({
 }
 
 function buildIntegrationMapGroups(
-  categories: CategoryNode[]
+  categories: CategoryNode[],
 ): IntegrationMapGroup[] {
   const groupDefinitions = [
     {
       key: "context",
       label: "Context / starting point",
       description:
-        "Categories that describe the situation, condition, or concern that frames the account."
+        "Categories that describe the situation, condition, or concern that frames the account.",
     },
     {
       key: "process",
       label: "Experience / process",
       description:
-        "Categories that describe what the participant noticed, did, felt, or made sense of."
+        "Categories that describe what the participant noticed, did, felt, or made sense of.",
     },
     {
       key: "support",
       label: "Supportive condition",
       description:
-        "Categories that appear to support, enable, or shape the experience described."
+        "Categories that appear to support, enable, or shape the experience described.",
     },
     {
       key: "boundary",
       label: "Boundary / tension",
       description:
-        "Categories that qualify the account, introduce limits, or show tension in the interpretation."
+        "Categories that qualify the account, introduce limits, or show tension in the interpretation.",
     },
     {
       key: "implication",
       label: "Practical implication",
       description:
-        "Categories that point toward cautious practical considerations within this transcript."
-    }
+        "Categories that point toward cautious practical considerations within this transcript.",
+    },
   ];
 
   return groupDefinitions
     .map((group) => ({
       categories: categories.filter(
-        (category) => classifyIntegrationCategory(category) === group.key
+        (category) => classifyIntegrationCategory(category) === group.key,
       ),
       description: group.description,
-      label: group.label
+      label: group.label,
     }))
     .filter((group) => group.categories.length > 0);
 }
@@ -10554,28 +11856,28 @@ function classifyIntegrationCategory(category: CategoryNode) {
   const text = `${category.name} ${category.definition}`.toLowerCase();
   if (
     /\b(context|background|before|stress|pressure|symptom|anxiety|uncertainty|starting|initial)\b/.test(
-      text
+      text,
     )
   ) {
     return "context";
   }
   if (
     /\b(peer|group|support|shared|relationship|recognised|recognized|belong|wechat|community)\b/.test(
-      text
+      text,
     )
   ) {
     return "support";
   }
   if (
     /\b(limit|barrier|privacy|discomfort|difficulty|challenge|tension|concern|risk|hesitat)\b/.test(
-      text
+      text,
     )
   ) {
     return "boundary";
   }
   if (
     /\b(implication|suggest|recommend|design|programme|program|practice|flexible|future|should)\b/.test(
-      text
+      text,
     )
   ) {
     return "implication";
@@ -10586,7 +11888,7 @@ function classifyIntegrationCategory(category: CategoryNode) {
 function buildIntegrationStructureDraft({
   categories,
   researchQuestion,
-  units
+  units,
 }: {
   categories: CategoryNode[];
   researchQuestion: string;
@@ -10595,7 +11897,7 @@ function buildIntegrationStructureDraft({
   const acceptedUnitNumbers = new Set(units.map((unit) => unit.number));
   const mapGroups = buildIntegrationMapGroups(categories);
   const representativeByGroup = new Map(
-    mapGroups.map((group) => [group.label, group.categories[0]])
+    mapGroups.map((group) => [group.label, group.categories[0]]),
   );
   const relationships: IntegrationRelationshipDraft[] = [];
 
@@ -10603,7 +11905,7 @@ function buildIntegrationStructureDraft({
     source: CategoryNode | undefined,
     target: CategoryNode | undefined,
     type: string,
-    rationale: string
+    rationale: string,
   ) => {
     if (!source || !target || source.id === target.id) {
       return;
@@ -10613,16 +11915,18 @@ function buildIntegrationStructureDraft({
         (relationship) =>
           relationship.sourceCategoryId === source.id &&
           relationship.targetCategoryId === target.id &&
-          relationship.label === toIntegrationRelationshipLabel(type)
+          relationship.label === toIntegrationRelationshipLabel(type),
       )
     ) {
       return;
     }
     const evidenceUnitNumbers = [
       ...source.includedUnitIds,
-      ...target.includedUnitIds
-    ].filter((unitNumber, index, array) =>
-      acceptedUnitNumbers.has(unitNumber) && array.indexOf(unitNumber) === index
+      ...target.includedUnitIds,
+    ].filter(
+      (unitNumber, index, array) =>
+        acceptedUnitNumbers.has(unitNumber) &&
+        array.indexOf(unitNumber) === index,
     );
     relationships.push({
       evidenceUnitNumbers: evidenceUnitNumbers.slice(0, 6),
@@ -10631,7 +11935,7 @@ function buildIntegrationStructureDraft({
       researcherNote: "",
       sourceCategoryId: source.id,
       targetCategoryId: target.id,
-      label: toIntegrationRelationshipLabel(type)
+      label: toIntegrationRelationshipLabel(type),
     });
   };
 
@@ -10639,31 +11943,41 @@ function buildIntegrationStructureDraft({
   const processCategory = representativeByGroup.get("Experience / process");
   const supportCategory = representativeByGroup.get("Supportive condition");
   const boundaryCategory = representativeByGroup.get("Boundary / tension");
-  const implicationCategory = representativeByGroup.get("Practical implication");
+  const implicationCategory = representativeByGroup.get(
+    "Practical implication",
+  );
 
   addRelationship(
     contextCategory,
     processCategory,
     "contextualises",
-    buildRelationshipRationale(contextCategory, processCategory, "may frame")
+    buildRelationshipRationale(contextCategory, processCategory, "may frame"),
   );
   addRelationship(
     supportCategory,
     processCategory,
     "supports",
-    buildRelationshipRationale(supportCategory, processCategory, "may support")
+    buildRelationshipRationale(supportCategory, processCategory, "may support"),
   );
   addRelationship(
     boundaryCategory,
     processCategory ?? supportCategory,
     "tensions with",
-    buildRelationshipRationale(boundaryCategory, processCategory ?? supportCategory, "may qualify")
+    buildRelationshipRationale(
+      boundaryCategory,
+      processCategory ?? supportCategory,
+      "may qualify",
+    ),
   );
   addRelationship(
     processCategory,
     implicationCategory,
     "develops into",
-    buildRelationshipRationale(processCategory, implicationCategory, "may inform")
+    buildRelationshipRationale(
+      processCategory,
+      implicationCategory,
+      "may inform",
+    ),
   );
 
   if (relationships.length === 0) {
@@ -10673,7 +11987,11 @@ function buildIntegrationStructureDraft({
         category,
         nextCategory,
         "co-occurs with",
-        buildRelationshipRationale(category, nextCategory, "may be read alongside")
+        buildRelationshipRationale(
+          category,
+          nextCategory,
+          "may be read alongside",
+        ),
       );
     });
   }
@@ -10686,12 +12004,14 @@ function buildIntegrationStructureDraft({
     categoryNames.length > 0
       ? `The current structure connects ${categoryNames
           .slice(0, 4)
-          .join(", ")}${categoryNames.length > 4 ? ", and related categories" : ""}.`
+          .join(
+            ", ",
+          )}${categoryNames.length > 4 ? ", and related categories" : ""}.`
       : "",
     relationships.length > 0
       ? `The suggested links point to possible relationships among categories, grounded in accepted meaning units. These links should be checked against the source excerpts before being treated as analytic claims.`
       : `No relationship has been confirmed yet. Add or revise links after reviewing the category evidence.`,
-    `Because this is a single-transcript prototype, the narrative should remain cautious: describe what appears in this account and avoid causal or generalisable claims.`
+    `Because this is a single-transcript prototype, the narrative should remain cautious: describe what appears in this account and avoid causal or generalisable claims.`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -10704,14 +12024,14 @@ function buildIntegrationStructureDraft({
     title:
       relationships.length > 0
         ? "Provisional relationship structure from reviewed categories"
-        : "Researcher-created relationship structure needed"
+        : "Researcher-created relationship structure needed",
   };
 }
 
 function buildRelationshipRationale(
   source: CategoryNode | undefined,
   target: CategoryNode | undefined,
-  verb: string
+  verb: string,
 ) {
   if (!source || !target) {
     return "Review the category evidence before treating this as an analytic relationship.";
@@ -10719,7 +12039,7 @@ function buildRelationshipRationale(
   const evidenceIds = [...source.includedUnitIds, ...target.includedUnitIds]
     .filter((unitNumber, index, array) => array.indexOf(unitNumber) === index)
     .slice(0, 4);
-  return `"${source.name}" ${verb} "${target.name}" in this transcript. Check MU ${evidenceIds.join(
-    ", "
-  ) || "evidence"} before confirming or revising this link.`;
+  return `"${source.name}" ${verb} "${target.name}" in this transcript. Check MU ${
+    evidenceIds.join(", ") || "evidence"
+  } before confirming or revising this link.`;
 }
