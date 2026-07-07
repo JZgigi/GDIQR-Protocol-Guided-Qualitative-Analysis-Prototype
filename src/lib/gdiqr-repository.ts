@@ -2761,6 +2761,120 @@ export async function saveIntegrationWorkspace({
   };
 }
 
+
+export async function saveIntegrityReviewItems({
+  action = "Updated methodological integrity review",
+  items,
+  projectId = defaultProjectId,
+  researcherNote
+}: {
+  action?: string;
+  items: IntegrityReviewItem[];
+  projectId?: string;
+  researcherNote?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured.", items };
+  }
+
+  const { data: previousRows, error: previousError } = await supabase
+    .from("integrity_review_items")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: true });
+  if (previousError) {
+    throw new Error(previousError.message);
+  }
+
+  const previousItems = (previousRows ?? []).map(mapIntegrityReviewItem);
+
+  const rows: Array<
+    Database["public"]["Tables"]["integrity_review_items"]["Insert"]
+  > = items.map((item, index) => ({
+    id: item.id || stableId("integrity", `${projectId}_${item.checkKey}`, index + 1),
+    project_id: projectId,
+    check_key: item.checkKey,
+    prompt: item.prompt,
+    status: item.status,
+    response: item.response,
+    researcher_note: item.researcherNote,
+    generated_from_state: item.generatedFromState
+  }));
+
+  const { data, error } = await supabase
+    .from("integrity_review_items")
+    .upsert(rows, { onConflict: "id" })
+    .select()
+    .order("created_at", { ascending: true });
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const savedItems = (data ?? []).map(mapIntegrityReviewItem);
+
+  await recordEditLog({
+    action,
+    actionType: "integrity_review_updated",
+    newValue: savedItems,
+    previousValue: previousItems,
+    projectId,
+    researcherNote,
+    step: "integrity",
+    targetId: projectId,
+    targetType: "integrity_review"
+  });
+
+  return { saved: true, items: savedItems };
+}
+
+export async function recordExportGenerated({
+  format,
+  projectId = defaultProjectId
+}: {
+  format: "json" | "csv" | "txt" | "docx" | "pdf";
+  projectId?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return { saved: false, reason: "Supabase is not configured." };
+  }
+
+  let exportRecord: ExportRecord | undefined;
+  if (format === "json" || format === "docx" || format === "pdf") {
+    const { data, error } = await supabase
+      .from("exports")
+      .insert({
+        project_id: projectId,
+        format,
+        storage_bucket: null,
+        storage_path: null
+      })
+      .select()
+      .single();
+    if (error) {
+      throw new Error(error.message);
+    }
+    exportRecord = mapExportRecord(data);
+  }
+
+  await recordEditLog({
+    action: `Generated ${format.toUpperCase()} export`,
+    actionType: "export_generated",
+    actor: "Researcher",
+    newValue: {
+      exportRecord,
+      format
+    },
+    projectId,
+    step: "export",
+    targetId: exportRecord?.id ?? `${projectId}-${format}-${Date.now()}`,
+    targetType: "export"
+  });
+
+  return { saved: true, exportRecord };
+}
+
 export async function replaceReviewerCommentsFromAi({
   comments,
   projectId = defaultProjectId,
@@ -2817,11 +2931,15 @@ export async function replaceReviewerCommentsFromAi({
     throw new Error(error.message);
   }
 
-  await supabase.from("audit_events").insert({
-    project_id: projectId,
-    actor: "Reviewer",
+  await recordEditLog({
     action: `Generated ${comments.length} ${workspace ?? "GDI-QR-informed"} reviewer issues`,
-    target: workspace ?? "Reviewer checks"
+    actionType: "reviewer_issue_generated",
+    actor: "Reviewer",
+    newValue: (data ?? []).map(mapReviewerComment),
+    projectId,
+    step: "integrity",
+    targetId: workspace ?? "reviewer-checks",
+    targetType: "reviewer_comment"
   });
 
   return {
@@ -2883,11 +3001,17 @@ export async function updateReviewerComment({
     throw new Error(error.message);
   }
 
-  await supabase.from("audit_events").insert({
-    project_id: projectId,
-    actor: "Researcher",
+  await recordEditLog({
     action: `Updated reviewer issue: ${nextStatus}`,
-    target: commentId
+    actionType: "reviewer_issue_resolved",
+    actor: "Researcher",
+    newValue: mapReviewerComment(data),
+    previousValue: mapped,
+    projectId,
+    researcherNote: memo,
+    step: "integrity",
+    targetId: commentId,
+    targetType: "reviewer_comment"
   });
 
   return { saved: true, comment: mapReviewerComment(data) };

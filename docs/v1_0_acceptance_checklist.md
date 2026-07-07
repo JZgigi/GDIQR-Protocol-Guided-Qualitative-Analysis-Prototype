@@ -331,3 +331,50 @@ Smoke check：
 - Researcher 可以编辑 category relationships、rationale、evidence grounding 和 summary narrative。
 - Integration narrative 不会自动被视为 final finding，仍然需要 researcher review/confirmation。
 - Refresh 后 Step 4 关系结构和 narrative 不丢失。
+
+## Ticket 9–10：Methodological integrity review + audit trail
+
+Branch：`feature/v1-integrity-audit-trail`
+
+Smoke check：
+
+1. 打开一个已经完成 Step 2–4 的 project。
+2. 进入 Step 5：Methodological Integrity。
+3. 确认页面显示根据当前 project state 自动生成的 checklist，包括：
+   - transcript 是否已 review / confirm
+   - AI-generated MUs 是否都已 review
+   - 是否存在 uncategorised accepted MUs
+   - 是否存在没有 MU 支撑的 categories
+   - excluded MUs 是否都有 reason
+   - category names 是否过宽或过度解释
+   - 是否存在 unresolved reviewer issues / over-interpretation flags
+   - interpretation 是否和 participant wording 区分清楚
+   - integration narrative 是否已经 review
+   - audit trail 是否存在
+4. 点击 **Refresh from project state**，确认 checklist 会根据当前项目状态重新计算。
+5. 修改一个 checklist item 的 status。
+6. 在 researcher response 和 researcher note 里填写说明。
+7. 点击 **Save methodological integrity review**。
+8. 刷新页面后确认 Step 5 checklist 的 researcher notes / resolved status 仍然存在。
+9. 在 Step 5 页面确认 audit trail 可见，并且 AI / Researcher / Reviewer actions 可以区分。
+10. 导出 JSON/TXT，确认包含：
+    - methodological integrity checklist
+    - reviewer issues
+    - researcher responses / notes
+    - audit trail
+11. 点击 JSON / CSV / TXT export 后，确认 Supabase audit/edit log 中记录 `export_generated`。
+
+预期 audit/edit-log events：
+
+- `reviewer_issue_generated`
+- `reviewer_issue_resolved`
+- `integrity_review_updated`
+- `export_generated`
+
+预期结果：
+
+- Step 5 不再只是 decorative reviewer page，而是可编辑、可保存、可导出的 methodological integrity review。
+- Checklist 会根据当前 project state 自动生成初始判断。
+- Researcher 可以添加 response/note，并把 issue 标记为 resolved / dismissed。
+- Audit trail 在项目内可见，并在 export 中保留。
+- Researcher edits、AI suggestions、Reviewer checks 在 audit trail 中可以区分。
