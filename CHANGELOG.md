@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-07
+
+- Updated repository documentation for the `release/1.0` testing cycle.
+- Added `docs/README.md` as the documentation index.
+- Added `docs/RELEASE_1_0_TESTING_GUIDE.md` for collaborator acceptance testing.
+- Added `docs/SUPABASE_V1_0_SETUP.md` with the full SQL migration order, reset instructions, and Supabase Storage cleanup notes.
+- Added `docs/TECHNICAL_DEBT_AND_NEXT_STEPS.md` to track workspace splitting, modal replacement, automated testing, AI provenance, security, and export hardening work.
+- Rewrote `README.md`, `docs/SETUP_GUIDE.md`, and `docs/LOCAL_AI_TESTING.md` for v1.0.
+- Removed the obsolete `docs/SUPABASE_PHASE2.md`; Phase 2 SQL remains part of the v1.0 migration chain, but it is no longer sufficient on its own.
+
 ## 2026-05-29
 
 - Created Phase 1 Next.js prototype scaffold in the current project folder.

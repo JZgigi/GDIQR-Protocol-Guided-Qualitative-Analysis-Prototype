@@ -8,21 +8,15 @@ The remote project needs:
 
 - Storage bucket: `interview-audio`
 - Tables: `public.audio_files`, `public.transcription_jobs`
-- Existing Phase 2 tables: `projects`, `transcripts`, `segments`, `meaning_units`, `category_systems`, `categories`, `reviewer_comments`, `audit_events`
+- Existing v1.0 migration-chain tables: `projects`, `transcripts`, `segments`, `meaning_units`, `category_systems`, `categories`, `reviewer_comments`, `audit_events`, `audio_files`, `transcription_jobs`, `pre_analysis_notes`, `edit_logs`, `integrity_review_items`, `exports`, and `guidance_memos`
 
-For a fresh project, run:
+For a fresh release/1.0 test database, run the full SQL order in `SUPABASE_V1_0_SETUP.md`:
 
-```sql
-supabase/phase2_schema.sql
-```
-
-For an existing Phase 2 project, run:
-
-```sql
-supabase/audio_upload_transcription.sql
-```
-
-This has already been applied to the current project `zlyukznrcujjvkcqifzw`.
+1. `supabase/phase2_schema.sql`
+2. `supabase/phase3_segment_workflow.sql`
+3. `supabase/audio_upload_transcription.sql`
+4. `supabase/v1_0_foundation_schema.sql`
+5. `supabase/v1_0_transcript_audio_review_schema.sql`
 
 ## 2. Install Local Transcription
 

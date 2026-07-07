@@ -1,17 +1,28 @@
-# Local AI + Remote Supabase Testing
+# Local AI Testing And Tuning
 
-Use this checklist after setting:
+Use this guide to test Ollama-backed AI behavior for `release/1.0`.
+
+## 1. Baseline Configuration
+
+Start with the `.env.example` defaults:
 
 ```text
 AI_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3:8b
 OLLAMA_API_TIMEOUT_MS=300000
+OLLAMA_MU_MAX_TOKENS=1800
 OLLAMA_MU_CHUNK_TIMEOUT_MS=120000
+MU_DEMO_AI_TIMEOUT_MS=120000
+NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS=120000
+OLLAMA_CATEGORY_MAX_TOKENS=1800
+OLLAMA_REVIEWER_MAX_TOKENS=1200
+OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS=300000
+NEXT_PUBLIC_TRANSCRIPT_PREPARE_TIMEOUT_MS=300000
+OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS=4096
+TRANSCRIPT_PROCESS_CHUNK_CHARS=6000
 TRANSCRIPT_MU_CHUNK_CHARS=1200
 ```
-
-## 1. Confirm services
 
 Start Ollama:
 
@@ -19,7 +30,7 @@ Start Ollama:
 ollama serve
 ```
 
-Confirm the model exists:
+Confirm the model is installed:
 
 ```bash
 ollama list
@@ -31,98 +42,177 @@ Start the app:
 npm run dev
 ```
 
-The local dev script intentionally uses Next.js webpack mode. In this project, Turbopack dev can hang while compiling the long-running AI API routes before a run log is created.
-
-## 2. Check the integrated health endpoint
-
 Open:
 
 ```text
 http://localhost:3000/api/ai/health
 ```
 
-Expected signals:
+Expected:
 
-```json
-{
-  "aiProvider": "ollama",
-  "ollama": {
-    "ok": true
-  },
-  "supabase": {
-    "dataSource": "supabase",
-    "configured": true
-  }
-}
-```
+- `ollama.ok` is `true`.
+- `supabase.configured` is `true` when testing in Supabase mode.
 
-If `supabase.dataSource` is `unconfigured`, check `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `GDIQR_DEFAULT_PROJECT_ID`.
+## 2. What Each Setting Does
 
-If `ollama.ok` is `false`, check that Ollama is running and that `OLLAMA_BASE_URL` ends in `/v1`.
+| Setting | Purpose | First tuning move |
+| --- | --- | --- |
+| `OLLAMA_MODEL` | Model used for transcript prep, MU drafting, categories, and review. | Start with `qwen3:8b`; compare stronger models later. |
+| `OLLAMA_API_TIMEOUT_MS` | General Ollama request timeout. | Keep at `300000` unless long runs fail. |
+| `OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS` | Transcript preparation timeout. | Increase for long transcripts or bigger models. |
+| `NEXT_PUBLIC_TRANSCRIPT_PREPARE_TIMEOUT_MS` | Browser request timeout for transcript preparation. | Keep equal to or slightly above server timeout. |
+| `TRANSCRIPT_PROCESS_CHUNK_CHARS` | Transcript prep chunk size. | Reduce if JSON or privacy/speaker labelling fails. |
+| `TRANSCRIPT_MU_CHUNK_CHARS` | MU generation chunk size. | Increase slowly on stronger GPUs; reduce if output drifts or times out. |
+| `OLLAMA_MU_CHUNK_TIMEOUT_MS` | Server timeout for each MU generation chunk. | Increase if good outputs time out. |
+| `MU_DEMO_AI_TIMEOUT_MS` | Meaning-unit API fallback timeout. | Increase for larger models; reduce for quick smoke checks. |
+| `NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS` | Browser-side MU request timeout. | Keep aligned with `MU_DEMO_AI_TIMEOUT_MS`. |
+| `OLLAMA_MU_MAX_TOKENS` | Maximum tokens for MU output. | Increase only if outputs are truncated. |
+| `OLLAMA_CATEGORY_MAX_TOKENS` | Maximum tokens for category output. | Increase only if category JSON is truncated. |
+| `OLLAMA_REVIEWER_MAX_TOKENS` | Maximum tokens for reviewer output. | Increase only if reviewer output is incomplete. |
 
-## 3. Optional: Upload your own audio first
+## 3. RTX 5090-Class Lab Machine Plan
 
-If you want to test from audio instead of an existing transcript:
+Do not immediately change every parameter. Use staged comparisons.
 
-1. Install the local transcription dependency in `LOCAL_AUDIO_TESTING.md`.
-2. Open **Upload**.
-3. Select **English** or **Chinese**.
-4. Choose your audio file and click **Upload and transcribe**.
-5. Confirm the generated transcript appears in **Transcript**.
-
-The upload route uses real Supabase Storage and records the transcription job in Supabase. It then asks Ollama to label speakers and de-identify private details before saving the transcript.
-
-## 4. Test the UI flow
-
-Open:
+### Pass A: Baseline
 
 ```text
-http://localhost:3000
+OLLAMA_MODEL=qwen3:8b
+TRANSCRIPT_MU_CHUNK_CHARS=1200
+OLLAMA_MU_CHUNK_TIMEOUT_MS=120000
+MU_DEMO_AI_TIMEOUT_MS=120000
 ```
 
-Then test in this order:
+Record:
 
-1. Click **Refresh API** and confirm the status says data loaded from Supabase.
-2. Go to **Transcript**, review speaker labels and privacy markers, edit the text if needed, then click **Confirm transcript for analysis**.
-3. Go to **Meaning Units** and click **Generate draft MUs**.
-4. Confirm the status says the result was saved to Supabase.
-5. Click **Refresh API** and confirm the generated meaning units remain.
-6. Go to **Categories** and click **Run Mode A**, **Run Mode B**, or **Run Mode C**.
-7. Click **Refresh API** and confirm the latest category system remains.
-8. Go to **Reviewers** and click **Run reviewer agents**.
-9. Click **Refresh API** and confirm reviewer comments remain.
+- transcript length,
+- transcript preparation time,
+- MU generation time,
+- number of generated MUs,
+- fallback use,
+- JSON repair or parse errors,
+- researcher-perceived MU boundary quality.
 
-## 5. What is persisted
+### Pass B: Larger Context
 
-The current implementation persists:
+Only change:
 
-- Uploaded audio file metadata into `public.audio_files`
-- Local transcription job state into `public.transcription_jobs`
-- Generated transcripts into `public.transcripts`
-- Replacement working segment into `public.segments`
-- Generated meaning units into `public.meaning_units`
-- Generated category systems into `public.category_systems` and `public.categories`
-- Generated reviewer comments into `public.reviewer_comments`
-- Audit events into `public.audit_events`
+```text
+TRANSCRIPT_MU_CHUNK_CHARS=1800
+```
 
-Meaning-unit generation replaces the current project meaning units. Reviewer generation replaces the current project reviewer comments. Category generation creates a new category system, and the app loads the latest one.
+Compare whether MU boundaries improve or whether outputs become too broad.
 
-## 6. Known testing limits
+### Pass C: Longer Timeout
 
-- The local model may occasionally return invalid JSON. The API will show an error instead of saving malformed output.
-- Long transcripts are split before meaning-unit generation. For `qwen3:8b`, start with `TRANSCRIPT_MU_CHUNK_CHARS=1200`; raise it only if your model handles larger context reliably.
-- In local dev, Next.js may show "Compiling /api/ai/..." the first time you hit an API route. That compile step should be brief. If the UI stays on "Calling meaning-unit API...", the wait is usually Ollama generation time, not Next.js compilation.
-- Meaning-unit generation starts as a background local job, so the browser request should return quickly while Ollama continues processing.
-- If a specific chunk is slow, try a faster model, increase `OLLAMA_MU_CHUNK_TIMEOUT_MS`, or reduce `TRANSCRIPT_MU_CHUNK_CHARS`.
-- The **AI / transcription activity** panel at the bottom of the app polls `/api/run-logs` every 2 seconds and shows local step timings. Logs are written under `.next/gdiqr-run-logs.json` during local development.
-- Local transcription currently runs inside the Next.js API request. Long audio can take several minutes; a background worker is still the better production shape.
-- Chinese audio is supported through faster-whisper by selecting Chinese in the Upload step.
+Only change:
 
-## 7. Next development step
+```text
+OLLAMA_MU_CHUNK_TIMEOUT_MS=240000
+MU_DEMO_AI_TIMEOUT_MS=240000
+NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS=240000
+```
 
-After this test passes, add:
+Use this if the model produces good output but times out.
 
-- `ai_runs` table for model run history and latency
-- prompt versioning in `prompt_templates`
-- segment-level batch processing for long interviews
-- background transcription worker or job queue for long audio
+### Pass D: Stronger Model
+
+Only change:
+
+```text
+OLLAMA_MODEL=<larger-local-model>
+```
+
+Keep the same chunk and timeout settings for the first comparison. Then tune chunk size and timeouts if the stronger model is stable.
+
+## 4. Quality Criteria
+
+Do not judge model quality by fluent prose alone. Prefer outputs that:
+
+- stay close to participant wording,
+- avoid unsupported interpretation,
+- preserve uncertainty,
+- produce reviewable MU boundaries,
+- keep category names grounded and parsimonious,
+- make researcher review easier rather than more impressive-looking.
+
+Watch for:
+
+- broad MUs that combine several ideas,
+- summaries that add causes or emotions not present in the transcript,
+- categories that sound polished but are weakly grounded,
+- reviewer outputs that imply validation instead of flagging possible issues,
+- fallback drafts that are not clearly visible as fallback drafts.
+
+## 5. Test Log Template
+
+```text
+Date:
+Branch:
+Commit:
+Machine/GPU:
+Ollama model:
+Transcript source:
+Transcript length:
+TRANSCRIPT_PROCESS_CHUNK_CHARS:
+TRANSCRIPT_MU_CHUNK_CHARS:
+Timeout settings:
+Transcript prep time:
+MU generation time:
+Category generation time:
+Reviewer time:
+Fallback used:
+Errors:
+Researcher quality notes:
+Decision for next run:
+```
+
+## 6. Troubleshooting
+
+### Ollama health check fails
+
+Check:
+
+```bash
+ollama serve
+ollama list
+```
+
+Then confirm `OLLAMA_BASE_URL=http://localhost:11434`.
+
+### Meaning units fall back too quickly
+
+Increase:
+
+```text
+OLLAMA_MU_CHUNK_TIMEOUT_MS
+MU_DEMO_AI_TIMEOUT_MS
+NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS
+```
+
+### Outputs are too broad or over-interpretive
+
+Reduce:
+
+```text
+TRANSCRIPT_MU_CHUNK_CHARS
+```
+
+Then re-run the same transcript.
+
+### JSON parse failures increase
+
+Try one or more:
+
+- reduce chunk size,
+- reduce max tokens,
+- use a stronger instruction-following model,
+- keep the transcript test shorter for smoke checks.
+
+### Browser request aborts before the server finishes
+
+Increase the matching `NEXT_PUBLIC_*` timeout so the browser-side request does not end earlier than the server-side generation.
+
+## 7. Relationship To Acceptance Testing
+
+AI tuning is not a replacement for acceptance testing. After any parameter change that looks promising, run the relevant steps in [v1.0 collaborator testing guide](RELEASE_1_0_TESTING_GUIDE.md) and [acceptance checklist](v1_0_acceptance_checklist.md).

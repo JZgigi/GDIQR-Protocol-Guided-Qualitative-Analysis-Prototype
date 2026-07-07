@@ -1,14 +1,136 @@
 # Setup Guide
 
-## 1. Install Local Dependencies
+Use this guide for local development and release/1.0 testing.
 
-Install Node.js dependencies from the project folder:
+## 1. Install Dependencies
 
 ```bash
 npm install
 ```
 
-Then start the local prototype:
+## 2. Create Local Environment File
+
+```bash
+cp .env.example .env.local
+```
+
+On Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env.local
+```
+
+## 3. Choose Storage Mode
+
+### Local-only quick demo
+
+```text
+NEXT_PUBLIC_APP_ENV=local
+STORAGE_MODE=local
+AI_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:8b
+```
+
+Local-only mode does not persist project data to Supabase through the normal UI. Use JSON export if you need to keep a copy.
+
+### Supabase-backed v1.0 testing
+
+```text
+NEXT_PUBLIC_APP_ENV=local
+STORAGE_MODE=supabase
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
+GDIQR_DEFAULT_PROJECT_ID=proj_student_wellbeing
+```
+
+Keep `SUPABASE_SERVICE_ROLE_KEY` server-only.
+
+## 4. Configure Local AI
+
+Baseline:
+
+```text
+AI_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:8b
+OLLAMA_API_TIMEOUT_MS=300000
+OLLAMA_MU_CHUNK_TIMEOUT_MS=120000
+MU_DEMO_AI_TIMEOUT_MS=120000
+NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS=120000
+OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS=300000
+NEXT_PUBLIC_TRANSCRIPT_PREPARE_TIMEOUT_MS=300000
+TRANSCRIPT_PROCESS_CHUNK_CHARS=6000
+TRANSCRIPT_MU_CHUNK_CHARS=1200
+```
+
+Start Ollama:
+
+```bash
+ollama serve
+```
+
+Install the model if needed:
+
+```bash
+ollama pull qwen3:8b
+```
+
+## 5. Optional Local Audio Transcription
+
+Install faster-whisper:
+
+```bash
+python -m venv .venv
+.venv\Scripts\python -m pip install faster-whisper
+```
+
+On macOS/Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install faster-whisper
+```
+
+Set:
+
+```text
+PYTHON_BIN=.venv/Scripts/python
+WHISPER_MODEL=small
+WHISPER_DEVICE=auto
+WHISPER_COMPUTE_TYPE=int8
+TRANSCRIPTION_TIMEOUT_MS=1800000
+```
+
+On macOS/Linux, use:
+
+```text
+PYTHON_BIN=.venv/bin/python
+```
+
+See [Local audio testing](LOCAL_AUDIO_TESTING.md) for the full flow.
+
+## 6. Supabase Setup
+
+Run the v1.0 SQL sequence in [Supabase v1.0 setup](SUPABASE_V1_0_SETUP.md).
+
+Short version:
+
+1. `supabase/phase2_schema.sql`
+2. `supabase/phase3_segment_workflow.sql`
+3. `supabase/audio_upload_transcription.sql`
+4. `supabase/v1_0_foundation_schema.sql`
+5. `supabase/v1_0_transcript_audio_review_schema.sql`
+
+For a fresh default-project test reset:
+
+```text
+supabase/reset_default_project_empty.sql
+```
+
+## 7. Run The App
 
 ```bash
 npm run dev
@@ -20,91 +142,16 @@ Open:
 http://localhost:3000
 ```
 
-## 2. Environment Variables
-
-Copy `.env.example` to `.env.local` when you are ready to run locally:
+## 8. Verify Before Review
 
 ```bash
-cp .env.example .env.local
+npm run typecheck
+npm run build
 ```
 
-Use Ollama for local AI:
+## 9. Main Test Documents
 
-```text
-AI_PROVIDER=ollama
-```
-
-For Phase 2 Supabase persistence, also fill:
-
-```text
-NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_ANON_OR_PUBLISHABLE_KEY
-SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
-GDIQR_DEFAULT_PROJECT_ID=proj_student_wellbeing
-```
-
-For the local AI phase:
-
-```text
-AI_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434/v1
-OLLAMA_MODEL=qwen3:8b
-```
-
-## 3. GitHub Setup
-
-From this folder:
-
-```bash
-git init
-git add .
-git commit -m "Create phase 1 GDI-QR-informed prototype"
-```
-
-Create an empty GitHub repository, then connect it:
-
-```bash
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
-git branch -M main
-git push -u origin main
-```
-
-## 4. Vercel Setup
-
-1. Go to Vercel and import the GitHub repository.
-2. Choose the default Next.js settings.
-3. Add the same Supabase and Ollama-facing environment variables you use locally, or deploy only after you have an external AI/transcription provider.
-
-4. Deploy.
-
-For local AI setup after Phase 2 is stable, see `LOCAL_AI_PHASE3.md`.
-
-## 5. Supabase Setup for Phase 2
-
-Create a Supabase project, then collect:
-
-```text
-NEXT_PUBLIC_SUPABASE_URL
-NEXT_PUBLIC_SUPABASE_ANON_KEY
-SUPABASE_SERVICE_ROLE_KEY
-```
-
-Then run `supabase/phase2_schema.sql` in the Supabase SQL Editor. The SQL creates the first tables, enables RLS, grants server-side Data API access, creates Storage buckets, and creates an empty default project.
-
-Planned storage buckets:
-
-- `interview-audio`
-- `exports`
-- `transcript-versions`
-
-Planned first tables:
-
-- `projects`
-- `transcripts`
-- `segments`
-- `meaning_units`
-- `category_systems`
-- `categories`
-- `reviewer_comments`
-- `edit_logs`
-- `exports`
+- [v1.0 collaborator testing guide](RELEASE_1_0_TESTING_GUIDE.md)
+- [Acceptance checklist](v1_0_acceptance_checklist.md)
+- [Local AI testing](LOCAL_AI_TESTING.md)
+- [Known technical debt and next steps](TECHNICAL_DEBT_AND_NEXT_STEPS.md)

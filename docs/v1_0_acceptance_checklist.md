@@ -1,5 +1,7 @@
 # GDI-QR v1.0 验收清单
 
+> 2026-07-07 更新：协作者执行完整测试前，请先阅读 `docs/RELEASE_1_0_TESTING_GUIDE.md` 和 `docs/SUPABASE_V1_0_SETUP.md`。数据库重置请运行 `supabase/reset_default_project_empty.sql`；Supabase SQL Editor 不允许直接删除 `storage.objects`，如需清理上传文件，请在 Supabase Storage UI 中删除 `proj_student_wellbeing/` 目录。
+
 本文件用于记录 July v1.0 research release 的手动验收流程。后续每完成一个 feature branch，都继续更新这个文件。当前开发阶段先以 smoke check 为主：只要能正常 typecheck、启动、页面不崩，就可以先合并到 `release/1.0`；完整端到端测试等所有 P0 工单完成后统一做。
 
 ## 当前测试策略

@@ -52,7 +52,7 @@ OLLAMA_BASE_URL=http://localhost:11434/v1
 OLLAMA_MODEL=qwen3:8b
 ```
 
-Keep the Supabase variables from Phase 2:
+For release/1.0 testing, keep the Supabase variables from the v1.0 setup:
 
 ```text
 NEXT_PUBLIC_SUPABASE_URL=...
@@ -79,11 +79,11 @@ Implemented first-pass sequence:
 4. Persist generated meaning units into `public.meaning_units`.
 5. Repeat for categories and reviewer agents.
 
-Use `LOCAL_AI_TESTING.md` for the current end-to-end test flow.
+Use `RELEASE_1_0_TESTING_GUIDE.md` for the current end-to-end test flow and `LOCAL_AI_TESTING.md` for model/timeout tuning.
 
 ## 6. Supabase changes for local AI
 
-No new Supabase tables are required just to start local AI text generation.
+No new Supabase tables are required just to start local AI text generation beyond the v1.0 migration chain documented in `SUPABASE_V1_0_SETUP.md`.
 
 The next useful Supabase additions are:
 
