@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import type {
   AudioFileRecord,
+  AuditActionType,
   AuditEvent,
   CategoryMode,
   CategoryNode,
@@ -2556,32 +2557,45 @@ export function GdiqrWorkspace({
     setIsRunningReviewer(false);
   }
 
-  function updateCategoryDraft(
+  async function updateCategoryDraft(
     categoryId: string,
     updates: Partial<CategoryNode>
   ) {
-    setDisplayCategories((current) =>
-      current.map((category) =>
-        category.id === categoryId
-          ? {
-              ...category,
-              ...updates,
-              status:
-                updates.status ??
-                (category.status === "confirmed" ? "confirmed" : "edited")
-            }
-          : category
-      )
+    const previousCategories = displayCategories;
+    const existingCategory = previousCategories.find((item) => item.id === categoryId);
+    const nextCategories: CategoryNode[] = previousCategories.map((category) =>
+      category.id === categoryId
+        ? {
+            ...category,
+            ...updates,
+            status: updates.status ?? getEditedCategoryStatus(category.status)
+          }
+        : category
     );
-    setCategoryDraftNotice(
-      "Category draft edited. Review the included meaning units and evidence before confirming."
-    );
+    const actionType: AuditActionType =
+      typeof updates.name === "string" && updates.name !== existingCategory?.name
+        ? "category_renamed"
+        : "category_updated";
+    await persistCategorySystem({
+      action:
+        actionType === "category_renamed"
+          ? `Renamed category ${existingCategory?.name ?? categoryId} to ${updates.name}`
+          : `Updated category ${existingCategory?.name ?? categoryId}`,
+      actionType,
+      nextCategories,
+      previousCategories,
+      researcherNote:
+        typeof updates.memo === "string" || typeof updates.rationale === "string"
+          ? updates.memo ?? updates.rationale
+          : undefined
+    });
   }
 
-  function addCategoryDraft(unitNumbers: number[] = []) {
+  async function addCategoryDraft(unitNumbers: number[] = []) {
     const name =
       window.prompt("New category title:", "New draft category")?.trim() ||
       "New draft category";
+    const previousCategories = displayCategories;
     const nextCategory: CategoryNode = {
       definition: "Researcher-created draft category. Add a short analytic definition.",
       id: `cat_manual_${Date.now()}`,
@@ -2590,45 +2604,75 @@ export function GdiqrWorkspace({
       source: "researcher_confirmed",
       status: "edited"
     };
-    setDisplayCategories((current) => [...current, nextCategory]);
-    setCategoryDraftNotice(
-      "New editable category created. Add or move meaning units into it before confirming."
-    );
-  }
-
-  function removeMeaningUnitFromCategory(categoryId: string, unitNumber: number) {
-    updateCategoryDraft(categoryId, {
-      includedUnitIds:
-        displayCategories
-          .find((category) => category.id === categoryId)
-          ?.includedUnitIds.filter((number) => number !== unitNumber) ?? []
+    await persistCategorySystem({
+      action: `Created category ${name}`,
+      actionType: "category_created",
+      nextCategories: [...previousCategories, nextCategory],
+      previousCategories,
+      researcherNote:
+        unitNumbers.length > 0
+          ? `Created from MU ${unitNumbers.join(", ")}`
+          : "Researcher-created empty category"
     });
   }
 
-  function assignMeaningUnitToCategory(unitNumber: number, categoryId: string) {
-    setDisplayCategories((current) =>
-      current.map((category) => {
-        const withoutUnit = category.includedUnitIds.filter(
-          (number) => number !== unitNumber
-        );
-        if (category.id !== categoryId) {
-          return { ...category, includedUnitIds: withoutUnit };
-        }
-        return {
-          ...category,
-          includedUnitIds: Array.from(new Set([...withoutUnit, unitNumber])).sort(
-            (left, right) => left - right
-          ),
-          status: category.status === "confirmed" ? "confirmed" : "edited"
-        };
-      })
+  async function removeMeaningUnitFromCategory(categoryId: string, unitNumber: number) {
+    const previousCategories = displayCategories;
+    const category = previousCategories.find((item) => item.id === categoryId);
+    const nextCategories: CategoryNode[] = previousCategories.map((item) =>
+      item.id === categoryId
+        ? {
+            ...item,
+            includedUnitIds: item.includedUnitIds.filter(
+              (number) => number !== unitNumber
+            ),
+            status: getEditedCategoryStatus(item.status)
+          }
+        : item
     );
-    setCategoryDraftNotice(
-      `MU #${unitNumber} assigned. Review category fit before confirmation.`
-    );
+    await persistCategorySystem({
+      action: `Removed MU #${unitNumber} from ${category?.name ?? categoryId}`,
+      actionType: "meaning_unit_moved",
+      nextCategories,
+      previousCategories
+    });
   }
 
-  function deleteCategoryDraft(category: CategoryNode) {
+  async function assignMeaningUnitToCategory(unitNumber: number, categoryId: string) {
+    const previousCategories = displayCategories;
+    const target = previousCategories.find((category) => category.id === categoryId);
+    const previousCategory = previousCategories.find((category) =>
+      category.includedUnitIds.includes(unitNumber)
+    );
+    const nextCategories: CategoryNode[] = previousCategories.map((category) => {
+      const withoutUnit = category.includedUnitIds.filter(
+        (number) => number !== unitNumber
+      );
+
+      if (category.id !== categoryId) {
+        return { ...category, includedUnitIds: withoutUnit };
+      }
+
+      return {
+        ...category,
+        includedUnitIds: Array.from(new Set([...withoutUnit, unitNumber])).sort(
+          (left, right) => left - right
+        ),
+        status: getEditedCategoryStatus(category.status)
+      };
+    });
+    await persistCategorySystem({
+      action: `Moved MU #${unitNumber} to ${target?.name ?? categoryId}`,
+      actionType: "meaning_unit_moved",
+      nextCategories,
+      previousCategories,
+      researcherNote: previousCategory
+        ? `Previous category: ${previousCategory.name}`
+        : "Previously unassigned"
+    });
+  }
+
+  async function deleteCategoryDraft(category: CategoryNode) {
     if (
       category.includedUnitIds.length > 0 &&
       !window.confirm(
@@ -2638,15 +2682,21 @@ export function GdiqrWorkspace({
       return;
     }
 
-    setDisplayCategories((current) =>
-      current.filter((item) => item.id !== category.id)
-    );
-    setCategoryDraftNotice(
-      "Category deleted. Its meaning units are now shown under Unassigned meaning units."
-    );
+    const previousCategories = displayCategories;
+    const nextCategories = previousCategories.filter((item) => item.id !== category.id);
+    await persistCategorySystem({
+      action: `Deleted category ${category.name}`,
+      actionType: "category_deleted",
+      nextCategories,
+      previousCategories,
+      researcherNote:
+        category.includedUnitIds.length > 0
+          ? `MUs returned to unassigned: ${category.includedUnitIds.join(", ")}`
+          : undefined
+    });
   }
 
-  function mergeCategoryDraft(category: CategoryNode) {
+  async function mergeCategoryDraft(category: CategoryNode) {
     const targetId = window.prompt(
       `Merge "${category.name}" into which category ID? Available: ${displayCategories
         .filter((item) => item.id !== category.id)
@@ -2661,27 +2711,32 @@ export function GdiqrWorkspace({
 
     const mergedName =
       window.prompt("Merged category title:", target.name)?.trim() || target.name;
-    setDisplayCategories((current) =>
-      current
-        .filter((item) => item.id !== category.id)
-        .map((item) =>
-          item.id === target.id
-            ? {
-                ...item,
-                definition: `${item.definition}\n\nMerged note: ${category.definition}`.trim(),
-                includedUnitIds: Array.from(
-                  new Set([...item.includedUnitIds, ...category.includedUnitIds])
-                ).sort((left, right) => left - right),
-                name: mergedName,
-                status: "edited"
-              }
-            : item
-        )
-    );
-    setCategoryDraftNotice("Categories merged. Review the merged title, definition, and evidence.");
+    const previousCategories = displayCategories;
+    const nextCategories = previousCategories
+      .filter((item) => item.id !== category.id)
+      .map((item) =>
+        item.id === target.id
+          ? {
+              ...item,
+              definition: `${item.definition}\n\nMerged note: ${category.definition}`.trim(),
+              includedUnitIds: Array.from(
+                new Set([...item.includedUnitIds, ...category.includedUnitIds])
+              ).sort((left, right) => left - right),
+              name: mergedName,
+              status: "edited" as const
+            }
+          : item
+      );
+    await persistCategorySystem({
+      action: `Merged category ${category.name} into ${mergedName}`,
+      actionType: "category_updated",
+      nextCategories,
+      previousCategories,
+      researcherNote: `Merged into target category ${target.name}`
+    });
   }
 
-  function splitCategoryDraft(category: CategoryNode) {
+  async function splitCategoryDraft(category: CategoryNode) {
     if (category.includedUnitIds.length < 2) {
       setApiStatus("Add at least two meaning units before splitting this category.");
       return;
@@ -2689,17 +2744,21 @@ export function GdiqrWorkspace({
     const splitIndex = Math.ceil(category.includedUnitIds.length / 2);
     const remainingUnitIds = category.includedUnitIds.slice(0, splitIndex);
     const splitUnitIds = category.includedUnitIds.slice(splitIndex);
+    const splitName =
+      window.prompt("Title for the new split category:", "Untitled provisional category")?.trim() ||
+      "Untitled provisional category";
     const splitCategory: CategoryNode = {
-      definition: "",
+      definition: "Researcher-created split category. Add a short analytic definition.",
       id: `cat_split_${Date.now()}`,
       includedUnitIds: splitUnitIds,
-      name: "Untitled provisional category",
+      name: splitName,
       source: "researcher_confirmed",
       status: "edited"
     };
 
-    setDisplayCategories((current) => [
-      ...current.map((item) =>
+    const previousCategories = displayCategories;
+    const nextCategories = [
+      ...previousCategories.map((item) =>
         item.id === category.id
           ? {
               ...item,
@@ -2712,13 +2771,17 @@ export function GdiqrWorkspace({
           : item
       ),
       splitCategory
-    ]);
-    setCategoryDraftNotice(
-      "Category split into two editable provisional categories. Rename and review both against their assigned meaning units."
-    );
+    ];
+    await persistCategorySystem({
+      action: `Split category ${category.name}`,
+      actionType: "category_updated",
+      nextCategories,
+      previousCategories,
+      researcherNote: `New split category ${splitName} contains MU ${splitUnitIds.join(", ")}`
+    });
   }
 
-  function confirmCategoryDraft(categoryId: string) {
+  async function confirmCategoryDraft(categoryId: string) {
     const category = displayCategories.find((item) => item.id === categoryId);
     if (!category) {
       return;
@@ -2743,11 +2806,11 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    updateCategoryDraft(categoryId, { status: "confirmed" });
+    await updateCategoryDraft(categoryId, { status: "confirmed" });
     setApiStatus("Category confirmed as researcher-reviewed draft.");
   }
 
-  function rejectCategoryDraft(category: CategoryNode) {
+  async function rejectCategoryDraft(category: CategoryNode) {
     if (
       !window.confirm(
         `Reject "${category.name}"? Its meaning units will move to Unassigned.`
@@ -2755,7 +2818,7 @@ export function GdiqrWorkspace({
     ) {
       return;
     }
-    updateCategoryDraft(category.id, {
+    await updateCategoryDraft(category.id, {
       includedUnitIds: [],
       status: "rejected"
     });
@@ -2858,6 +2921,85 @@ export function GdiqrWorkspace({
     setNarrative("");
     setCategoryDraftNotice("");
     setCategoryDraftIsFallback(false);
+  }
+
+  function getEditedCategoryStatus(
+    status: CategoryNode["status"]
+  ): CategoryNode["status"] {
+    return status === "confirmed" ? "confirmed" : "edited";
+  }
+
+  async function persistCategorySystem({
+    action,
+    actionType = "category_updated",
+    nextCategories,
+    previousCategories = displayCategories,
+    researcherNote
+  }: {
+    action: string;
+    actionType?: AuditActionType;
+    nextCategories: CategoryNode[];
+    previousCategories?: CategoryNode[];
+    researcherNote?: string;
+  }) {
+    setDisplayCategories(nextCategories);
+    setNarrative("");
+    setReviewerOutputs((current) =>
+      current.filter((comment) => comment.workspace !== "categories")
+    );
+    setCategoryDraftNotice(
+      `${action}. Category changes are researcher-led and should be reviewed against accepted meaning units.`
+    );
+    setCategoryDraftIsFallback(false);
+
+    if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action,
+        target: "Step 3 category system"
+      });
+      return true;
+    }
+
+    try {
+      const response = await fetch("/api/categories", {
+        body: JSON.stringify({
+          action,
+          actionType,
+          categories: nextCategories,
+          integratedNarrative: "",
+          mode,
+          previousCategories,
+          projectId: currentProject.id,
+          researcherNote
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        categories?: CategoryNode[];
+        error?: string;
+        reason?: string;
+        saved?: boolean;
+      };
+
+      if (!response.ok || !result.saved) {
+        setApiStatus(
+          result.error ?? result.reason ?? "Category change could not be saved."
+        );
+        setDisplayCategories(previousCategories);
+        return false;
+      }
+
+      setDisplayCategories(result.categories ?? nextCategories);
+      setApiStatus(`${action} and saved to Supabase.`);
+      return true;
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error ? error.message : "Category change could not be saved."
+      );
+      setDisplayCategories(previousCategories);
+      return false;
+    }
   }
 
   function recordLocalAuditEvent({
@@ -5494,6 +5636,14 @@ export function GdiqrWorkspace({
                       >
                         <RefreshCcw size={18} />
                         Optional assistant support: compare similarities
+                      </button>
+                      <button
+                        className="button"
+                        disabled={confirmedMeaningUnits.length === 0}
+                        onClick={() => void addCategoryDraft()}
+                        type="button"
+                      >
+                        Create empty category
                       </button>
                     </div>
                     {isRunningCategories && (
@@ -8238,7 +8388,7 @@ function getCategoryMemoValue(category: CategoryNode) {
   if (category.status === "ai_draft" || category.status === "fallback_draft") {
     return "";
   }
-  return category.rationale ?? "";
+  return category.memo ?? category.rationale ?? "";
 }
 
 function getCategoryAssistantStatusItems(category: CategoryNode) {
@@ -8649,7 +8799,7 @@ function CategoryBlock({
           className="textarea compact-textarea"
           id={`${category.id}-memo`}
           onChange={(event) =>
-            onUpdate(category.id, { rationale: event.target.value })
+            onUpdate(category.id, { memo: event.target.value })
           }
           placeholder="Note naming decisions, alternatives, doubts, or reasons to revisit this category"
           value={memoValue}

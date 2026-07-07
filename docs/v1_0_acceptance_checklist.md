@@ -254,3 +254,40 @@ Smoke check：
 10. Complete methodological integrity review。
 11. Export complete analysis record。
 12. 关闭浏览器并重新打开 project，确认所有工作都没有丢失。
+
+## Ticket 7：Categorising workflow
+
+Branch：`feature/v1-categorising-workflow`
+
+Smoke check：
+
+1. 打开一个已有 accepted MUs 的 project。
+2. 进入 Step 3：Categorising。
+3. 点击 **Create empty category**，创建一个 researcher-created category。
+4. 将一个或多个 accepted MUs 分配到该 category。
+5. 修改 category name、definition 和 researcher memo。
+6. 点击 **Confirm as provisional category**。
+7. 从 category 中移除一个 MU，确认它回到 unassigned MUs。
+8. 将 unassigned MU 移动到另一个 category。
+9. 创建第二个 category 后，测试 merge category。
+10. 对包含多个 MUs 的 category 测试 split category。
+11. 删除 category，确认其 MUs 回到 unassigned 状态。
+12. Reject grouping，确认该 category 不再作为有效 category 使用。
+13. 刷新页面后，确认 Supabase mode 下 category changes 仍然存在。
+14. 检查 Step 4 只使用非 rejected、且包含 accepted MUs 的 reviewed categories。
+
+预期 audit/edit-log events：
+
+- `category_created`
+- `category_renamed`
+- `category_updated`
+- `category_deleted`
+- `meaning_unit_moved`
+
+预期结果：
+
+- Step 3 支持 researcher-led category editing，而不是只展示 AI-generated category suggestions。
+- Researcher 可以创建、重命名、删除、合并、拆分 categories。
+- Researcher 可以把 MUs 加入、移出或移动到不同 category。
+- Category memo / definition / confirmation decision 可以保存。
+- Category edits 刷新后仍然存在，并进入 audit/edit log。

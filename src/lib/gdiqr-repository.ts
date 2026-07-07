@@ -2514,6 +2514,78 @@ export async function saveCategorySystemFromAi({
   };
 }
 
+
+export async function saveCategorySystemFromResearcher({
+  action = "Updated researcher category system",
+  actionType = "category_updated",
+  categories,
+  integratedNarrative = "",
+  mode = "A",
+  previousCategories,
+  projectId = defaultProjectId,
+  researcherNote
+}: {
+  action?: string;
+  actionType?: AuditActionType;
+  categories: CategoryNode[];
+  integratedNarrative?: string;
+  mode?: CategoryMode;
+  previousCategories?: CategoryNode[];
+  projectId?: string;
+  researcherNote?: string;
+}) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase) {
+    return {
+      saved: false,
+      reason: "Supabase is not configured.",
+      categories,
+      integratedNarrative
+    };
+  }
+
+  const { data: system, error: systemError } = await supabase
+    .from("category_systems")
+    .insert({
+      project_id: projectId,
+      mode,
+      integrated_narrative: integratedNarrative
+    })
+    .select()
+    .single();
+
+  if (systemError) {
+    throw new Error(systemError.message);
+  }
+
+  const rows = flattenCategoryRows(categories, system.id);
+  if (rows.length > 0) {
+    const { error } = await supabase.from("categories").insert(rows);
+    if (error) {
+      throw new Error(error.message);
+    }
+  }
+
+  await recordEditLog({
+    action,
+    actionType,
+    actor: "Researcher",
+    newValue: categories,
+    previousValue: previousCategories,
+    projectId,
+    researcherNote,
+    step: "categorizing",
+    targetId: system.id,
+    targetType: "category_system"
+  });
+
+  return {
+    saved: true,
+    categories,
+    integratedNarrative
+  };
+}
+
 export async function replaceReviewerCommentsFromAi({
   comments,
   projectId = defaultProjectId,
@@ -2683,7 +2755,7 @@ function flattenCategoryRows(
       definition: category.definition,
       included_unit_numbers: category.includedUnitIds,
       sort_order: sortOrder,
-      memo: category.memo ?? "",
+      memo: category.memo ?? category.rationale ?? "",
       source: category.source ?? "ai",
       status: category.status ?? "ai_draft",
       intentionally_uncategorised_unit_numbers:
