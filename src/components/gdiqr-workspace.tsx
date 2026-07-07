@@ -27,6 +27,8 @@ import type {
   CategoryNode,
   DatasetType,
   IntegrationRelationship as StoredIntegrationRelationship,
+  IntegrityReviewItem,
+  IntegrityReviewItemStatus,
   IntegrationRelationshipLabel,
   MeaningUnit,
   Project,
@@ -127,6 +129,7 @@ interface GdiqrWorkspaceProps {
   integratedNarrative: string;
   integrationRelationships?: StoredIntegrationRelationship[];
   integrationMemo?: string;
+  integrityReviewItems?: IntegrityReviewItem[];
   dataSource?: WorkspaceData["dataSource"];
   storageMode?: StorageMode;
   supabaseConfigured?: boolean;
@@ -149,6 +152,7 @@ export function GdiqrWorkspace({
   integratedNarrative,
   integrationRelationships: storedIntegrationRelationships = [],
   integrationMemo = "",
+  integrityReviewItems = [],
   dataSource = "unconfigured",
   storageMode = "local",
   supabaseConfigured = false
@@ -262,6 +266,10 @@ export function GdiqrWorkspace({
   );
   const [integrationSavedAt, setIntegrationSavedAt] = useState("");
   const [isSavingIntegration, setIsSavingIntegration] = useState(false);
+  const [displayIntegrityItems, setDisplayIntegrityItems] =
+    useState<IntegrityReviewItem[]>(integrityReviewItems);
+  const [integritySavedAt, setIntegritySavedAt] = useState("");
+  const [isSavingIntegrityReview, setIsSavingIntegrityReview] = useState(false);
   const [integrationStructureExplanation, setIntegrationStructureExplanation] =
     useState("");
   const [integrationStructureNotice, setIntegrationStructureNotice] =
@@ -660,6 +668,43 @@ export function GdiqrWorkspace({
   const acceptedMeaningUnitNumberKey = confirmedMeaningUnits
     .map((unit) => unit.number)
     .join(",");
+  const integrityChecklistItems = useMemo(
+    () =>
+      mergeIntegrityReviewItems(
+        buildIntegrityReviewItemsFromState({
+          auditEvents: displayAuditEvents,
+          categories: displayCategories,
+          categoryReviewIssues,
+          confirmedMeaningUnits,
+          excludedMeaningUnits,
+          integrationRelationships,
+          integrationReviewed,
+          meaningUnitReviewIssues,
+          meaningUnits: currentMeaningUnits,
+          narrative,
+          project: currentProject,
+          transcriptConfirmed,
+          unassignedMeaningUnits
+        }),
+        displayIntegrityItems
+      ),
+    [
+      categoryReviewIssues,
+      confirmedMeaningUnits,
+      currentMeaningUnits,
+      currentProject,
+      displayAuditEvents,
+      displayCategories,
+      displayIntegrityItems,
+      excludedMeaningUnits,
+      integrationRelationships,
+      integrationReviewed,
+      meaningUnitReviewIssues,
+      narrative,
+      transcriptConfirmed,
+      unassignedMeaningUnits
+    ]
+  );
 
   useEffect(() => {
     const acceptedNumbers = new Set(
@@ -734,6 +779,7 @@ export function GdiqrWorkspace({
     setDisplayAuditEvents(workspace.auditEvents);
     setNarrative(workspace.integratedNarrative);
     setIntegrationNote(workspace.integrationMemo ?? "");
+    setDisplayIntegrityItems(workspace.integrityReviewItems ?? []);
     setIntegrationRelationships(
       buildIntegrationRelationshipDrafts({
         categories: workspace.categories,
@@ -2964,6 +3010,130 @@ export function GdiqrWorkspace({
     });
   }
 
+  function updateIntegrityReviewItem(
+    itemId: string,
+    updates: Partial<Pick<IntegrityReviewItem, "researcherNote" | "response" | "status">>
+  ) {
+    setDisplayIntegrityItems((current) => {
+      const baseItems = mergeIntegrityReviewItems(integrityChecklistItems, current);
+      return baseItems.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              ...updates,
+              updatedAt: new Date().toISOString()
+            }
+          : item
+      );
+    });
+  }
+
+  function refreshIntegrityChecklistFromProjectState() {
+    setDisplayIntegrityItems((current) =>
+      mergeIntegrityReviewItems(
+        buildIntegrityReviewItemsFromState({
+          auditEvents: displayAuditEvents,
+          categories: displayCategories,
+          categoryReviewIssues,
+          confirmedMeaningUnits,
+          excludedMeaningUnits,
+          integrationRelationships,
+          integrationReviewed,
+          meaningUnitReviewIssues,
+          meaningUnits: currentMeaningUnits,
+          narrative,
+          project: currentProject,
+          transcriptConfirmed,
+          unassignedMeaningUnits
+        }),
+        current
+      )
+    );
+    setApiStatus("Methodological integrity checklist refreshed from the current project state.");
+  }
+
+  async function saveIntegrityReview() {
+    const itemsToSave = integrityChecklistItems.map((item) => ({
+      ...item,
+      updatedAt: new Date().toISOString()
+    }));
+    setDisplayIntegrityItems(itemsToSave);
+    setIsSavingIntegrityReview(true);
+
+    if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: "Updated methodological integrity review locally",
+        target: "Step 5 methodological integrity review"
+      });
+      setIntegritySavedAt(new Date().toISOString());
+      setApiStatus("Methodological integrity review saved locally for this browser session.");
+      setIsSavingIntegrityReview(false);
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/integrity", {
+        body: JSON.stringify({
+          action: "Updated Step 5 methodological integrity review",
+          items: itemsToSave,
+          projectId: currentProject.id,
+          researcherNote: "Researcher reviewed Step 5 methodological integrity checklist"
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        items?: IntegrityReviewItem[];
+        saved?: boolean;
+      };
+
+      if (!response.ok || !result.saved) {
+        setApiStatus(result.error ?? "Methodological integrity review could not be saved.");
+        return;
+      }
+
+      setDisplayIntegrityItems(result.items ?? itemsToSave);
+      setIntegritySavedAt(new Date().toISOString());
+      setApiStatus("Methodological integrity review saved to Supabase.");
+      void refreshWorkspace();
+    } catch (error) {
+      setApiStatus(
+        error instanceof Error
+          ? error.message
+          : "Methodological integrity review could not be saved."
+      );
+    } finally {
+      setIsSavingIntegrityReview(false);
+    }
+  }
+
+  async function recordExportEvent(format: "json" | "csv" | "txt") {
+    if (isLocalOnlyMode) {
+      recordLocalAuditEvent({
+        action: `Generated ${format.toUpperCase()} export locally`,
+        target: "Export"
+      });
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/export-records", {
+        body: JSON.stringify({
+          format,
+          projectId: currentProject.id
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      if (response.ok) {
+        void refreshWorkspace();
+      }
+    } catch {
+      // Export should still download even if the audit event cannot be recorded.
+    }
+  }
+
   async function updateReviewerIssue(
     commentId: string,
     updates: { memo?: string; status?: ReviewerComment["status"] }
@@ -4100,6 +4270,7 @@ export function GdiqrWorkspace({
         "application/json"
       );
       setApiStatus("JSON export downloaded");
+      void recordExportEvent("json");
       return;
     }
 
@@ -4110,6 +4281,7 @@ export function GdiqrWorkspace({
         "text/csv"
       );
       setApiStatus("CSV export downloaded");
+      void recordExportEvent("csv");
       return;
     }
 
@@ -4119,6 +4291,7 @@ export function GdiqrWorkspace({
       "text/plain"
     );
     setApiStatus("Text report downloaded");
+    void recordExportEvent("txt");
   }
 
   function buildExportPayload() {
@@ -4154,6 +4327,7 @@ export function GdiqrWorkspace({
       },
       meaningUnits: currentMeaningUnits,
       categories: displayCategories,
+      methodologicalIntegrityReview: integrityChecklistItems,
       methodologicalIntegrityIssues: reviewerOutputs,
       reviewerComments: reviewerOutputs,
       integratedNarrative: narrative,
@@ -4166,6 +4340,7 @@ export function GdiqrWorkspace({
         savedAt: integrationSavedAt,
         note: integrationStructureNotice
       },
+      auditTrail: displayAuditEvents,
       auditEvents: displayAuditEvents
     };
   }
@@ -4178,6 +4353,18 @@ export function GdiqrWorkspace({
       .map(
         (comment) =>
           `- [${comment.severity}] ${comment.agent} on ${comment.target}: ${comment.comment}`
+      )
+      .join("\n");
+    const integrityChecklistText = integrityChecklistItems
+      .map(
+        (item) =>
+          `- [${formatIntegrityStatus(item.status)}] ${item.prompt}\n  Response: ${item.response || "Not recorded"}\n  Researcher note: ${item.researcherNote || "Not recorded"}`
+      )
+      .join("\n");
+    const auditTrailText = displayAuditEvents
+      .map(
+        (event) =>
+          `- ${event.timestamp} | ${event.actor} | ${event.actionType ?? "other"} | ${event.action} | ${event.target}`
       )
       .join("\n");
 
@@ -4224,7 +4411,10 @@ export function GdiqrWorkspace({
       "Categories",
       categoryText || "No categories yet.",
       "",
-      "Methodological Integrity Checklist and Issues",
+      "Methodological Integrity Review",
+      integrityChecklistText || "No methodological integrity checklist items yet.",
+      "",
+      "Reviewer Issues",
       reviewerText || "No methodological integrity issues yet.",
       "",
       "Step 4 Integration",
@@ -4233,7 +4423,10 @@ export function GdiqrWorkspace({
       `Integration researcher note: ${integrationNote || "Not set"}`,
       "",
       "Summary Narrative",
-      narrative || "No summary narrative yet."
+      narrative || "No summary narrative yet.",
+      "",
+      "Audit Trail",
+      auditTrailText || "No audit events yet."
     ].join("\n");
   }
 
@@ -6131,12 +6324,14 @@ export function GdiqrWorkspace({
                   </div>
                 </div>
                 <MethodologicalIntegrityChecklist
-                  categoryCount={displayCategories.length}
-                  issueCount={reviewerOutputs.filter((issue) => issue.status !== "dismissed").length}
-                  meaningUnitCount={currentMeaningUnits.length}
-                  narrativeReviewed={integrationReviewed}
-                  transcriptConfirmed={transcriptConfirmed}
+                  items={integrityChecklistItems}
+                  isSaving={isSavingIntegrityReview}
+                  lastSavedAt={integritySavedAt}
+                  onRefresh={refreshIntegrityChecklistFromProjectState}
+                  onSave={() => void saveIntegrityReview()}
+                  onUpdate={updateIntegrityReviewItem}
                 />
+                <AuditTrailPanel auditEvents={displayAuditEvents} />
                 <details className="workbook-details reflection-details">
                   <summary>Open detailed reflection panels</summary>
                   <div className="review-layout">
@@ -6593,49 +6788,431 @@ function MethodologicalIntegrityGuide({
   );
 }
 
-function MethodologicalIntegrityChecklist({
-  categoryCount,
-  issueCount,
-  meaningUnitCount,
-  narrativeReviewed,
-  transcriptConfirmed
+function buildIntegrityReviewItemsFromState({
+  auditEvents,
+  categories,
+  categoryReviewIssues,
+  confirmedMeaningUnits,
+  excludedMeaningUnits,
+  integrationRelationships,
+  integrationReviewed,
+  meaningUnitReviewIssues,
+  meaningUnits,
+  narrative,
+  project,
+  transcriptConfirmed,
+  unassignedMeaningUnits
 }: {
-  categoryCount: number;
-  issueCount: number;
-  meaningUnitCount: number;
-  narrativeReviewed: boolean;
+  auditEvents: AuditEvent[];
+  categories: CategoryNode[];
+  categoryReviewIssues: ReviewerComment[];
+  confirmedMeaningUnits: MeaningUnit[];
+  excludedMeaningUnits: MeaningUnit[];
+  integrationRelationships: IntegrationRelationshipDraft[];
+  integrationReviewed: boolean;
+  meaningUnitReviewIssues: ReviewerComment[];
+  meaningUnits: MeaningUnit[];
+  narrative: string;
+  project: Project;
   transcriptConfirmed: boolean;
-}) {
-  const items: Array<{
-    label: string;
-    status: "Passed" | "Needs review" | "Not addressed";
-  }> = [
-    { label: "Respect for participants", status: transcriptConfirmed ? "Passed" : "Needs review" },
-    { label: "Clarity of presentation", status: narrativeReviewed ? "Passed" : "Needs review" },
-    { label: "Contextual information", status: meaningUnitCount > 0 ? "Passed" : "Not addressed" },
-    { label: "Coherence", status: categoryCount > 0 ? "Needs review" : "Not addressed" },
-    { label: "Credibility checks", status: issueCount > 0 ? "Needs review" : "Not addressed" },
-    { label: "Researcher expectations", status: "Needs review" },
-    { label: "Audit trail", status: "Needs review" },
-    { label: "Negative or contradictory cases", status: "Needs review" },
-    { label: "Category overlap", status: categoryCount > 1 ? "Needs review" : "Not addressed" },
-    { label: "Category overload", status: categoryCount > 8 ? "Needs review" : "Passed" },
-    { label: "Evidence support", status: meaningUnitCount > 0 ? "Needs review" : "Not addressed" }
+  unassignedMeaningUnits: MeaningUnit[];
+}): IntegrityReviewItem[] {
+  const now = new Date().toISOString();
+  const effectiveCategories = categories.filter(
+    (category) => category.status !== "rejected"
+  );
+  const unreviewedMeaningUnits = meaningUnits.filter(
+    (unit) => !unit.analysisExcluded && unit.humanStatus !== "Accepted"
+  );
+  const unjustifiedExcludedUnits = excludedMeaningUnits.filter(
+    (unit) => !unit.exclusionReason?.trim()
+  );
+  const unsupportedCategories = effectiveCategories.filter(
+    (category) => category.includedUnitIds.length === 0
+  );
+  const broadCategories = effectiveCategories.filter((category) =>
+    categoryTitleNeedsIntegrityReview(category)
+  );
+  const unresolvedReviewerIssues = [
+    ...meaningUnitReviewIssues,
+    ...categoryReviewIssues
+  ].filter((issue) => issue.status === "unresolved");
+  const interpretiveSummaryUnits = confirmedMeaningUnits.filter((unit) =>
+    summaryPossiblyGoesBeyondExcerpt(
+      unit.humanSummary || unit.aiSummary || "",
+      unit.excerpt
+    )
+  );
+
+  const buildItem = ({
+    checkKey,
+    prompt,
+    response,
+    status
+  }: {
+    checkKey: string;
+    prompt: string;
+    response: string;
+    status: IntegrityReviewItemStatus;
+  }): IntegrityReviewItem => ({
+    id: `integrity_${project.id}_${checkKey}`,
+    projectId: project.id,
+    checkKey,
+    prompt,
+    status,
+    response,
+    researcherNote: "",
+    generatedFromState: true,
+    createdAt: now,
+    updatedAt: now
+  });
+
+  return [
+    buildItem({
+      checkKey: "transcript_confirmed",
+      prompt: "Has the transcript been reviewed and confirmed?",
+      response: transcriptConfirmed
+        ? "Transcript is marked as reviewed and confirmed for analysis."
+        : "Transcript has not yet been confirmed for analysis.",
+      status: transcriptConfirmed ? "pass" : "issue"
+    }),
+    buildItem({
+      checkKey: "meaning_units_reviewed",
+      prompt: "Have all AI-generated meaning units been reviewed?",
+      response:
+        meaningUnits.length === 0
+          ? "No meaning units are available yet."
+          : unreviewedMeaningUnits.length === 0
+            ? "All non-excluded meaning units are accepted or excluded."
+            : `${unreviewedMeaningUnits.length} non-excluded meaning unit(s) still need review.`,
+      status:
+        meaningUnits.length === 0
+          ? "not_checked"
+          : unreviewedMeaningUnits.length === 0
+            ? "pass"
+            : "issue"
+    }),
+    buildItem({
+      checkKey: "uncategorised_accepted_meaning_units",
+      prompt: "Are any accepted meaning units uncategorised?",
+      response:
+        confirmedMeaningUnits.length === 0
+          ? "No accepted meaning units are available for categorising yet."
+          : unassignedMeaningUnits.length === 0
+            ? "All accepted meaning units are assigned to at least one non-rejected category."
+            : `${unassignedMeaningUnits.length} accepted meaning unit(s) are uncategorised.`,
+      status:
+        confirmedMeaningUnits.length === 0
+          ? "not_checked"
+          : unassignedMeaningUnits.length === 0
+            ? "pass"
+            : "issue"
+    }),
+    buildItem({
+      checkKey: "unsupported_categories",
+      prompt: "Are any categories unsupported by meaning units?",
+      response:
+        effectiveCategories.length === 0
+          ? "No active categories are available yet."
+          : unsupportedCategories.length === 0
+            ? "All active categories contain at least one accepted meaning-unit reference."
+            : `${unsupportedCategories.length} active category/categories have no included meaning units.`,
+      status:
+        effectiveCategories.length === 0
+          ? "not_checked"
+          : unsupportedCategories.length === 0
+            ? "pass"
+            : "issue"
+    }),
+    buildItem({
+      checkKey: "excluded_items_justified",
+      prompt: "Are excluded items justified?",
+      response:
+        unjustifiedExcludedUnits.length === 0
+          ? "Excluded meaning units have researcher reasons or no exclusions are present."
+          : `${unjustifiedExcludedUnits.length} excluded meaning unit(s) do not have a reason.`,
+      status: unjustifiedExcludedUnits.length === 0 ? "pass" : "issue"
+    }),
+    buildItem({
+      checkKey: "category_names_specificity",
+      prompt: "Are category names too broad or too interpretive?",
+      response:
+        effectiveCategories.length === 0
+          ? "No active categories are available yet."
+          : broadCategories.length === 0
+            ? "No broad/generic category names were automatically flagged."
+            : `${broadCategories.length} category name(s) may be broad, generic, or too close to a placeholder label.`,
+      status:
+        effectiveCategories.length === 0
+          ? "not_checked"
+          : broadCategories.length === 0
+            ? "pass"
+            : "issue"
+    }),
+    buildItem({
+      checkKey: "potential_overinterpretation",
+      prompt: "Are there potential over-interpretations?",
+      response:
+        unresolvedReviewerIssues.length === 0 && interpretiveSummaryUnits.length === 0
+          ? "No unresolved reviewer issue or summary over-interpretation flag is currently active."
+          : `${unresolvedReviewerIssues.length} unresolved reviewer issue(s) and ${interpretiveSummaryUnits.length} accepted summary/summaries may need an interpretation check.`,
+      status:
+        unresolvedReviewerIssues.length === 0 && interpretiveSummaryUnits.length === 0
+          ? "pass"
+          : "issue"
+    }),
+    buildItem({
+      checkKey: "interpretation_participant_wording",
+      prompt: "Is researcher interpretation clearly separated from participant wording?",
+      response:
+        interpretiveSummaryUnits.length === 0
+          ? "Accepted summaries do not currently trigger the over-interpretation wording check."
+          : `${interpretiveSummaryUnits.length} accepted meaning-unit summary/summaries may need closer grounding in the excerpt.`,
+      status: interpretiveSummaryUnits.length === 0 ? "pass" : "issue"
+    }),
+    buildItem({
+      checkKey: "integration_reviewed",
+      prompt: "Has the integration narrative been reviewed against category evidence?",
+      response:
+        effectiveCategories.length === 0
+          ? "No active categories are available for integration yet."
+          : integrationReviewed && narrative.trim()
+            ? `Integration narrative is marked as researcher-reviewed with ${integrationRelationships.length} relationship(s).`
+            : "Integration narrative or category relationship structure still needs researcher review.",
+      status:
+        effectiveCategories.length === 0
+          ? "not_checked"
+          : integrationReviewed && narrative.trim()
+            ? "pass"
+            : "issue"
+    }),
+    buildItem({
+      checkKey: "clear_audit_trail",
+      prompt: "Is there a clear audit trail?",
+      response:
+        auditEvents.length > 0
+          ? `${auditEvents.length} audit event(s) are available for export.`
+          : "No audit events are currently visible.",
+      status: auditEvents.length > 0 ? "pass" : "issue"
+    })
   ];
+}
+
+function mergeIntegrityReviewItems(
+  generatedItems: IntegrityReviewItem[],
+  storedItems: IntegrityReviewItem[]
+) {
+  const storedByCheckKey = new Map(
+    storedItems.map((item) => [item.checkKey, item])
+  );
+  const merged = generatedItems.map((generated) => {
+    const stored = storedByCheckKey.get(generated.checkKey);
+    if (!stored) {
+      return generated;
+    }
+    return {
+      ...generated,
+      id: stored.id || generated.id,
+      response: stored.response || generated.response,
+      researcherNote: stored.researcherNote,
+      status:
+        stored.response || stored.researcherNote
+          ? stored.status
+          : generated.status,
+      createdAt: stored.createdAt || generated.createdAt,
+      updatedAt: stored.updatedAt || generated.updatedAt
+    } satisfies IntegrityReviewItem;
+  });
+
+  const generatedKeys = new Set(generatedItems.map((item) => item.checkKey));
+  const customStoredItems = storedItems.filter(
+    (item) => !generatedKeys.has(item.checkKey)
+  );
+  return [...merged, ...customStoredItems];
+}
+
+function formatIntegrityStatus(status: IntegrityReviewItemStatus) {
+  const labels: Record<IntegrityReviewItemStatus, string> = {
+    dismissed: "Dismissed / justified",
+    issue: "Issue",
+    not_checked: "Not checked",
+    pass: "Passed",
+    resolved: "Resolved"
+  };
+  return labels[status] ?? status;
+}
+
+function categoryTitleNeedsIntegrityReview(category: CategoryNode) {
+  const title = category.name.trim().toLowerCase();
+  if (!title) {
+    return true;
+  }
+  return (
+    title === "theme" ||
+    title === "category" ||
+    title === "misc" ||
+    title === "other" ||
+    title.includes("untitled") ||
+    title.includes("provisional") ||
+    title.includes("draft") ||
+    title.length < 4 ||
+    title.length > 90
+  );
+}
+
+function MethodologicalIntegrityChecklist({
+  isSaving,
+  items,
+  lastSavedAt,
+  onRefresh,
+  onSave,
+  onUpdate
+}: {
+  isSaving: boolean;
+  items: IntegrityReviewItem[];
+  lastSavedAt: string;
+  onRefresh: () => void;
+  onSave: () => void;
+  onUpdate: (
+    itemId: string,
+    updates: Partial<Pick<IntegrityReviewItem, "researcherNote" | "response" | "status">>
+  ) => void;
+}) {
+  const issueCount = items.filter((item) => item.status === "issue").length;
+  const resolvedCount = items.filter((item) => item.status === "resolved").length;
+  const uncheckedCount = items.filter((item) => item.status === "not_checked").length;
 
   return (
     <div className="mini-card">
-      <span className="label">Checklist</span>
-      <p className="small checklist-explanation">
-        Use this checklist as a review guide, not as an automatic pass/fail
-        score. Items marked "Needs review" are prompts for researcher judgement,
-        memo-writing, and revision before export.
-      </p>
+      <div className="category-header">
+        <div>
+          <span className="label">Step 5 checklist</span>
+          <h3>Methodological integrity review</h3>
+          <p className="small checklist-explanation">
+            This checklist is generated from the current project state and then
+            reviewed by the researcher. Use the response and note fields to
+            document how each issue was checked, resolved, or justified.
+          </p>
+        </div>
+        <div className="button-row">
+          <StatusBadge
+            label={`${issueCount} issue${issueCount === 1 ? "" : "s"} · ${resolvedCount} resolved · ${uncheckedCount} unchecked`}
+          />
+        </div>
+      </div>
+      <div className="button-row">
+        <button className="button" onClick={onRefresh} type="button">
+          Refresh from project state
+        </button>
+        <button
+          className="button primary"
+          disabled={isSaving}
+          onClick={onSave}
+          type="button"
+        >
+          {isSaving ? "Saving review..." : "Save methodological integrity review"}
+        </button>
+        {lastSavedAt && (
+          <span className="small">
+            Last saved: {new Date(lastSavedAt).toLocaleTimeString()}
+          </span>
+        )}
+      </div>
       <div className="integrity-checklist">
         {items.map((item) => (
-          <StatusLine key={item.label} label={item.label} status={item.status} />
+          <article className="mini-card soft" key={item.id}>
+            <div className="category-header">
+              <div>
+                <strong>{item.prompt}</strong>
+                <p className="small">{item.response || "No response recorded yet."}</p>
+              </div>
+              <StatusBadge label={formatIntegrityStatus(item.status)} />
+            </div>
+            <div className="grid two">
+              <label className="label">
+                Status
+                <select
+                  className="select"
+                  onChange={(event) =>
+                    onUpdate(item.id, {
+                      status: event.target.value as IntegrityReviewItemStatus
+                    })
+                  }
+                  value={item.status}
+                >
+                  <option value="not_checked">Not checked</option>
+                  <option value="pass">Pass</option>
+                  <option value="issue">Issue</option>
+                  <option value="resolved">Resolved</option>
+                  <option value="dismissed">Dismissed / justified</option>
+                </select>
+              </label>
+              <label className="label">
+                Researcher response
+                <textarea
+                  className="textarea compact-textarea"
+                  onChange={(event) =>
+                    onUpdate(item.id, { response: event.target.value })
+                  }
+                  placeholder="Record what you checked and what conclusion you reached."
+                  value={item.response}
+                />
+              </label>
+            </div>
+            <label className="label">
+              Researcher note / resolution
+              <textarea
+                className="textarea compact-textarea"
+                onChange={(event) =>
+                  onUpdate(item.id, { researcherNote: event.target.value })
+                }
+                placeholder="Add a note explaining any revision, resolution, or reason for dismissing this issue."
+                value={item.researcherNote}
+              />
+            </label>
+          </article>
         ))}
       </div>
+    </div>
+  );
+}
+
+function AuditTrailPanel({ auditEvents }: { auditEvents: AuditEvent[] }) {
+  return (
+    <div className="mini-card soft">
+      <div className="category-header">
+        <div>
+          <span className="label">Audit trail</span>
+          <h3>Visible research decision trail</h3>
+          <p className="small">
+            Audit events show AI-generated suggestions separately from researcher
+            decisions. The full trail is included in JSON and text exports.
+          </p>
+        </div>
+        <StatusBadge label={`${auditEvents.length} event${auditEvents.length === 1 ? "" : "s"}`} />
+      </div>
+      {auditEvents.length === 0 ? (
+        <EmptyState text="No audit events yet." />
+      ) : (
+        <div className="timeline">
+          {auditEvents.slice().reverse().slice(0, 20).map((event) => (
+            <div className="timeline-item" key={event.id}>
+              <span className="mono small">{event.timestamp}</span>
+              <div>
+                <strong>
+                  {event.actor}: {event.action}
+                </strong>
+                <p className="small">
+                  {event.step ?? "unknown step"} · {event.actionType ?? "other"} · {event.target}
+                </p>
+                {event.researcherNote && (
+                  <p className="small">Researcher note: {event.researcherNote}</p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
