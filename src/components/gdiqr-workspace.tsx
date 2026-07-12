@@ -182,6 +182,7 @@ import {
 import { ProjectBar } from "./gdiqr-workspace/project/project-bar";
 import { WorkflowNavigation } from "./gdiqr-workspace/workflow/workflow-navigation";
 import { LongTaskStatus } from "./gdiqr-workspace/shared/long-task-status";
+import { VoiceGuideAvatar } from "./gdiqr-workspace/voice-guide/voice-guide-avatar";
 
 const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
@@ -5321,9 +5322,9 @@ export function GdiqrWorkspace({
                 <summary>Step guidance</summary>
                 <StepGuidance step={activeStep} />
               </details>
-              <div className="voice-guide-entry" aria-label="Voice Guide placeholder">
+              <div className="voice-guide-entry" aria-label="Voice Guide entry">
                 <strong>Need guidance?</strong>
-                <span>Voice Guide will provide voice-first methodological reflection support in a later batch.</span>
+                <span>Open the floating AI Guide for step-aware methodological reflection.</span>
               </div>
             </div>
             {workflowError && (
@@ -7452,6 +7453,51 @@ export function GdiqrWorkspace({
           </section>
           <RunLogPanel logs={runLogs} onClear={clearFinishedRunLogs} />
         </main>
+      <VoiceGuideAvatar
+        projectId={currentProject.id}
+        step={activeStep}
+        projectState={{
+          project: {
+            ...currentProject,
+            title: projectTitle,
+            researchQuestion,
+            studyDescription,
+            datasetType,
+            dataSource: projectDataSource,
+            dataSuitabilityConfirmed,
+            researcherNotes: projectResearcherNotes,
+          },
+          preAnalysisNotes: {
+            id: preAnalysisNotes?.id ?? `local_pre_analysis_${currentProject.id}`,
+            projectId: currentProject.id,
+            researchQuestion,
+            studyDescription,
+            researcherPosition: researcherReflexivityNotes,
+            contextualNotes: researcherNotes,
+            initialSensitisingConcepts: researcherExpectations,
+            dataFamiliarisationNotes,
+            createdAt: preAnalysisNotes?.createdAt ?? currentProject.updatedAt,
+            updatedAt: preAnalysisSavedAt || currentProject.updatedAt,
+          },
+          transcriptRecords,
+          meaningUnits: units,
+          categories: displayCategories,
+          integrationRelationships: integrationRelationships.map((relationship) => ({
+            id: relationship.id,
+            projectId: currentProject.id,
+            sourceCategoryId: relationship.sourceCategoryId,
+            targetCategoryId: relationship.targetCategoryId,
+            label: relationship.label,
+            memo: relationship.researcherNote || relationship.rationale,
+            evidenceUnitNumbers: relationship.evidenceUnitNumbers,
+            createdAt: currentProject.updatedAt,
+            updatedAt: currentProject.updatedAt,
+          })),
+          integrityReviewItems: displayIntegrityItems,
+          integratedNarrative: narrative,
+        }}
+      />
+
       </div>
     </div>
   );

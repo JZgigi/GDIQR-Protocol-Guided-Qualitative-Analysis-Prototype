@@ -60,3 +60,11 @@
 - Added `POST /api/voice-guide` with local-only and Supabase context support.
 - Kept all unsaved guide interactions transient.
 - Added Batch 4 verification and Voice Guide boundary/privacy documentation.
+
+## Batch 5 — Floating Voice Guide avatar
+
+- Added a floating, workflow-aware Voice Guide avatar.
+- Added visible idle, listening, thinking, speaking, error, and captions-only states.
+- Connected the avatar to the structured Voice Guide API without retaining chat history.
+- Kept guidance interactions transient pending researcher-selected note saving in Batch 6.
+- Added keyboard, ARIA, responsive, and reduced-motion support.

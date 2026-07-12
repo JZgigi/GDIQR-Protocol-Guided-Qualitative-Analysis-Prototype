@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test:batch2": "node scripts/verify-batch2.mjs",
     "test:batch3": "node scripts/verify-batch3.mjs",
-    "test:batch4": "node scripts/verify-batch4.mjs"
+    "test:batch4": "node scripts/verify-batch4.mjs",
+    "test:batch5": "node scripts/verify-batch5.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.2",

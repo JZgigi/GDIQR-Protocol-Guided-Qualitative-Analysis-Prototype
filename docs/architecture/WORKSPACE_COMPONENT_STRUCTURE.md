@@ -70,3 +70,9 @@ src/app/api/voice-guide/route.ts
 ```
 
 This prevents the future avatar component from owning methodology rules or direct analytic-decision logic. The UI will call the API and render transient voice/caption state in a later batch.
+
+## Batch 5 addition
+
+The Voice Guide UI is isolated under `gdiqr-workspace/voice-guide/`. The workspace
+passes a current in-browser snapshot into the avatar, while the avatar owns transient
+interaction UI state. Voice recording and persistence remain separate follow-up concerns.

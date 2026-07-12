@@ -520,3 +520,13 @@ Smoke check：
 - [ ] Supabase requests retrieve workspace state server-side.
 - [ ] Unsaved Voice Guide interactions are not persisted.
 - [ ] API responses include guidance source keys and a visible boundary reminder.
+
+## Batch 5 — Floating Voice Guide avatar
+
+- [ ] Floating AI Guide is available across workflow steps without covering the main task.
+- [ ] Opening the guide does not display a persistent text chat history.
+- [ ] Latest guidance is shown as a short caption summary.
+- [ ] Guide state is announced and visibly distinguishes idle/listening/thinking/speaking/error/captions-only.
+- [ ] Current step and project state are used by `/api/voice-guide`.
+- [ ] Closing the guide discards the transient presentation; no audit record is created.
+- [ ] Keyboard focus and reduced-motion behaviour are usable.
