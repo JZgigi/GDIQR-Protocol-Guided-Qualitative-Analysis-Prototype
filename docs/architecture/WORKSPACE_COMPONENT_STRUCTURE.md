@@ -44,3 +44,12 @@ The first feature-led extraction now lives under:
 - `gdiqr-workspace/workflow/workflow-navigation.tsx`: top workflow navigation and blocked-navigation handling.
 
 The workspace root continues to own state and handlers. Subsequent batches should extract a workflow area only when that area is materially changed, so structural movement remains reviewable alongside a real feature boundary.
+
+## Batch 2 analysis services
+
+Speaker recognition and conservative MU boundary logic now live outside the workspace UI:
+
+- `src/lib/transcript-speakers.ts`
+- `src/lib/meaning-unit-boundaries.ts`
+
+The repository, auto-segmenter, and AI provider share these rules so speaker roles and MU boundaries do not drift between local fallback and Supabase-backed workflows. UI extraction will continue when later tickets materially change transcript and MU review panels.

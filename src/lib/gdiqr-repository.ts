@@ -30,6 +30,10 @@ import {
 } from "./supabase/server";
 import type { Database, Json } from "./supabase/database.types";
 import { autoSplitTranscript, type AutoSegmentMode } from "./auto-segmenter";
+import {
+  normalizeTranscriptSpeakerRole,
+  splitTranscriptIntoSpeakerTurns,
+} from "./transcript-speakers";
 
 type AudioFileRow = Database["public"]["Tables"]["audio_files"]["Row"];
 type CategoryRow = Database["public"]["Tables"]["categories"]["Row"];
@@ -56,26 +60,10 @@ function normalizeSegmentSpeakerRole(value: unknown): SegmentSpeakerRole {
     : "unclear";
 }
 
-function inferSegmentSpeakerRole(labelOrText: string): SegmentSpeakerRole {
-  const firstLabel = labelOrText.split(/[:\uFF1A]/)[0].trim().toLowerCase();
-
-  if (
-    /^(interviewer|interview|researcher|moderator|facilitator|q|i|\u4E3B\u6301\u4EBA|\u8BBF\u8C08\u8005|\u7814\u7A76\u8005|\u91C7\u8BBF\u8005)$/.test(
-      firstLabel,
-    )
-  ) {
-    return "interviewer";
-  }
-
-  if (
-    /^(participant|interviewee|student|p|a|\u53D7\u8BBF\u8005|\u53C2\u4E0E\u8005|\u5B66\u751F)$/.test(
-      firstLabel,
-    )
-  ) {
-    return "participant";
-  }
-
-  return "unclear";
+function inferSegmentSpeakerRole(value: string): SegmentSpeakerRole {
+  const labelOrText = stripSegmentSpeakerRolePrefix(value).trim();
+  const firstLabel = labelOrText.split(/[:：]/)[0].trim();
+  return normalizeTranscriptSpeakerRole(firstLabel);
 }
 
 function encodeSegmentSpeakerInfo(label: string, role?: SegmentSpeakerRole) {
@@ -107,42 +95,15 @@ function speakerRoleFromStoredInfo(value: string): SegmentSpeakerRole {
 }
 
 function splitTranscriptBySpeakerLabels(transcript: string) {
-  const lines = transcript
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const turns: Array<{
-    label: string;
-    role: SegmentSpeakerRole;
-    text: string;
-  }> = [];
+  const turns = splitTranscriptIntoSpeakerTurns(transcript).map((turn) => ({
+    label: turn.label,
+    role: turn.role,
+    text: turn.raw,
+  }));
 
-  for (const line of lines) {
-    const match = line.match(/^([^:\uFF1A\n]{1,48})[:\uFF1A]\s*(.*)$/u);
-    if (match) {
-      const label = match[1].trim();
-      const role = inferSegmentSpeakerRole(label);
-      const content = match[2].trim();
-      turns.push({
-        label,
-        role,
-        text: content ? `${label}: ${content}` : `${label}:`,
-      });
-      continue;
-    }
-
-    if (turns.length > 0) {
-      turns[turns.length - 1].text =
-        `${turns[turns.length - 1].text}\n${line}`.trim();
-    } else {
-      turns.push({ label: "Unclear speaker", role: "unclear", text: line });
-    }
-  }
-
-  const hasSpeakerLabels =
+  const hasRecognizedSpeakerLabels =
     turns.length >= 2 && turns.some((turn) => turn.role !== "unclear");
-  if (!hasSpeakerLabels) {
+  if (!hasRecognizedSpeakerLabels) {
     return [
       {
         label: "Unclear speaker segment",

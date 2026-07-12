@@ -485,3 +485,15 @@ Smoke check：
 - [ ] Methodological guidance chat textarea and message history are absent from the main workflow.
 - [ ] Speaker/segment handling remains accessible under Advanced.
 - [ ] Typecheck and production build pass.
+
+## Batch 2 speaker and MU checks
+
+- [ ] Interviewer / Participant labels are parsed as separate line-level turns.
+- [ ] Moderator, Researcher, Facilitator, Q/I and Chinese interviewer aliases are recognised.
+- [ ] Interviewee, Student, Respondent, P/A and Chinese participant aliases are recognised.
+- [ ] Continuation lines remain attached to the preceding speaker turn.
+- [ ] Unknown labels remain unclear and can be corrected manually.
+- [ ] Interviewer-only turns are excluded from MU analysis by default.
+- [ ] A coherent participant answer is not split sentence by sentence.
+- [ ] Filler/backchannel text does not become a standalone MU.
+- [ ] Clear changes in experience, time point, process, or evaluation can still create separate draft MUs.

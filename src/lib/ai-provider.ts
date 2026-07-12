@@ -16,6 +16,12 @@ import {
   cleanTranscriptSourceForAnalysis,
   containsNonTranscriptMaterial
 } from "@/lib/transcript-source-cleaner";
+import {
+  normalizeTranscriptSpeakerRole,
+  parseSpeakerLine,
+  splitTranscriptIntoSpeakerTurns
+} from "@/lib/transcript-speakers";
+import { splitParticipantTurnConservatively } from "@/lib/meaning-unit-boundaries";
 
 type AiProvider = "ollama";
 
@@ -349,10 +355,13 @@ Rules:
 - Research question, domains, project title, file names, and setup notes are context only. Never turn them into meaning-unit excerpts.
 - If the excerpt contains non-transcript metadata such as "Research Question", "Domains of Investigation", "Project title", "Demo Project", or file/upload labels, exclude that material from meaning units.
 - Treat this transcript excerpt as processing context, not as one meaning unit.
-- Delineate meaning units when a new meaning appears.
-- A meaning unit should be large enough to communicate a clear message, but small enough to remain analytically manageable.
-- Create multiple meaning units when the participant shifts topic, experience, feeling, action, evaluation, or implication.
-- Do not create one large meaning unit from the whole excerpt unless it genuinely contains only one clear meaning.
+- Use conservative, meaning-preserving delineation. Do not split at every sentence.
+- A meaning unit must be large enough to communicate one clear participant meaning with enough context to be understood on its own.
+- Split only at a clear and substantial shift in meaning, such as a new experience, time point, process, evaluation, or implication that cannot be represented accurately by the same concise summary.
+- Keep connected examples, explanations, reasons, and consequences together when they elaborate the same meaning.
+- Merge filler, backchannels, and short dependent phrases into the surrounding participant account; never create filler-only meaning units.
+- Prefer one coherent participant turn as one draft MU unless there is strong evidence of multiple meanings.
+- Do not create one large meaning unit from the whole excerpt when it contains multiple clear meaning shifts.
 - Do not merge interviewer/researcher questions into participant meaning units.
 - If the chunk is mainly an interviewer/researcher prompt, return it with speaker "Interviewer", reviewerStatus "Warning", and uncertainty "Context candidate; review for exclusion".
 - Set humanSummary to the exact same summary text as aiSummary.
@@ -1274,37 +1283,29 @@ function sourceReferenceForMeaningUnit(segmentId: string | undefined, chunkIndex
 }
 
 function chunkBySpeakerTurns(transcript: string, maxChars: number) {
-  const turns = transcript
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const hasSpeakerLabels = turns.some((line) => parseSpeakerLine(line));
-  if (!hasSpeakerLabels) {
+  const turns = splitTranscriptIntoSpeakerTurns(transcript);
+  if (!turns.some((turn) => turn.role !== "unclear")) {
     return [];
   }
 
   const chunks: string[] = [];
   for (const turn of turns) {
-    const parsed = parseSpeakerLine(turn);
-    if (!parsed) {
-      chunks.push(...chunkTranscriptByMeaningBoundaries(turn, maxChars));
+    if (turn.role === "interviewer") {
+      chunks.push(turn.raw);
       continue;
     }
 
-    const speaker = normalizeSpeakerLabel(parsed.label);
-    if (speaker === "interviewer") {
-      chunks.push(turn);
+    if (turn.role === "participant") {
+      chunks.push(...splitParticipantTurnConservatively(turn.raw, maxChars));
       continue;
     }
 
-    chunks.push(
-      ...chunkTranscriptByMeaningBoundaries(turn, Math.min(maxChars, 900))
-    );
+    chunks.push(...chunkTranscriptByMeaningBoundaries(turn.raw, maxChars));
   }
 
   return combineTinyCandidateChunks(chunks);
 }
+
 
 function chunkTranscriptByMeaningBoundaries(transcript: string, maxChars: number) {
   const paragraphs = transcript
@@ -1391,36 +1392,9 @@ function countApproxWords(text: string) {
   return text.trim() ? 1 : 0;
 }
 
-function parseSpeakerLine(line: string) {
-  const match = line.match(/^([\p{L}][\p{L}\s.'-]{0,32}|[IQPA])\s*[:：]\s*(.*)$/u);
-  if (!match) {
-    return null;
-  }
-  return {
-    content: match[2] ?? "",
-    label: (match[1] ?? "").trim()
-  };
-}
-
 function normalizeSpeakerLabel(label: string) {
-  const normalized = label.trim().toLowerCase();
-  if (
-    [
-      "interviewer",
-      "researcher",
-      "moderator",
-      "facilitator",
-      "i",
-      "q",
-      "jiawan"
-    ].includes(normalized)
-  ) {
-    return "interviewer";
-  }
-  if (["participant", "interviewee", "student", "p", "a"].includes(normalized)) {
-    return "participant";
-  }
-  return "other";
+  const role = normalizeTranscriptSpeakerRole(label);
+  return role === "unclear" ? "other" : role;
 }
 
 function isInterviewerCandidate(text: string) {
@@ -1452,8 +1426,10 @@ function fallbackPrepareTranscript(transcript: string) {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  if (lines.some((line) => /^(interviewer|participant)\s*:/i.test(line))) {
-    return lines.join("\n");
+  if (lines.some((line) => parseSpeakerLine(line))) {
+    return splitTranscriptIntoSpeakerTurns(lines.join("\n"))
+      .map((turn) => turn.raw)
+      .join("\n");
   }
 
   return lines

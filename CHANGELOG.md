@@ -36,3 +36,11 @@
 - Kept speaker and segment handling available as an advanced, collapsed tool.
 - Extracted project entry and workflow navigation into feature folders.
 - Verified with `npm run typecheck` and `npm run build`.
+
+## Batch 2 — Speaker parsing and MU granularity
+
+- Added a shared line-level speaker-turn parser with English and Chinese interviewer/participant aliases.
+- Preserved continuation lines within the preceding speaker turn and kept unknown labels as unclear.
+- Updated transcript preparation, auto-segmentation, repository splitting, and MU generation to use consistent speaker roles.
+- Changed AI and rule-based MU delineation to a conservative, meaning-preserving default.
+- Added Batch 2 verification checks and implementation documentation.

@@ -6173,10 +6173,7 @@ export function GdiqrWorkspace({
                     <details className="workbook-details">
                       <summary>Advanced: speaker / segment handling</summary>
                       <p className="small">
-                        Split by speaker labels when the transcript uses labels
-                        such as Interviewer:, Participant:, Q:, or P:. Correct
-                        each segment type before generating meaning units;
-                        interviewer-only segments are ignored by default.
+                        Split by line-level speaker labels such as Interviewer:, Moderator:, Participant:, Q:, A:, 访谈者:, or 受访者:. Continuation lines stay with the preceding turn. Correct low-confidence segments before generating meaning units; interviewer-only turns are ignored by default.
                       </p>
                       <div className="button-row">
                         <button
@@ -6370,9 +6367,7 @@ export function GdiqrWorkspace({
                     <span className="label">Meaning Units</span>
                     <h3>Delineate meaning shifts</h3>
                     <p className="small">
-                      A meaning unit should be large enough to communicate a
-                      clear message but small enough to remain analytically
-                      manageable.
+                      Default delineation is conservative: keep connected examples, explanations, and consequences together, and split only at a clear shift in participant meaning.
                     </p>
                     <p className="small panel-note">
                       Treat these boundaries as reviewable working decisions,

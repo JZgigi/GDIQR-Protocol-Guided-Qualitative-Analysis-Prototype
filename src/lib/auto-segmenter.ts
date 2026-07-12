@@ -1,3 +1,10 @@
+import {
+  normalizeTranscriptSpeakerRole,
+  parseSpeakerLine,
+  splitTranscriptIntoSpeakerTurns,
+  stripSpeakerLabel
+} from "./transcript-speakers";
+
 export type AutoSegmentMode = "conservative" | "balanced" | "detailed";
 
 export interface AutoSegmentDraft {
@@ -26,24 +33,6 @@ const modeSettings: Record<
   conservative: { maxWords: 280, minWords: 35, targetWords: 150 },
   detailed: { maxWords: 120, minWords: 12, targetWords: 60 }
 };
-
-const interviewerLabels = new Set([
-  "interviewer",
-  "researcher",
-  "moderator",
-  "facilitator",
-  "i",
-  "q",
-  "jiawan"
-]);
-
-const participantLabels = new Set([
-  "participant",
-  "interviewee",
-  "student",
-  "p",
-  "a"
-]);
 
 const backchannels = new Set([
   "yeah",
@@ -574,28 +563,12 @@ function inferTitleFromKeywords(text: string) {
 }
 
 function parseTurns(transcript: string): TranscriptTurn[] {
-  return transcript
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => {
-      const parsed = parseSpeakerLine(line);
-      if (!parsed) {
-        return {
-          content: line,
-          index,
-          raw: line,
-          speaker: "other" as const
-        };
-      }
-
-      return {
-        content: parsed.content,
-        index,
-        raw: line,
-        speaker: normalizeSpeaker(parsed.label)
-      };
-    });
+  return splitTranscriptIntoSpeakerTurns(transcript).map((turn, index) => ({
+    content: turn.content,
+    index,
+    raw: turn.raw,
+    speaker: turn.role === "unclear" ? "other" : turn.role
+  }));
 }
 
 function pushTurnSegment(
@@ -621,14 +594,8 @@ function turnsToText(turns: TranscriptTurn[]) {
 }
 
 function normalizeSpeaker(label: string): TranscriptTurn["speaker"] {
-  const normalized = label.trim().toLowerCase();
-  if (interviewerLabels.has(normalized)) {
-    return "interviewer";
-  }
-  if (participantLabels.has(normalized)) {
-    return "participant";
-  }
-  return "other";
+  const role = normalizeTranscriptSpeakerRole(label);
+  return role === "unclear" ? "other" : role;
 }
 
 function isParticipantTopicShift(turn: TranscriptTurn) {
@@ -650,7 +617,7 @@ function firstMeaningfulLine(text: string) {
 
 function isSubstantialInterviewerQuestion(line: string) {
   const parsed = parseSpeakerLine(line);
-  if (!parsed || !interviewerLabels.has(parsed.label)) {
+  if (!parsed || parsed.role !== "interviewer") {
     return false;
   }
 
@@ -662,20 +629,6 @@ function isSubstantialInterviewerQuestion(line: string) {
   return /[?？]/.test(content) || countWords(content) >= 5;
 }
 
-function parseSpeakerLine(line: string) {
-  const match = line.match(/^([\p{L}][\p{L}\s.'-]{0,32}|[IQPA])\s*[:：]\s*(.*)$/u);
-  if (!match) {
-    return null;
-  }
-  return {
-    content: match[2] ?? "",
-    label: (match[1] ?? "").trim().toLowerCase()
-  };
-}
-
-function stripSpeakerLabel(line: string) {
-  return line.replace(/^([\p{L}][\p{L}\s.'-]{0,32}|[IQPA])\s*[:：]\s*/u, "").trim();
-}
 
 function normalizeTranscript(transcript: string) {
   return transcript.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
