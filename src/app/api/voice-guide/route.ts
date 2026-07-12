@@ -8,7 +8,10 @@ import {
   type VoiceGuideSelectedContext,
 } from "@/lib/guidance/voice-guide-context";
 import { buildDeterministicVoiceGuideAnswer } from "@/lib/guidance/voice-guide-response";
-import { generateConversationalVoiceGuideAnswer, type VoiceGuideHistoryItem } from "@/lib/guidance/voice-guide-conversation";
+import {
+  generateConversationalVoiceGuideAnswer,
+  type VoiceGuideHistoryItem,
+} from "@/lib/guidance/voice-guide-conversation";
 
 const WORKFLOW_STEPS: WorkflowStep[] = [
   "pre-analysis",
@@ -40,11 +43,13 @@ export async function POST(request: NextRequest) {
   const step = WORKFLOW_STEPS.includes(body.step as WorkflowStep)
     ? (body.step as WorkflowStep)
     : "pre-analysis";
-  const projectId = body.projectId ?? body.projectState?.project.id ?? defaultProjectId;
+  const projectId =
+    body.projectId ?? body.projectState?.project.id ?? defaultProjectId;
 
   try {
     const storageMode = getStorageMode();
-    const storedWorkspace = storageMode === "supabase" ? await getWorkspace(projectId) : null;
+    const storedWorkspace =
+      storageMode === "supabase" ? await getWorkspace(projectId) : null;
     const state: VoiceGuideProjectState | undefined = storedWorkspace
       ? {
           project: storedWorkspace.project,
@@ -71,17 +76,24 @@ export async function POST(request: NextRequest) {
     const context = buildVoiceGuideContext(state, step, body.selectedContext);
     let answer;
     let fallbackReason: string | undefined;
+
     try {
       answer = await generateConversationalVoiceGuideAnswer({
         question,
         step,
         context,
-        history: Array.isArray(body.conversationHistory) ? body.conversationHistory : [],
+        history: Array.isArray(body.conversationHistory)
+          ? body.conversationHistory.slice(-4)
+          : [],
       });
     } catch (error) {
-      fallbackReason = error instanceof Error ? error.message : "Local conversational model unavailable.";
+      fallbackReason =
+        error instanceof Error
+          ? error.message
+          : "Local conversational model unavailable.";
       answer = {
         ...buildDeterministicVoiceGuideAnswer({ question, step, context }),
+        canSaveAsGuidanceNote: false,
         conversationIntent: "workflow_guidance",
         provider: "structured-gdiqr-fallback",
       };

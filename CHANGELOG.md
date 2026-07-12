@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-13 — Batch 10 focused push-to-talk qualitative analysis guide
+
+- Re-focused Mira on the five-stage qualitative analysis workflow and qualitative data already prepared by the researcher.
+- Limited casual interaction to brief acknowledgement followed by a gentle return to the current analysis task.
+- Prevented unrestricted topic generation, counselling-style interaction, and open-ended general companionship.
+- Replaced click-to-talk with press-and-hold speech capture; releasing the button submits the recognised question and Escape cancels it.
+- Removed Voice Guide note saving from the live interface and kept all voice interactions transient.
+- Hid full captions by default while retaining optional accessibility captions, mute, and replay controls.
+- Reduced prompt size, response length, and conversation history to improve local Ollama response time.
+- Added Ollama keep-alive configuration and a higher-fidelity CG-style Mira portrait asset.
+- No Supabase migration is required.
+
 ## 2026-07-07
 
 - Updated repository documentation for the `release/1.0` testing cycle.
@@ -94,7 +106,6 @@
 - Retained deterministic analytic-decision boundaries and output guarding.
 - Added explicit structured fallback reporting when Ollama is unavailable.
 - Introduced the warm conversational assistant persona “Mira”.
-
 
 ## Batch 9 — Human-like Mira avatar experience
 

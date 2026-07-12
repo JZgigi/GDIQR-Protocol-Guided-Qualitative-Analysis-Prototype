@@ -1,19 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Captions,
-  Mic,
-  RotateCcw,
-  Save,
-  Sparkles,
-  Square,
-  Volume2,
-  X,
-} from "lucide-react";
+import { Captions, Mic, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
 import type { WorkflowStep } from "@/lib/types";
 import type { VoiceGuideProjectState } from "@/lib/guidance/voice-guide-context";
 import { MiraAvatar } from "./mira-avatar";
+import styles from "./voice-guide-focused.module.css";
 
 type VoiceGuideState =
   | "idle"
@@ -49,14 +41,20 @@ interface VoiceGuideAvatarProps {
   projectId: string;
   step: WorkflowStep;
   projectState: VoiceGuideProjectState;
-  onSaveGuidanceNote: (note: VoiceGuidanceNoteDraft) => Promise<void>;
+  onSaveGuidanceNote?: (note: VoiceGuidanceNoteDraft) => Promise<void>;
+}
+
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+}
+
+interface SpeechRecognitionResultLike {
+  0: SpeechRecognitionAlternativeLike;
+  isFinal: boolean;
 }
 
 interface SpeechRecognitionEventLike {
-  results: ArrayLike<{
-    0: { transcript: string };
-    isFinal: boolean;
-  }>;
+  results: ArrayLike<SpeechRecognitionResultLike>;
 }
 
 interface SpeechRecognitionErrorEventLike {
@@ -72,6 +70,7 @@ interface SpeechRecognitionLike {
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
   start: () => void;
   stop: () => void;
+  abort?: () => void;
 }
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
@@ -85,11 +84,11 @@ declare global {
 
 const stateLabels: Record<VoiceGuideState, string> = {
   idle: "Ready",
-  listening: "Listening",
+  listening: "Listening — release to send",
   thinking: "Thinking",
   speaking: "Speaking",
   error: "Needs attention",
-  "captions-only": "Captions only",
+  "captions-only": "Captions on",
 };
 
 function getRecognitionConstructor() {
@@ -101,56 +100,47 @@ export function VoiceGuideAvatar({
   projectId,
   step,
   projectState,
-  onSaveGuidanceNote,
 }: VoiceGuideAvatarProps) {
   const [expanded, setExpanded] = useState(false);
   const [state, setState] = useState<VoiceGuideState>("idle");
   const [response, setResponse] = useState<VoiceGuideResponse | null>(null);
   const [error, setError] = useState("");
-  const [lastQuestion, setLastQuestion] = useState("");
-  const [captionsOnly, setCaptionsOnly] = useState(false);
-  const [fallbackQuestion, setFallbackQuestion] = useState("");
-  const [showTextFallback, setShowTextFallback] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [conversationHistory, setConversationHistory] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
-  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoiceUri, setSelectedVoiceUri] = useState("");
+  const [captionsEnabled, setCaptionsEnabled] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [conversationHistory, setConversationHistory] = useState<
+    Array<{ role: "user" | "assistant"; content: string }>
+  >([]);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const transcriptRef = useRef("");
+  const holdingRef = useRef(false);
+  const cancelledRef = useRef(false);
 
   const visibleState = useMemo<VoiceGuideState>(
-    () => (captionsOnly && state === "idle" ? "captions-only" : state),
-    [captionsOnly, state],
+    () => (captionsEnabled && state === "idle" ? "captions-only" : state),
+    [captionsEnabled, state],
   );
 
   useEffect(() => {
-    const loadVoices = () => {
-      const voices = window.speechSynthesis?.getVoices() ?? [];
-      setAvailableVoices(voices);
-      setSelectedVoiceUri((current) => {
-        if (current && voices.some((voice) => voice.voiceURI === current)) return current;
-        const targetLanguage = projectState.project.language?.toLowerCase().startsWith("zh")
-          ? "zh"
-          : "en";
-        return (
-          voices.find((voice) => voice.lang.toLowerCase().startsWith(targetLanguage) && /female|natural|samantha|aria|serena|ting|xiaoxiao/i.test(voice.name)) ??
-          voices.find((voice) => voice.lang.toLowerCase().startsWith(targetLanguage)) ??
-          voices[0]
-        )?.voiceURI ?? "";
-      });
+    const cancelOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !holdingRef.current) return;
+      cancelledRef.current = true;
+      holdingRef.current = false;
+      recognitionRef.current?.abort?.();
+      recognitionRef.current = null;
+      transcriptRef.current = "";
+      setState("idle");
     };
 
-    loadVoices();
-    window.speechSynthesis?.addEventListener?.("voiceschanged", loadVoices);
+    window.addEventListener("keydown", cancelOnEscape);
     return () => {
-      window.speechSynthesis?.removeEventListener?.("voiceschanged", loadVoices);
-      recognitionRef.current?.stop();
+      window.removeEventListener("keydown", cancelOnEscape);
+      recognitionRef.current?.abort?.();
       window.speechSynthesis?.cancel();
     };
   }, []);
 
   function speakAnswer(answer: string) {
-    if (captionsOnly || !("speechSynthesis" in window)) {
+    if (muted || !("speechSynthesis" in window)) {
       setState("idle");
       return;
     }
@@ -160,28 +150,28 @@ export function VoiceGuideAvatar({
     utterance.lang = projectState.project.language?.toLowerCase().startsWith("zh")
       ? "zh-CN"
       : "en-GB";
-    const selectedVoice = availableVoices.find((voice) => voice.voiceURI === selectedVoiceUri);
-    if (selectedVoice) utterance.voice = selectedVoice;
-    utterance.rate = 0.96;
-    utterance.pitch = 1.02;
+    utterance.rate = 1.02;
+    utterance.pitch = 1;
     utterance.onstart = () => setState("speaking");
     utterance.onend = () => setState("idle");
     utterance.onerror = () => {
-      setCaptionsOnly(true);
-      setState("captions-only");
-      setError("Audio playback was unavailable. The guidance remains available as captions.");
+      setMuted(true);
+      setState("idle");
+      setError("Voice playback was unavailable. You can turn on captions.");
     };
     window.speechSynthesis.speak(utterance);
   }
 
   async function submitQuestion(question: string) {
     const normalizedQuestion = question.trim();
-    if (!normalizedQuestion) return;
+    if (!normalizedQuestion) {
+      setError("No speech was recognised. Hold the button and try again.");
+      setState("error");
+      return;
+    }
 
     setExpanded(true);
     setError("");
-    setSaved(false);
-    setLastQuestion(normalizedQuestion);
     setState("thinking");
 
     try {
@@ -199,95 +189,131 @@ export function VoiceGuideAvatar({
       const result = (await request.json().catch(() => ({}))) as
         | VoiceGuideResponse
         | { error?: string };
+
       if (!request.ok || !("spokenAnswer" in result)) {
         const message = "error" in result ? result.error : undefined;
-        throw new Error(message ?? "Voice Guide could not respond.");
+        throw new Error(message ?? "Mira could not respond.");
       }
 
       setResponse(result);
-      setConversationHistory((current) => [
-        ...current,
-        { role: "user" as const, content: normalizedQuestion },
-        { role: "assistant" as const, content: result.spokenAnswer },
-      ].slice(-8));
+      setConversationHistory((current) =>
+        [
+          ...current,
+          { role: "user" as const, content: normalizedQuestion },
+          { role: "assistant" as const, content: result.spokenAnswer },
+        ].slice(-4),
+      );
       speakAnswer(result.spokenAnswer);
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Voice Guide could not respond.",
-      );
+      setError(caught instanceof Error ? caught.message : "Mira could not respond.");
       setState("error");
     }
   }
 
-  function startListening() {
-    setExpanded(true);
-    setError("");
-    setShowTextFallback(false);
-
+  function createRecognition() {
     const Recognition = getRecognitionConstructor();
     if (!Recognition) {
-      setState("error");
-      setShowTextFallback(true);
       setError(
-        "Speech recognition is not available in this browser. Use the captions-only text fallback or try the latest Chrome or Edge.",
+        "Hold-to-talk speech recognition is unavailable in this browser. Use the latest Chrome or Edge.",
       );
-      return;
+      setState("error");
+      return null;
     }
 
-    window.speechSynthesis?.cancel();
     const recognition = new Recognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.lang = projectState.project.language?.toLowerCase().startsWith("zh")
       ? "zh-CN"
       : "en-GB";
-    recognitionRef.current = recognition;
 
     recognition.onresult = (event) => {
-      const transcript = Array.from(event.results)
+      transcriptRef.current = Array.from(event.results)
         .map((result) => result[0]?.transcript ?? "")
         .join(" ")
         .trim();
-      recognitionRef.current = null;
-      if (!transcript) {
-        setState("error");
-        setShowTextFallback(true);
-        setError("No speech was recognised. Try again or use the text fallback.");
-        return;
-      }
-      void submitQuestion(transcript);
     };
 
     recognition.onerror = (event) => {
+      if (cancelledRef.current) return;
+      holdingRef.current = false;
       recognitionRef.current = null;
       setState("error");
-      setShowTextFallback(true);
-      const permissionMessage =
+      setError(
         event.error === "not-allowed" || event.error === "service-not-allowed"
-          ? "Microphone permission was denied. Allow microphone access in the browser, or use the text fallback."
-          : `Speech recognition stopped (${event.error}). Try again or use the text fallback.`;
-      setError(permissionMessage);
+          ? "Microphone permission was denied. Allow microphone access and try again."
+          : `Speech recognition stopped (${event.error}). Hold to talk and try again.`,
+      );
     };
 
     recognition.onend = () => {
       recognitionRef.current = null;
-      setState((current) => (current === "listening" ? "idle" : current));
+      if (cancelledRef.current) {
+        cancelledRef.current = false;
+        transcriptRef.current = "";
+        setState("idle");
+        return;
+      }
+
+      if (holdingRef.current) {
+        try {
+          recognition.start();
+          recognitionRef.current = recognition;
+          return;
+        } catch {
+          holdingRef.current = false;
+        }
+      }
+
+      const transcript = transcriptRef.current;
+      transcriptRef.current = "";
+      void submitQuestion(transcript);
     };
 
+    return recognition;
+  }
+
+  function beginHoldToTalk(event: React.PointerEvent<HTMLButtonElement>) {
+    if (state === "thinking" || state === "speaking") return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setExpanded(true);
+    setError("");
+    window.speechSynthesis?.cancel();
+    transcriptRef.current = "";
+    cancelledRef.current = false;
+    holdingRef.current = true;
+
+    const recognition = createRecognition();
+    if (!recognition) {
+      holdingRef.current = false;
+      return;
+    }
+
+    recognitionRef.current = recognition;
     try {
       recognition.start();
       setState("listening");
     } catch {
       recognitionRef.current = null;
+      holdingRef.current = false;
       setState("error");
-      setShowTextFallback(true);
-      setError("The microphone could not start. Try again or use the text fallback.");
+      setError("The microphone could not start. Please try again.");
     }
   }
 
-  function stopListening() {
+  function releaseToSend() {
+    if (!holdingRef.current) return;
+    holdingRef.current = false;
     recognitionRef.current?.stop();
+  }
+
+  function cancelListening() {
+    if (!holdingRef.current) return;
+    cancelledRef.current = true;
+    holdingRef.current = false;
+    recognitionRef.current?.abort?.();
     recognitionRef.current = null;
+    transcriptRef.current = "";
     setState("idle");
   }
 
@@ -295,55 +321,24 @@ export function VoiceGuideAvatar({
     if (response) speakAnswer(response.spokenAnswer);
   }
 
-  async function saveNote() {
-    if (!response || !lastQuestion || saved || isSaving) return;
-    setIsSaving(true);
-    setError("");
-    try {
-      await onSaveGuidanceNote({
-        step,
-        transcribedQuestion: lastQuestion,
-        spokenAnswer: response.spokenAnswer,
-        captionSummary: response.captionSummary,
-        boundaryReminder: response.boundaryReminder,
-        createdAt: new Date().toISOString(),
-      });
-      setSaved(true);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Guidance note could not be saved.");
-      setState("error");
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  function retry() {
-    if (lastQuestion) void submitQuestion(lastQuestion);
-    else startListening();
-  }
-
   return (
-    <aside className={`voice-guide-avatar voice-guide-state-${visibleState}`}>
+    <aside className={`${styles.shell} ${styles[visibleState]}`}>
       {expanded && (
-        <section
-          aria-label="Voice Guide"
-          aria-live="polite"
-          className="voice-guide-popover"
-        >
-          <header className="voice-guide-popover-header">
-            <div className="voice-guide-persona-heading">
+        <section aria-label="Mira qualitative analysis guide" className={styles.panel}>
+          <header className={styles.header}>
+            <div className={styles.identity}>
               <MiraAvatar size="panel" state={visibleState} />
               <div>
-              <span className="voice-guide-eyebrow">Conversational research companion</span>
-              <h2>Mira</h2>
-              <p>Warm, thoughtful research companion</p>
+                <span>Focused qualitative analysis guide</span>
+                <h2>Mira</h2>
+                <p>Five-stage GDI-QR-informed support</p>
               </div>
             </div>
             <button
-              aria-label="Close Voice Guide"
-              className="icon-button"
+              aria-label="Close Mira"
+              className={styles.iconButton}
               onClick={() => {
-                stopListening();
+                cancelListening();
                 window.speechSynthesis?.cancel();
                 setExpanded(false);
               }}
@@ -353,168 +348,113 @@ export function VoiceGuideAvatar({
             </button>
           </header>
 
-          <div className="voice-guide-status-line">
-            <span className="voice-guide-status-dot" aria-hidden="true" />
+          <div className={styles.status} aria-live="polite">
+            <span aria-hidden="true" />
             <strong>{stateLabels[visibleState]}</strong>
-            <span>· {step.replace("-", " ")}</span>
+            <small>{step.replace("-", " ")}</small>
           </div>
 
-          {state === "listening" && (
-            <p className="voice-guide-thinking">I’m listening…</p>
-          )}
-          {state === "thinking" && (
-            <p className="voice-guide-thinking">
-              Thinking about what you asked…
-            </p>
-          )}
+          <div className={styles.stagePrompt}>
+            Mira is focused on helping you work with qualitative data through the
+            current analysis stage.
+          </div>
 
           {error && (
-            <div className="voice-guide-error" role="alert">
+            <div className={styles.error} role="alert">
               <p>{error}</p>
-              <button className="secondary-button" onClick={retry} type="button">
-                <RotateCcw aria-hidden="true" size={16} /> Retry
-              </button>
-            </div>
-          )}
-
-          {showTextFallback && (
-            <form
-              className="voice-guide-text-fallback"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void submitQuestion(fallbackQuestion);
-              }}
-            >
-              <label htmlFor="voice-guide-fallback-question">
-                Captions-only question fallback
-              </label>
-              <input
-                id="voice-guide-fallback-question"
-                onChange={(event) => setFallbackQuestion(event.target.value)}
-                placeholder="Type what you would like to ask"
-                value={fallbackQuestion}
-              />
               <button
-                className="secondary-button"
-                disabled={!fallbackQuestion.trim() || state === "thinking"}
-                type="submit"
-              >
-                <Sparkles aria-hidden="true" size={16} /> Ask with captions
-              </button>
-            </form>
-          )}
-
-          {response && (
-            <div className="voice-guide-latest-response">
-              <span className="label">Mira’s response</span>
-              <p className="voice-guide-full-answer">{response.spokenAnswer}</p>
-              {response.captionSummary.length > 1 && (
-                <ol>
-                  {response.captionSummary.slice(0, 4).map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ol>
-              )}
-              {response.boundaryReminder && (
-                <p className="voice-guide-boundary">{response.boundaryReminder}</p>
-              )}
-              {response.fallbackReason && (
-                <small className="voice-guide-fallback-note">Structured fallback used because Ollama was unavailable: {response.fallbackReason}</small>
-              )}
-              <small>
-                {saved
-                  ? "Saved as a researcher-selected guidance note."
-                  : "This interaction is transient and has not been added to the audit record."}
-              </small>
-            </div>
-          )}
-
-          {!response && !error && state !== "thinking" && state !== "listening" && (
-            <p className="small">
-              You can talk with Mira naturally. She can chat, help with the app, and
-              support your thinking. When the conversation concerns GDI-QR analysis,
-              she uses the methodological guidance and keeps final judgements with you.
-            </p>
-          )}
-
-          {availableVoices.length > 0 && (
-            <label className="voice-guide-voice-control">
-              <span>Speaking voice</span>
-              <select
-                aria-label="Choose Mira speaking voice"
-                onChange={(event) => setSelectedVoiceUri(event.target.value)}
-                value={selectedVoiceUri}
-              >
-                {availableVoices.map((voice) => (
-                  <option key={voice.voiceURI} value={voice.voiceURI}>
-                    {voice.name} ({voice.lang})
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          <div className="voice-guide-actions">
-            {state === "listening" ? (
-              <button className="primary-button" onClick={stopListening} type="button">
-                <Square aria-hidden="true" size={16} /> Stop listening
-              </button>
-            ) : (
-              <button
-                className="primary-button"
-                disabled={state === "thinking" || isSaving}
-                onClick={startListening}
+                className={styles.secondaryButton}
+                onClick={() => setError("")}
                 type="button"
               >
-                <Mic aria-hidden="true" size={16} />
-                {response ? "Ask again" : "Ask guidance"}
+                <RotateCcw aria-hidden="true" size={15} /> Dismiss
               </button>
-            )}
+            </div>
+          )}
+
+          {captionsEnabled && response && (
+            <div className={styles.captionBox}>
+              <span>Mira</span>
+              <p>{response.spokenAnswer}</p>
+              {response.fallbackReason && (
+                <small>
+                  Structured fallback used because Ollama was unavailable.
+                </small>
+              )}
+            </div>
+          )}
+
+          <button
+            aria-label="Hold to talk to Mira"
+            className={styles.holdButton}
+            disabled={state === "thinking" || state === "speaking"}
+            onPointerCancel={cancelListening}
+            onPointerDown={beginHoldToTalk}
+            onPointerLeave={(event) => {
+              if (event.buttons === 0) releaseToSend();
+            }}
+            onPointerUp={releaseToSend}
+            type="button"
+          >
+            <Mic aria-hidden="true" size={24} />
+            <span>
+              <strong>
+                {state === "listening" ? "Listening… release to send" : "Hold to talk"}
+              </strong>
+              <small>Press Esc to cancel</small>
+            </span>
+          </button>
+
+          <div className={styles.controls}>
             <button
-              aria-pressed={captionsOnly}
-              className="secondary-button"
+              aria-pressed={muted}
+              className={styles.secondaryButton}
               onClick={() => {
                 window.speechSynthesis?.cancel();
-                setCaptionsOnly((current) => !current);
+                setMuted((current) => !current);
                 setState("idle");
               }}
               type="button"
             >
-              <Captions aria-hidden="true" size={16} />
-              {captionsOnly ? "Captions on" : "Captions only"}
+              {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+              {muted ? "Unmute" : "Mute"}
             </button>
+
             <button
-              className="secondary-button"
-              disabled={!response || captionsOnly || state === "thinking"}
+              aria-pressed={captionsEnabled}
+              className={styles.secondaryButton}
+              onClick={() => setCaptionsEnabled((current) => !current)}
+              type="button"
+            >
+              <Captions size={16} />
+              {captionsEnabled ? "Hide captions" : "Show captions"}
+            </button>
+
+            <button
+              className={styles.secondaryButton}
+              disabled={!response || muted || state === "thinking"}
               onClick={replay}
               type="button"
             >
-              <Volume2 aria-hidden="true" size={16} /> Replay
-            </button>
-            <button
-              className="secondary-button"
-              disabled={!response?.canSaveAsGuidanceNote || saved || isSaving}
-              onClick={() => void saveNote()}
-              type="button"
-            >
-              <Save aria-hidden="true" size={16} />
-              {saved ? "Saved" : isSaving ? "Saving…" : "Save note"}
+              <Volume2 size={16} /> Replay
             </button>
           </div>
+
+          <small className={styles.privacyNote}>
+            Voice interactions are transient and are not saved to the project.
+          </small>
         </section>
       )}
 
       <button
         aria-expanded={expanded}
-        aria-label={expanded ? "Voice Guide is open" : "Open Voice Guide"}
-        className="voice-guide-avatar-button"
+        aria-label={expanded ? "Mira is open" : "Open Mira"}
+        className={styles.launcher}
         onClick={() => setExpanded((current) => !current)}
         type="button"
       >
-        <span className="voice-guide-avatar-face" aria-hidden="true">
-          <MiraAvatar state={visibleState} />
-        </span>
-        <span className="voice-guide-avatar-copy">
+        <MiraAvatar state={visibleState} />
+        <span>
           <strong>Mira</strong>
           <small>{stateLabels[visibleState]}</small>
         </span>
