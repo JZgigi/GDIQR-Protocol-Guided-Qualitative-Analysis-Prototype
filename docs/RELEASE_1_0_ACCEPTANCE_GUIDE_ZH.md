@@ -309,3 +309,14 @@ Voice Guide 不得给出最终 yes/no、final definition 或完整最终 narrati
 8. 检查 API 返回 provider：正常应为 `ollama-conversational`；Ollama 不可用时应为 `structured-gdiqr-fallback` 并显示原因。
 9. 刷新页面后，未保存的闲聊和临时上下文不应进入 audit/export。
 10. 只有点击 Save note 的研究者选定内容才应持久化。
+
+
+## 附加验收：Mira 虚拟人物（Batch 9）
+
+- [ ] 右下角显示原创的人物型 Mira，而不是通用机器人图标。
+- [ ] listening、thinking、speaking、error、captions-only 状态可通过文字和视觉区分。
+- [ ] 语音播放时人物口型有轻微变化，播放结束后恢复。
+- [ ] Speaking voice 下拉菜单可选择浏览器提供的声音，Replay 使用所选声音。
+- [ ] 开启系统“减少动态效果”后，不再持续播放非必要动画。
+- [ ] 手机宽度下头像、弹窗、关闭按钮和主要操作仍可使用。
+- [ ] 此批次不新增数据表，不需要执行 Supabase migration。

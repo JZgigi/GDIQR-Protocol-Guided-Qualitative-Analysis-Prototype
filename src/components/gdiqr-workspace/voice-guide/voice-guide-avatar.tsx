@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Bot,
   Captions,
   Mic,
   RotateCcw,
@@ -14,6 +13,7 @@ import {
 } from "lucide-react";
 import type { WorkflowStep } from "@/lib/types";
 import type { VoiceGuideProjectState } from "@/lib/guidance/voice-guide-context";
+import { MiraAvatar } from "./mira-avatar";
 
 type VoiceGuideState =
   | "idle"
@@ -114,6 +114,8 @@ export function VoiceGuideAvatar({
   const [isSaving, setIsSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [conversationHistory, setConversationHistory] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoiceUri, setSelectedVoiceUri] = useState("");
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const visibleState = useMemo<VoiceGuideState>(
@@ -122,7 +124,26 @@ export function VoiceGuideAvatar({
   );
 
   useEffect(() => {
+    const loadVoices = () => {
+      const voices = window.speechSynthesis?.getVoices() ?? [];
+      setAvailableVoices(voices);
+      setSelectedVoiceUri((current) => {
+        if (current && voices.some((voice) => voice.voiceURI === current)) return current;
+        const targetLanguage = projectState.project.language?.toLowerCase().startsWith("zh")
+          ? "zh"
+          : "en";
+        return (
+          voices.find((voice) => voice.lang.toLowerCase().startsWith(targetLanguage) && /female|natural|samantha|aria|serena|ting|xiaoxiao/i.test(voice.name)) ??
+          voices.find((voice) => voice.lang.toLowerCase().startsWith(targetLanguage)) ??
+          voices[0]
+        )?.voiceURI ?? "";
+      });
+    };
+
+    loadVoices();
+    window.speechSynthesis?.addEventListener?.("voiceschanged", loadVoices);
     return () => {
+      window.speechSynthesis?.removeEventListener?.("voiceschanged", loadVoices);
       recognitionRef.current?.stop();
       window.speechSynthesis?.cancel();
     };
@@ -139,6 +160,10 @@ export function VoiceGuideAvatar({
     utterance.lang = projectState.project.language?.toLowerCase().startsWith("zh")
       ? "zh-CN"
       : "en-GB";
+    const selectedVoice = availableVoices.find((voice) => voice.voiceURI === selectedVoiceUri);
+    if (selectedVoice) utterance.voice = selectedVoice;
+    utterance.rate = 0.96;
+    utterance.pitch = 1.02;
     utterance.onstart = () => setState("speaking");
     utterance.onend = () => setState("idle");
     utterance.onerror = () => {
@@ -306,9 +331,13 @@ export function VoiceGuideAvatar({
           className="voice-guide-popover"
         >
           <header className="voice-guide-popover-header">
-            <div>
+            <div className="voice-guide-persona-heading">
+              <MiraAvatar size="panel" state={visibleState} />
+              <div>
               <span className="voice-guide-eyebrow">Conversational research companion</span>
               <h2>Mira</h2>
+              <p>Warm, thoughtful research companion</p>
+              </div>
             </div>
             <button
               aria-label="Close Voice Guide"
@@ -408,6 +437,23 @@ export function VoiceGuideAvatar({
             </p>
           )}
 
+          {availableVoices.length > 0 && (
+            <label className="voice-guide-voice-control">
+              <span>Speaking voice</span>
+              <select
+                aria-label="Choose Mira speaking voice"
+                onChange={(event) => setSelectedVoiceUri(event.target.value)}
+                value={selectedVoiceUri}
+              >
+                {availableVoices.map((voice) => (
+                  <option key={voice.voiceURI} value={voice.voiceURI}>
+                    {voice.name} ({voice.lang})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <div className="voice-guide-actions">
             {state === "listening" ? (
               <button className="primary-button" onClick={stopListening} type="button">
@@ -466,7 +512,7 @@ export function VoiceGuideAvatar({
         type="button"
       >
         <span className="voice-guide-avatar-face" aria-hidden="true">
-          <Bot size={30} />
+          <MiraAvatar state={visibleState} />
         </span>
         <span className="voice-guide-avatar-copy">
           <strong>Mira</strong>

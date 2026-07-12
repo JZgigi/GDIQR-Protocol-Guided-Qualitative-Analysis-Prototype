@@ -94,3 +94,12 @@
 - Retained deterministic analytic-decision boundaries and output guarding.
 - Added explicit structured fallback reporting when Ollama is unavailable.
 - Introduced the warm conversational assistant persona “Mira”.
+
+
+## Batch 9 — Human-like Mira avatar experience
+
+- Replaced the generic robot glyph with an original CSS-drawn human-like Mira character.
+- Added distinct listening, thinking, speaking, error, and captions-only expressions and motion cues.
+- Added a browser TTS voice selector with language-aware defaults.
+- Preserved reduced-motion, captions-only, privacy, and transient-conversation behaviour.
+- Added Batch 9 verification and implementation documentation.

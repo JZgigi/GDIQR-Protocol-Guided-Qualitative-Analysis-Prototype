@@ -2419,3 +2419,261 @@ button {
   margin-top: 0.65rem;
   color: var(--muted-foreground, #667085);
 }
+
+/* Batch 9 — human-like Mira avatar experience */
+.voice-guide-persona-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.voice-guide-persona-heading > div:last-child {
+  min-width: 0;
+}
+
+.voice-guide-persona-heading p {
+  color: var(--muted, #5f6874);
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+
+.voice-guide-avatar-face {
+  background: linear-gradient(145deg, #eee9ff, #b6dff2);
+  height: 48px;
+  overflow: visible;
+  width: 48px;
+}
+
+.mira-avatar {
+  --mira-accent: #7464d9;
+  --mira-hair: #3e2f4f;
+  --mira-skin: #f1c6ad;
+  --mira-shirt: #4f7f86;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 46px;
+  position: relative;
+  width: 46px;
+}
+
+.mira-avatar-panel {
+  height: 62px;
+  width: 62px;
+}
+
+.mira-avatar-halo {
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.9), rgba(176, 219, 235, 0.36) 56%, transparent 70%);
+  border-radius: 50%;
+  inset: -6%;
+  position: absolute;
+}
+
+.mira-avatar-hair-back {
+  background: var(--mira-hair);
+  border-radius: 48% 48% 42% 42%;
+  height: 64%;
+  left: 22%;
+  position: absolute;
+  top: 10%;
+  width: 56%;
+}
+
+.mira-avatar-neck {
+  background: var(--mira-skin);
+  border-radius: 0 0 45% 45%;
+  height: 18%;
+  left: 43%;
+  position: absolute;
+  top: 61%;
+  width: 16%;
+}
+
+.mira-avatar-shoulders {
+  background: linear-gradient(145deg, #6da2a8, var(--mira-shirt));
+  border-radius: 50% 50% 24% 24%;
+  bottom: 3%;
+  height: 30%;
+  left: 14%;
+  position: absolute;
+  width: 72%;
+}
+
+.mira-avatar-face-shape {
+  background: linear-gradient(155deg, #f7d4bf, var(--mira-skin));
+  border-radius: 47% 47% 45% 45%;
+  box-shadow: inset -2px -2px 0 rgba(136, 73, 68, 0.08);
+  height: 55%;
+  left: 27%;
+  position: absolute;
+  top: 18%;
+  width: 46%;
+  z-index: 2;
+}
+
+.mira-avatar-fringe {
+  background: var(--mira-hair);
+  border-radius: 70% 25% 60% 15%;
+  height: 28%;
+  left: -4%;
+  position: absolute;
+  top: -6%;
+  transform: rotate(-4deg);
+  width: 108%;
+}
+
+.mira-avatar-eye {
+  background: #2e2934;
+  border-radius: 50%;
+  height: 7%;
+  position: absolute;
+  top: 43%;
+  width: 8%;
+}
+
+.mira-avatar-eye-left { left: 27%; }
+.mira-avatar-eye-right { right: 27%; }
+
+.mira-avatar-brow {
+  background: #654858;
+  border-radius: 999px;
+  height: 3%;
+  position: absolute;
+  top: 35%;
+  width: 15%;
+}
+
+.mira-avatar-brow-left { left: 22%; transform: rotate(-4deg); }
+.mira-avatar-brow-right { right: 22%; transform: rotate(4deg); }
+
+.mira-avatar-nose {
+  border-bottom: 1px solid rgba(121, 72, 70, 0.36);
+  border-right: 1px solid rgba(121, 72, 70, 0.25);
+  height: 10%;
+  left: 48%;
+  position: absolute;
+  top: 47%;
+  transform: rotate(10deg);
+  width: 5%;
+}
+
+.mira-avatar-mouth {
+  background: #a85e68;
+  border-radius: 50% 50% 60% 60%;
+  height: 4%;
+  left: 39%;
+  position: absolute;
+  top: 68%;
+  width: 22%;
+}
+
+.mira-avatar-cheek {
+  background: rgba(226, 118, 126, 0.2);
+  border-radius: 50%;
+  height: 10%;
+  position: absolute;
+  top: 56%;
+  width: 13%;
+}
+
+.mira-avatar-cheek-left { left: 13%; }
+.mira-avatar-cheek-right { right: 13%; }
+
+.mira-avatar-state-ring {
+  border: 2px solid var(--mira-accent);
+  border-radius: 50%;
+  inset: 0;
+  opacity: 0;
+  position: absolute;
+}
+
+.mira-avatar-listening { --mira-accent: #2c9fe5; }
+.mira-avatar-thinking { --mira-accent: #d89622; }
+.mira-avatar-speaking { --mira-accent: #8f63dd; }
+.mira-avatar-error { --mira-accent: #d45a63; }
+.mira-avatar-captions-only { --mira-accent: #6f7d8e; }
+
+.mira-avatar-listening .mira-avatar-state-ring,
+.mira-avatar-thinking .mira-avatar-state-ring,
+.mira-avatar-speaking .mira-avatar-state-ring,
+.mira-avatar-error .mira-avatar-state-ring,
+.mira-avatar-captions-only .mira-avatar-state-ring {
+  opacity: 0.82;
+}
+
+.mira-avatar-listening .mira-avatar-state-ring {
+  animation: mira-listening-ring 1.35s ease-out infinite;
+}
+
+.mira-avatar-thinking .mira-avatar-eye {
+  animation: mira-thinking-glance 1.7s ease-in-out infinite;
+}
+
+.mira-avatar-thinking .mira-avatar-brow-left { transform: translateY(-1px) rotate(-8deg); }
+.mira-avatar-thinking .mira-avatar-brow-right { transform: translateY(-1px) rotate(8deg); }
+
+.mira-avatar-speaking .mira-avatar-mouth {
+  animation: mira-speaking-mouth 0.34s ease-in-out infinite alternate;
+}
+
+.mira-avatar-speaking .mira-avatar-state-ring {
+  animation: mira-speaking-ring 0.85s ease-in-out infinite alternate;
+}
+
+.mira-avatar-error .mira-avatar-mouth {
+  border-radius: 60% 60% 30% 30%;
+  transform: rotate(180deg);
+}
+
+.voice-guide-voice-control {
+  align-items: center;
+  background: var(--soft-surface, #f5f7fa);
+  border: 1px solid var(--border, #d8dee6);
+  border-radius: 12px;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.voice-guide-voice-control span {
+  color: var(--muted, #5f6874);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.voice-guide-voice-control select {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #cbd3dc);
+  border-radius: 8px;
+  max-width: 100%;
+  min-height: 34px;
+  padding: 5px 8px;
+}
+
+@keyframes mira-listening-ring {
+  0% { opacity: 0.8; transform: scale(0.94); }
+  100% { opacity: 0; transform: scale(1.28); }
+}
+
+@keyframes mira-thinking-glance {
+  0%, 100% { transform: translateX(0); }
+  45%, 60% { transform: translateX(18%); }
+}
+
+@keyframes mira-speaking-mouth {
+  from { height: 4%; transform: scaleX(1); }
+  to { height: 11%; transform: scaleX(0.78); }
+}
+
+@keyframes mira-speaking-ring {
+  from { opacity: 0.45; transform: scale(0.98); }
+  to { opacity: 0.9; transform: scale(1.08); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mira-avatar-state-ring,
+  .mira-avatar-eye,
+  .mira-avatar-mouth {
+    animation: none !important;
+  }
+}
