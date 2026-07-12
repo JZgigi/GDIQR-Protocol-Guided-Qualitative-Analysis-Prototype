@@ -25,3 +25,14 @@
 - Split supporting workspace UI and helper functions out of the 12,110-line workspace component.
 - Kept the existing `GdiqrWorkspace` public import and runtime behaviour unchanged.
 - Added workspace architecture guidance for subsequent v1.0 feature batches.
+
+## 2026-07-12 - Batch 1 core workflow simplification
+
+- Replaced the full-width project setup form with a compact current-project bar.
+- Moved project settings and project creation into collapsed disclosures.
+- Reframed the mixed data-source selector as a dataset/source note while retaining the legacy internal value for database compatibility.
+- Removed the methodological guidance chat panel from the visible workflow; saved guidance memo data remains compatible for the future Voice Guide.
+- Moved detailed step guidance behind progressive disclosure and added a compact Voice Guide placeholder.
+- Kept speaker and segment handling available as an advanced, collapsed tool.
+- Extracted project entry and workflow navigation into feature folders.
+- Verified with `npm run typecheck` and `npm run build`.

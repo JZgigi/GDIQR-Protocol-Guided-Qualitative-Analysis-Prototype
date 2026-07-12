@@ -473,3 +473,15 @@ Smoke check：
 - Guidance chat 是 methodological guide，不是 automatic coder。
 - 有用 guidance 可以保存为 memo，并进入 audit trail。
 - 关键操作有更清楚的 loading / error / retry 状态，并减少 repeated clicking 导致的重复 generation。
+
+## Batch 1 core workflow simplification
+
+- [ ] Current project is shown in a compact project bar.
+- [ ] Open project, Project settings, and Create new project are clearly distinct.
+- [ ] Project settings and project creation are collapsed by default.
+- [ ] The UI no longer mixes SMARTEN with Interview/Photovoice in a single visible selector.
+- [ ] Dataset/source and material details can be recorded in the Dataset/source note and are retained in export notes.
+- [ ] Detailed step guidance is collapsed by default.
+- [ ] Methodological guidance chat textarea and message history are absent from the main workflow.
+- [ ] Speaker/segment handling remains accessible under Advanced.
+- [ ] Typecheck and production build pass.

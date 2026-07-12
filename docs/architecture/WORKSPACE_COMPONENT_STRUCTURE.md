@@ -35,3 +35,12 @@ npm ci
 npm run typecheck
 npm run build
 ```
+
+## Batch 1 follow-up extraction
+
+The first feature-led extraction now lives under:
+
+- `gdiqr-workspace/project/project-bar.tsx`: compact current-project summary, project settings disclosure, and create-project disclosure.
+- `gdiqr-workspace/workflow/workflow-navigation.tsx`: top workflow navigation and blocked-navigation handling.
+
+The workspace root continues to own state and handlers. Subsequent batches should extract a workflow area only when that area is materially changed, so structural movement remains reviewable alongside a real feature boundary.

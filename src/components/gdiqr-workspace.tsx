@@ -58,7 +58,6 @@ import {
 } from "@/lib/transcript-source-cleaner";
 import {
   WorkflowErrorPanel,
-  GuidanceChatPanel,
   buildMethodologicalGuidanceAnswer,
   getStepShortLabel,
   TranscriptReviewHistory,
@@ -180,6 +179,8 @@ import {
   buildIntegrationStructureDraft,
   buildRelationshipRationale
 } from "./gdiqr-workspace-support";
+import { ProjectBar } from "./gdiqr-workspace/project/project-bar";
+import { WorkflowNavigation } from "./gdiqr-workspace/workflow/workflow-navigation";
 
 const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
@@ -5211,313 +5212,53 @@ export function GdiqrWorkspace({
 
       <div className="layout">
         <main className="main">
-          <section
-            className="mini-card soft"
-            aria-label="Project setup and data suitability"
-          >
-            <div className="section-header">
-              <div>
-                <span className="badge">v1.0 research release</span>
-                <h2 className="section-title">
-                  Project setup and data suitability
-                </h2>
-                <p className="section-copy">
-                  Create or select a project before upload. This research
-                  release is intended for open, public, or anonymised datasets
-                  only.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid two">
-              <div>
-                <label className="label" htmlFor="project-switcher">
-                  Existing project
-                </label>
-                <select
-                  className="select"
-                  id="project-switcher"
-                  onChange={(event) => openProject(event.target.value)}
-                  value={currentProject.id}
-                >
-                  {availableProjects.length === 0 && (
-                    <option value={currentProject.id}>
-                      {currentProject.title}
-                    </option>
-                  )}
-                  {availableProjects.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.title || "Untitled GDI-QR project"}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="label" htmlFor="project-title">
-                  Project title
-                </label>
-                <input
-                  className="field"
-                  id="project-title"
-                  onChange={(event) => setProjectTitle(event.target.value)}
-                  value={projectTitle}
-                />
-              </div>
-              <div>
-                <label className="label" htmlFor="project-dataset-type">
-                  Dataset type
-                </label>
-                <select
-                  className="select"
-                  id="project-dataset-type"
-                  onChange={(event) => {
-                    const value = event.target.value as DatasetType;
-                    setDatasetType(value);
-                    setDataSuitabilityConfirmed(
-                      value === "identifiable_sensitive"
-                        ? false
-                        : dataSuitabilityConfirmed,
-                    );
-                  }}
-                  value={datasetType}
-                >
-                  <option value="open">Open / public dataset</option>
-                  <option value="anonymised">
-                    Anonymised or de-identified dataset
-                  </option>
-                  <option value="identifiable_sensitive">
-                    Identifiable sensitive data
-                  </option>
-                </select>
-              </div>
-              <div>
-                <label className="label" htmlFor="project-data-source">
-                  Data source
-                </label>
-                <select
-                  className="select"
-                  id="project-data-source"
-                  onChange={(event) =>
-                    setProjectDataSource(
-                      event.target.value as ProjectDataSource,
-                    )
-                  }
-                  value={projectDataSource}
-                >
-                  <option value="SMARTEN">SMARTEN</option>
-                  <option value="photovoice">Photovoice</option>
-                  <option value="interview">Interview</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
-            </div>
-
-            <label className="label" htmlFor="project-researcher-notes">
-              Researcher notes
-            </label>
-            <textarea
-              className="textarea"
-              id="project-researcher-notes"
-              onChange={(event) =>
-                setProjectResearcherNotes(event.target.value)
+          <ProjectBar
+            availableProjects={availableProjects}
+            currentProject={currentProject}
+            createProjectExpanded={createProjectExpanded}
+            dataSuitabilityConfirmed={dataSuitabilityConfirmed}
+            datasetType={datasetType}
+            isCreatingProject={isCreatingProject}
+            isLocalOnlyMode={isLocalOnlyMode}
+            isSavingProject={isSavingProject}
+            newDataSuitabilityConfirmed={newDataSuitabilityConfirmed}
+            newDatasetType={newDatasetType}
+            newProjectTitle={newProjectTitle}
+            newResearchQuestion={newResearchQuestion}
+            newResearcherNotes={newResearcherNotes}
+            newStudyDescription={newStudyDescription}
+            onCreateProject={() => void createNewProject()}
+            onOpenProject={openProject}
+            onSaveProject={() => void saveProjectSetup()}
+            onSetCreateProjectExpanded={setCreateProjectExpanded}
+            onSetDataSuitabilityConfirmed={(confirmed) => {
+              setDataSuitabilityConfirmed(confirmed);
+            }}
+            onSetDatasetType={(value) => {
+              setDatasetType(value);
+              setDataSuitabilityConfirmed(
+                value === "identifiable_sensitive"
+                  ? false
+                  : dataSuitabilityConfirmed,
+              );
+            }}
+            onSetNewDataSuitabilityConfirmed={setNewDataSuitabilityConfirmed}
+            onSetNewDatasetType={(value) => {
+              setNewDatasetType(value);
+              if (value === "identifiable_sensitive") {
+                setNewDataSuitabilityConfirmed(false);
               }
-              placeholder="Briefly document the dataset source, de-identification status, or any project-level notes that should appear in the export."
-              value={projectResearcherNotes}
-            />
-
-            <div
-              className={
-                dataSuitabilityBlocksAnalysis
-                  ? "mini-card warning-card"
-                  : "mini-card soft"
-              }
-            >
-              <span className="label">Data suitability notice</span>
-              <p className="small">
-                This research release is intended for open, public, or
-                anonymised datasets only. Please do not upload identifiable or
-                highly sensitive data unless an approved secure/local deployment
-                is in place.
-              </p>
-              {datasetType === "identifiable_sensitive" && !isLocalOnlyMode && (
-                <p className="small strong-warning">
-                  Identifiable sensitive data is blocked in this cloud-assisted
-                  v1.0 release. Choose an open/anonymised dataset or use the
-                  later secure/local deployment.
-                </p>
-              )}
-              <label className="scope-option">
-                <input
-                  checked={dataSuitabilityConfirmed}
-                  disabled={
-                    datasetType === "identifiable_sensitive" && !isLocalOnlyMode
-                  }
-                  onChange={(event) =>
-                    setDataSuitabilityConfirmed(event.target.checked)
-                  }
-                  type="checkbox"
-                />
-                I confirm this project will use open, public, anonymised, or
-                otherwise approved data suitable for this v1.0 release.
-              </label>
-            </div>
-
-            <div className="button-row">
-              <button
-                className="button primary"
-                disabled={isSavingProject}
-                onClick={() => void saveProjectSetup()}
-                type="button"
-              >
-                {isSavingProject ? "Saving project..." : "Save project setup"}
-              </button>
-              <button
-                className="button"
-                onClick={() => setCreateProjectExpanded((current) => !current)}
-                type="button"
-              >
-                {createProjectExpanded
-                  ? "Hide create project"
-                  : "Create new project"}
-              </button>
-              {projectSetupSavedAt && (
-                <span className="small">
-                  Last saved:{" "}
-                  {new Date(projectSetupSavedAt).toLocaleTimeString()}
-                </span>
-              )}
-            </div>
-
-            {createProjectExpanded && (
-              <div className="mini-card">
-                <span className="label">Create Project</span>
-                <div className="grid two">
-                  <div>
-                    <label className="label" htmlFor="new-project-title">
-                      Project title
-                    </label>
-                    <input
-                      className="field"
-                      id="new-project-title"
-                      onChange={(event) =>
-                        setNewProjectTitle(event.target.value)
-                      }
-                      value={newProjectTitle}
-                    />
-                  </div>
-                  <div>
-                    <label className="label" htmlFor="new-data-source">
-                      Data source
-                    </label>
-                    <select
-                      className="select"
-                      id="new-data-source"
-                      onChange={(event) =>
-                        setNewDataSource(
-                          event.target.value as ProjectDataSource,
-                        )
-                      }
-                      value={newDataSource}
-                    >
-                      <option value="SMARTEN">SMARTEN</option>
-                      <option value="photovoice">Photovoice</option>
-                      <option value="interview">Interview</option>
-                      <option value="other">Other</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label" htmlFor="new-dataset-type">
-                      Dataset type
-                    </label>
-                    <select
-                      className="select"
-                      id="new-dataset-type"
-                      onChange={(event) => {
-                        const value = event.target.value as DatasetType;
-                        setNewDatasetType(value);
-                        if (value === "identifiable_sensitive") {
-                          setNewDataSuitabilityConfirmed(false);
-                        }
-                      }}
-                      value={newDatasetType}
-                    >
-                      <option value="open">Open / public dataset</option>
-                      <option value="anonymised">
-                        Anonymised or de-identified dataset
-                      </option>
-                      <option value="identifiable_sensitive">
-                        Identifiable sensitive data
-                      </option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label" htmlFor="new-research-question">
-                      Research question
-                    </label>
-                    <textarea
-                      className="textarea"
-                      id="new-research-question"
-                      onChange={(event) =>
-                        setNewResearchQuestion(event.target.value)
-                      }
-                      value={newResearchQuestion}
-                    />
-                  </div>
-                </div>
-                <label className="label" htmlFor="new-study-description">
-                  Study description
-                </label>
-                <textarea
-                  className="textarea"
-                  id="new-study-description"
-                  onChange={(event) =>
-                    setNewStudyDescription(event.target.value)
-                  }
-                  value={newStudyDescription}
-                />
-                <label className="label" htmlFor="new-researcher-notes">
-                  Researcher notes
-                </label>
-                <textarea
-                  className="textarea"
-                  id="new-researcher-notes"
-                  onChange={(event) =>
-                    setNewResearcherNotes(event.target.value)
-                  }
-                  value={newResearcherNotes}
-                />
-                <div className="mini-card soft">
-                  <span className="label">Required confirmation</span>
-                  <p className="small">
-                    This research release is intended for open, public, or
-                    anonymised datasets only. Please do not upload identifiable
-                    or highly sensitive data unless an approved secure/local
-                    deployment is in place.
-                  </p>
-                  <label className="scope-option">
-                    <input
-                      checked={newDataSuitabilityConfirmed}
-                      disabled={newDatasetType === "identifiable_sensitive"}
-                      onChange={(event) =>
-                        setNewDataSuitabilityConfirmed(event.target.checked)
-                      }
-                      type="checkbox"
-                    />
-                    I confirm the dataset is suitable for this v1.0 research
-                    release.
-                  </label>
-                </div>
-                <button
-                  className="button primary"
-                  disabled={isCreatingProject}
-                  onClick={() => void createNewProject()}
-                  type="button"
-                >
-                  {isCreatingProject ? "Creating project..." : "Create project"}
-                </button>
-              </div>
-            )}
-          </section>
+            }}
+            onSetNewProjectTitle={setNewProjectTitle}
+            onSetNewResearchQuestion={setNewResearchQuestion}
+            onSetNewResearcherNotes={setNewResearcherNotes}
+            onSetNewStudyDescription={setNewStudyDescription}
+            onSetProjectResearcherNotes={setProjectResearcherNotes}
+            onSetProjectTitle={setProjectTitle}
+            projectResearcherNotes={projectResearcherNotes}
+            projectSetupSavedAt={projectSetupSavedAt}
+            projectTitle={projectTitle}
+          />
 
           {dataSuitabilityBlocksAnalysis && (
             <div className="mini-card warning-card">
@@ -5532,35 +5273,16 @@ export function GdiqrWorkspace({
             </div>
           )}
 
-          <div className="top-stepper" aria-label="GDI-QR workflow progress">
-            {guidedSteps.map((step, index) => (
-              <button
-                className={`top-step ${
-                  activeStep === step.id ? "active" : ""
-                } ${completedSteps.has(step.id) ? "complete" : ""}`}
-                key={step.id}
-                disabled={
-                  dataSuitabilityBlocksAnalysis && step.id !== "pre-analysis"
-                }
-                onClick={() => {
-                  if (
-                    dataSuitabilityBlocksAnalysis &&
-                    step.id !== "pre-analysis"
-                  ) {
-                    void ensureDataSuitabilityConfirmed(
-                      "moving beyond project setup",
-                    );
-                    return;
-                  }
-                  setActiveStep(step.id);
-                }}
-                type="button"
-              >
-                <span className="top-step-number">{index + 1}</span>
-                <span>{step.label}</span>
-              </button>
-            ))}
-          </div>
+          <WorkflowNavigation
+            activeStep={activeStep}
+            completedSteps={completedSteps}
+            dataSuitabilityBlocksAnalysis={dataSuitabilityBlocksAnalysis}
+            guidedSteps={guidedSteps}
+            onBlockedNavigation={() => {
+              void ensureDataSuitabilityConfirmed("moving beyond project setup");
+            }}
+            onSelectStep={setActiveStep}
+          />
           <section className={`section step-${activeStep}`}>
             <div className="section-header">
               <div>
@@ -5571,7 +5293,16 @@ export function GdiqrWorkspace({
                 <p className="section-copy">{getStepCopy(activeStep)}</p>
               </div>
             </div>
-            <StepGuidance step={activeStep} />
+            <div className="step-support-row">
+              <details className="workbook-details step-guidance-details">
+                <summary>Step guidance</summary>
+                <StepGuidance step={activeStep} />
+              </details>
+              <div className="voice-guide-entry" aria-label="Voice Guide placeholder">
+                <strong>Need guidance?</strong>
+                <span>Voice Guide will provide voice-first methodological reflection support in a later batch.</span>
+              </div>
+            </div>
             {workflowError && (
               <WorkflowErrorPanel
                 message={workflowError}
@@ -5580,16 +5311,6 @@ export function GdiqrWorkspace({
                 retryAvailable={Boolean(retryActionRef.current)}
               />
             )}
-            <GuidanceChatPanel
-              activeStep={activeStep}
-              isLoading={isGuidanceLoading}
-              messages={guidanceMessages}
-              onAsk={() => void askGuidanceQuestion()}
-              onQuestionChange={setGuidanceQuestion}
-              onSaveMemo={(message) => void saveGuidanceAsMemo(message)}
-              question={guidanceQuestion}
-              savedMemoCount={savedGuidanceMemos.length}
-            />
             <div className="workbook-task-heading">
               <span className="label">What you’ll work on</span>
               <p>
@@ -6449,8 +6170,8 @@ export function GdiqrWorkspace({
                         }
                       />
                     </div>
-                    <details className="workbook-details" open>
-                      <summary>Basic speaker / segment handling</summary>
+                    <details className="workbook-details">
+                      <summary>Advanced: speaker / segment handling</summary>
                       <p className="small">
                         Split by speaker labels when the transcript uses labels
                         such as Interviewer:, Participant:, Q:, or P:. Correct
