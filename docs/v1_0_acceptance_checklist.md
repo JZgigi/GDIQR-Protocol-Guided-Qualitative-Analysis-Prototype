@@ -508,3 +508,15 @@ Smoke check：
 - [ ] Recoverable failures offer Retry.
 - [ ] Quick local/rule-based fallback is disclosed.
 - [ ] Reduced-motion users do not receive continuous progress animation.
+
+## Voice Guide foundation (Batch 4)
+
+- [ ] Guidance source covers Steps 1–5 and Export.
+- [ ] "Should I split this MU?" is redirected to reflective checks without a yes/no decision.
+- [ ] Requests for a final category definition are not fulfilled.
+- [ ] Requests for a final integration narrative are not fulfilled.
+- [ ] Step-readiness questions report checks and unresolved state without deciding readiness.
+- [ ] Local-only requests can use a transient browser project snapshot.
+- [ ] Supabase requests retrieve workspace state server-side.
+- [ ] Unsaved Voice Guide interactions are not persisted.
+- [ ] API responses include guidance source keys and a visible boundary reminder.

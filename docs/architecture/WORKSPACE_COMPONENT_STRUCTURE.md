@@ -57,3 +57,16 @@ The repository, auto-segmenter, and AI provider share these rules so speaker rol
 ## Batch 3 addition
 
 Long-running workflow feedback is now isolated in `gdiqr-workspace/shared/long-task-status.tsx`. The workspace still owns task state and retry orchestration; the shared component owns elapsed-time display, approximate ranges, accessibility announcements, and reduced-motion presentation.
+
+## Voice Guide foundation
+
+Voice Guide methodology and response safety are kept outside the workspace UI:
+
+```text
+src/lib/guidance/gdiqr-guidance.ts
+src/lib/guidance/voice-guide-context.ts
+src/lib/guidance/voice-guide-response.ts
+src/app/api/voice-guide/route.ts
+```
+
+This prevents the future avatar component from owning methodology rules or direct analytic-decision logic. The UI will call the API and render transient voice/caption state in a later batch.

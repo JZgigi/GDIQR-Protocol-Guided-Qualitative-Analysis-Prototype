@@ -51,3 +51,12 @@
 - Made fallback state explicit and retained recoverable Retry handling.
 - Added duplicate export protection and reduced-motion support.
 - Added Batch 3 verification and implementation documentation.
+
+## Batch 4 — Voice Guide foundation
+
+- Added a structured GDI-QR Voice Guide knowledge base for Steps 1–5 and Export.
+- Added deterministic boundary redirects for analytic decision requests.
+- Added workflow-aware context summaries and guidance source tracing.
+- Added `POST /api/voice-guide` with local-only and Supabase context support.
+- Kept all unsaved guide interactions transient.
+- Added Batch 4 verification and Voice Guide boundary/privacy documentation.
