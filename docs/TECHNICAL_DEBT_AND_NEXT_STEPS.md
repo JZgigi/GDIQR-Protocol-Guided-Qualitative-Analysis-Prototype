@@ -10,45 +10,24 @@ P1 items should be addressed before merging `release/1.0` into `main` if time al
 
 P2 items improve maintainability and future development speed.
 
-## P1: Split The Monolithic Workspace Component
+## P1: Continue Workspace Decomposition
 
-Current file:
+Status: **Partially completed in Batch 0–6.**
 
-```text
-src/components/gdiqr-workspace.tsx
-```
+Completed:
 
-Problem:
+- separated orchestration from supporting UI/helpers;
+- extracted project bar, workflow navigation, long-task status, Voice Guide UI, speaker parsing, MU boundary logic, and guidance services;
+- established feature folders for project, workflow, shared, and Voice Guide concerns.
 
-- The file is over 10,000 lines.
-- It mixes project setup, transcript review, segment editing, MU review, category work, integration, integrity review, export, local helpers, and UI subcomponents.
-- Small changes are hard to review and regression risk is high.
+Remaining debt:
 
-Recommended split:
+- `src/components/gdiqr-workspace.tsx` still owns a large amount of cross-step state and event orchestration;
+- transcript, MU, category, integration, integrity, and export sections should continue moving into focused components/hooks when those areas next change;
+- cross-step state transitions need automated integration tests before introducing a new state library;
+- avoid another purely mechanical mass split unless it has a clear behavioural test boundary.
 
-- `ProjectSetupPanel`
-- `TranscriptReviewPanel`
-- `SegmentReviewPanel`
-- `MeaningUnitPanel`
-- `CategoryPanel`
-- `IntegrationPanel`
-- `IntegrityPanel`
-- `ExportPanel`
-- shared hooks for workspace refresh, API status, recoverable errors, and project state transitions.
-
-Suggested order:
-
-1. Extract pure display/helper subcomponents that already receive clear props.
-2. Extract `ProjectSetupPanel`, because it is mostly project metadata and data-suitability state.
-3. Extract `TranscriptReviewPanel`, including transcript import/prepare/save/confirm controls.
-4. Extract `MeaningUnitPanel`, but only after tests cover MU add/edit/split/merge/delete/accept/exclude.
-5. Extract category/integration/integrity/export panels one at a time.
-
-Acceptance criteria:
-
-- No behavior change during extraction.
-- `npm run typecheck` and `npm run build` pass after each extraction.
-- Manual acceptance checks for the affected panel pass after each extraction.
+This is no longer a release-blocking “12,110-line single file” issue, but it remains a maintainability priority.
 
 ## P1: Replace Browser Prompt/Confirm With In-Page UI
 

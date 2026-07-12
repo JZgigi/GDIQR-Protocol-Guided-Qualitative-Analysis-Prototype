@@ -1,31 +1,29 @@
 # Documentation Index
 
-This directory contains the project documentation for the current `release/1.0` testing cycle plus earlier planning and audit material.
+本目录已按 `release/1.0` 当前状态重新整理。日常开发和验收优先使用“当前文档”；`archive/` 中材料只用于追溯早期决策，不应作为当前功能状态来源。
 
-## Read First
+## 当前必须阅读
 
-- [v1.0 collaborator testing guide](RELEASE_1_0_TESTING_GUIDE.md) - end-to-end instructions for reviewers and collaborators.
-- [Supabase v1.0 setup](SUPABASE_V1_0_SETUP.md) - migration order, reset steps, and storage cleanup notes.
-- [Acceptance checklist](v1_0_acceptance_checklist.md) - ticket-level manual smoke and acceptance checks.
-- [Local AI testing](LOCAL_AI_TESTING.md) - Ollama, timeout, model, and performance tuning guidance.
-- [Known technical debt and next steps](TECHNICAL_DEBT_AND_NEXT_STEPS.md) - maintainability and post-v1.0 cleanup backlog.
+- [中文验收指南](RELEASE_1_0_ACCEPTANCE_GUIDE_ZH.md) — Batch 0–6 完整端到端验收流程。
+- [English collaborator testing guide](RELEASE_1_0_TESTING_GUIDE.md) — 英文协作者测试说明。
+- [Supabase v1.0 setup](SUPABASE_V1_0_SETUP.md) — SQL 顺序、schema 验证、reset 和 Storage 清理。
+- [Acceptance checklist](v1_0_acceptance_checklist.md) — 工单级验收记录；部分早期条目保留为历史执行记录。
+- [Technical debt and next steps](TECHNICAL_DEBT_AND_NEXT_STEPS.md) — 当前仍未解决的维护性和生产化问题。
 
-## Setup And Operations
+## Setup 与运行
 
-- [Setup guide](SETUP_GUIDE.md) - local setup, environment variables, and development commands.
-- [Local audio testing](LOCAL_AUDIO_TESTING.md) - faster-whisper audio workflow for Supabase-backed testing.
-- [Chinese audio support](CHINESE_AUDIO_SUPPORT.md) - Chinese transcript/audio notes.
+- [Setup guide](SETUP_GUIDE.md)
+- [Local AI testing](LOCAL_AI_TESTING.md)
+- [Local audio testing](LOCAL_AUDIO_TESTING.md)
+- [Chinese audio support](CHINESE_AUDIO_SUPPORT.md)
+- [Local AI Phase 3](LOCAL_AI_PHASE3.md)
 
-## Historical Planning And Audit Material
+## Architecture 与 Voice Guide
 
-These files are retained as background evidence for product direction. They are not the primary execution guide for `release/1.0`.
+- [Workspace component structure](architecture/WORKSPACE_COMPONENT_STRUCTURE.md)
+- [Voice Guide boundaries](voice-guide/VOICE_GUIDE_BOUNDARIES.md)
+- [Voice Guide privacy](voice-guide/VOICE_GUIDE_PRIVACY.md)
 
-- [Release plan v1](RELEASE_PLAN_v1.md)
-- [Product audit v1](PRODUCT_AUDIT_v1.md)
-- [Gap analysis v1](GAP_ANALYSIS_v1.md)
-- [Backlog draft v1](BACKLOG_DRAFT_v1.md)
-- [Local AI phase 3 notes](LOCAL_AI_PHASE3.md)
+## Historical archive
 
-## Deprecated Documents Removed
-
-The old `SUPABASE_PHASE2.md` document has been replaced by [Supabase v1.0 setup](SUPABASE_V1_0_SETUP.md). Phase 2 table setup is still part of the migration chain, but the current release requires the full v1.0 migration sequence.
+`docs/archive/` 包含早期 product audit、gap analysis、release plan、backlog 以及 Batch 1–6 implementation notes。它们反映当时状态，其中关于 guidance chat、DOCX/PDF placeholder、Voice Guide 未实现、workspace 行数等描述可能已过时。

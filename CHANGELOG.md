@@ -76,3 +76,11 @@
 - Kept raw audio and unsaved interactions out of project storage.
 - Added researcher-selected Voice Guide note saving through the existing guidance memo, audit, and export pathways.
 - Added the `voice_guidance_note_saved` audit action type.
+
+## Batch 7 — Release acceptance and documentation consolidation
+
+- Added a Chinese end-to-end `release/1.0` acceptance guide covering Batch 0–6.
+- Added a read-only Supabase schema verification SQL script.
+- Confirmed that Batch 0–6 require no additional Supabase migration when the five documented migrations are already present.
+- Updated current testing, setup, acceptance, and technical-debt documentation.
+- Archived early audits, plans, backlog, and Batch implementation notes so they are not mistaken for current product status.

@@ -13,6 +13,7 @@ The v1.0 research release is intended for controlled testing with open, anonymis
 Start here for release testing and setup:
 
 - [Documentation index](docs/README.md)
+- [v1.0 中文验收指南](docs/RELEASE_1_0_ACCEPTANCE_GUIDE_ZH.md)
 - [v1.0 collaborator testing guide](docs/RELEASE_1_0_TESTING_GUIDE.md)
 - [Supabase v1.0 setup](docs/SUPABASE_V1_0_SETUP.md)
 - [Acceptance checklist](docs/v1_0_acceptance_checklist.md)
@@ -90,6 +91,8 @@ GDIQR_DEFAULT_PROJECT_ID=proj_student_wellbeing
 Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. Do not expose it in browser code or commit it to the repository.
 
 ## Supabase Migration Order
+
+If the five migrations have already been run, Batch 0–6 need no new SQL migration. Use `supabase/verify_v1_0_schema.sql` for a read-only check.
 
 For a fresh or rebuilt v1.0 test database, run these SQL files in Supabase SQL Editor:
 

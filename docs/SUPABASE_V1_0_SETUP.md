@@ -16,6 +16,17 @@ GDIQR_DEFAULT_PROJECT_ID=proj_student_wellbeing
 
 Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. Do not prefix it with `NEXT_PUBLIC_`.
 
+
+## Current Batch 0–6 SQL Assessment
+
+Batch 0–6 do **not** require a new schema migration. Voice Guide saved notes reuse the existing `guidance_memos` table, and `voice_guidance_note_saved` is stored in the existing text-based audit/edit-log fields. No new column, enum, constraint, bucket, or policy is required.
+
+Therefore:
+
+- If all five migrations below have already run successfully, do **not** run a new migration before Batch 7 acceptance.
+- If `guidance_memos` or the extended audit columns are missing, re-run `v1_0_foundation_schema.sql`; it is written with `if not exists` / `add column if not exists` for the relevant objects.
+- Run `supabase/verify_v1_0_schema.sql` to perform a read-only schema check.
+
 ## 2. SQL Migration Order
 
 Run these files in Supabase SQL Editor in this exact order:
@@ -34,7 +45,23 @@ Why all five are required:
 - `v1_0_foundation_schema.sql` adds v1.0 project metadata, pre-analysis notes, integration relationships, integrity review, edit logs, export format support, and guidance memos.
 - `v1_0_transcript_audio_review_schema.sql` adds transcript/audio review fields required by the v1.0 workflow.
 
-## 3. Fresh Test Reset
+## 3. Read-only Schema Verification
+
+Run:
+
+```text
+supabase/verify_v1_0_schema.sql
+```
+
+Expected results:
+
+- every required table reports `OK`;
+- `guidance_memos` contains `id`, `project_id`, `step`, `question`, `answer`, and `created_at`;
+- `audit_events` contains the v1.0 extended audit columns.
+
+This script does not modify schema or data.
+
+## 4. Fresh Test Reset
 
 After the migrations have run, reset the default test project:
 
@@ -50,7 +77,7 @@ proj_student_wellbeing
 
 It does not delete other projects.
 
-## 4. Storage Cleanup
+## 5. Storage Cleanup
 
 Supabase blocks direct `delete from storage.objects` in SQL Editor. If a test needs uploaded files removed too:
 
@@ -64,7 +91,7 @@ Supabase blocks direct `delete from storage.objects` in SQL Editor. If a test ne
 
 The database reset script clears the rows that reference uploaded files, but old file objects can remain in Storage until removed through the Storage UI or Storage API.
 
-## 5. Quick Verification
+## 6. Quick Verification
 
 Restart the app:
 
@@ -98,7 +125,7 @@ Expected:
 - Supabase is configured.
 - Ollama is reachable if `AI_PROVIDER=ollama`.
 
-## 6. Common Problems
+## 7. Common Problems
 
 ### `storage.objects` deletion is blocked
 
@@ -128,6 +155,6 @@ Check:
 - `SUPABASE_SERVICE_ROLE_KEY` is set.
 - The dev server was restarted after changing `.env.local`.
 
-## 7. Security Note
+## 8. Security Note
 
 The current Supabase-backed release test mode uses server-side service-role access through Next.js API routes. It is for controlled development and acceptance testing only. Before any production or multi-user deployment, add Supabase Auth, owner-scoped RLS policies, retention rules, and audited deletion procedures.

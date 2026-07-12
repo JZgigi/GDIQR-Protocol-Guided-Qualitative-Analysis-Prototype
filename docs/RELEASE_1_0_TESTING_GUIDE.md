@@ -1,5 +1,7 @@
 # v1.0 Collaborator Testing Guide
 
+For the current Chinese end-to-end guide, see `docs/RELEASE_1_0_ACCEPTANCE_GUIDE_ZH.md`.
+
 Use this guide when reviewing or executing the `release/1.0` test cycle. It assumes the project is being tested with open, anonymised, de-identified, or synthetic material only.
 
 ## 1. Testing Goal
@@ -188,7 +190,7 @@ Follow the detailed ticket checks in [v1.0 acceptance checklist](v1_0_acceptance
 26. In Step 5, refresh methodological integrity items.
 27. Add researcher responses and notes.
 28. Save methodological integrity review.
-29. Ask the guidance chat at least one methodological question.
+29. Open the floating Voice Guide, ask at least one methodological question, verify that it redirects analytic-decision requests, and save one selected guidance note.
 30. Save useful guidance as a memo.
 31. Refresh and confirm saved guidance memo remains in the app and export.
 32. Export JSON, CSV, TXT, DOCX, and printable report/PDF.

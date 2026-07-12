@@ -1,5 +1,7 @@
 # GDI-QR v1.0 验收清单
 
+> 当前完整执行流程请以 `docs/RELEASE_1_0_ACCEPTANCE_GUIDE_ZH.md` 为准。本文件保留早期 ticket-level 验收记录，其中 guidance chat 等条目属于历史状态。
+
 > 2026-07-07 更新：协作者执行完整测试前，请先阅读 `docs/RELEASE_1_0_TESTING_GUIDE.md` 和 `docs/SUPABASE_V1_0_SETUP.md`。数据库重置请运行 `supabase/reset_default_project_empty.sql`；Supabase SQL Editor 不允许直接删除 `storage.objects`，如需清理上传文件，请在 Supabase Storage UI 中删除 `proj_student_wellbeing/` 目录。
 
 本文件用于记录 July v1.0 research release 的手动验收流程。后续每完成一个 feature branch，都继续更新这个文件。当前开发阶段先以 smoke check 为主：只要能正常 typecheck、启动、页面不崩，就可以先合并到 `release/1.0`；完整端到端测试等所有 P0 工单完成后统一做。
@@ -443,7 +445,7 @@ Smoke check：
 10. 确认 meaning-unit generation 会默认忽略标记为 interviewer-only 的 segments。
 11. 测试 **Split at cursor**、**Merge previous**、**Merge next** 和 **Delete segment**，确认页面不崩，并且后续 MU/category outputs 会被清空或要求重新生成。
 12. 刷新页面后，确认 Supabase mode 下 segment label、segment type 和 segment text 仍然存在。
-13. 打开 **Methodological guidance chat**。
+13. 打开右下角 **Voice Guide avatar**，提出一个方法学问题。
 14. 在不同步骤分别提问，例如：
     - “Is this meaning unit too interpretive?”
     - “How should I name this category?”
@@ -470,7 +472,7 @@ Smoke check：
 - Transcript 可以按 speaker label 形成基本 segments。
 - Researcher 可以手动修正 segment text、label 和 speaker role。
 - Interviewer-only segments 会保留为 context，但默认不会进入 meaning-unit generation。
-- Guidance chat 是 methodological guide，不是 automatic coder。
+- Voice Guide 是 methodological reflection guide，不是 automatic coder。
 - 有用 guidance 可以保存为 memo，并进入 audit trail。
 - 关键操作有更清楚的 loading / error / retry 状态，并减少 repeated clicking 导致的重复 generation。
 
