@@ -181,6 +181,7 @@ import {
 } from "./gdiqr-workspace-support";
 import { ProjectBar } from "./gdiqr-workspace/project/project-bar";
 import { WorkflowNavigation } from "./gdiqr-workspace/workflow/workflow-navigation";
+import { LongTaskStatus } from "./gdiqr-workspace/shared/long-task-status";
 
 const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
@@ -475,6 +476,7 @@ export function GdiqrWorkspace({
   const [meaningUnitGenerationStage, setMeaningUnitGenerationStage] =
     useState("");
   const [isRunningCategories, setIsRunningCategories] = useState(false);
+  const [categoryGenerationStage, setCategoryGenerationStage] = useState("");
   const [isRunningReviewer, setIsRunningReviewer] = useState(false);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
   const [transcriptImportText, setTranscriptImportText] = useState("");
@@ -489,6 +491,7 @@ export function GdiqrWorkspace({
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
   const [isExportingFormat, setIsExportingFormat] =
     useState<AnalysisExportFormat | null>(null);
+  const [exportStage, setExportStage] = useState("");
   const [workflowError, setWorkflowError] = useState("");
   const retryActionRef = useRef<(() => void) | null>(null);
   const [guidanceQuestion, setGuidanceQuestion] = useState("");
@@ -1340,7 +1343,9 @@ export function GdiqrWorkspace({
       return;
     }
 
+    clearWorkflowError();
     setIsUploadingAudio(true);
+    setTranscriptPreparationStage("Uploading audio securely before local transcription.");
     setApiStatus(
       "Uploading and transcribing. You can follow progress in the activity panel below.",
     );
@@ -1403,6 +1408,7 @@ export function GdiqrWorkspace({
       );
     } finally {
       setIsUploadingAudio(false);
+      setTranscriptPreparationStage("");
     }
   }
 
@@ -1457,6 +1463,7 @@ export function GdiqrWorkspace({
       return;
     }
 
+    clearWorkflowError();
     setIsImportingTranscript(true);
     setTranscriptPreparationStage(
       forceRuleBased
@@ -2658,8 +2665,16 @@ export function GdiqrWorkspace({
       }
     }
 
+    clearWorkflowError();
     setMode(requestedMode);
     setIsRunningCategories(true);
+    setCategoryGenerationStage(
+      requestedMode === "A"
+        ? "Comparing accepted meaning units and drafting provisional groupings."
+        : requestedMode === "B"
+          ? "Comparing current categories, overlaps, and possible refinements."
+          : "Reviewing category relationships for an integration draft.",
+    );
     setApiStatus(getCategoryRunLabel(requestedMode, true));
 
     try {
@@ -2722,6 +2737,7 @@ export function GdiqrWorkspace({
       );
     } finally {
       setIsRunningCategories(false);
+      setCategoryGenerationStage("");
     }
   }
 
@@ -4885,8 +4901,14 @@ export function GdiqrWorkspace({
   }
 
   async function exportWorkspace(format: AnalysisExportFormat) {
+    if (isExportingFormat) return;
     setIsExportingFormat(format);
     clearWorkflowError();
+    setExportStage(
+      format === "pdf"
+        ? "Preparing a printable analysis record for the browser print dialog."
+        : `Building the ${format.toUpperCase()} analysis record and review trail.`,
+    );
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const safeProjectTitle = slugifyFilename(
       currentProject.title || "gdi-qr-project",
@@ -4951,6 +4973,7 @@ export function GdiqrWorkspace({
       );
     } finally {
       setIsExportingFormat(null);
+      setExportStage("");
     }
   }
 
@@ -5311,6 +5334,56 @@ export function GdiqrWorkspace({
                 retryAvailable={Boolean(retryActionRef.current)}
               />
             )}
+            <LongTaskStatus
+              active={isUploadingAudio || isImportingTranscript}
+              estimatedRangeSeconds={[15, 120]}
+              fallbackNotice={
+                transcriptPreparationStage.toLowerCase().includes("quick local")
+                  ? "Quick local fallback is active. Review speaker labels and privacy findings carefully."
+                  : undefined
+              }
+              onRetry={
+                workflowError
+                  ? () => retryActionRef.current?.()
+                  : undefined
+              }
+              phase={
+                transcriptPreparationStage ||
+                (isUploadingAudio
+                  ? "Uploading and transcribing the selected audio file."
+                  : "Preparing the transcript for researcher review.")
+              }
+              title={isUploadingAudio ? "Audio transcription" : "Transcript preparation"}
+            />
+            <LongTaskStatus
+              active={isGeneratingMeaningUnits}
+              estimatedRangeSeconds={[10, 90]}
+              fallbackNotice={
+                meaningUnitGenerationStage.toLowerCase().includes("rule-based") ||
+                meaningUnitGenerationStage.toLowerCase().includes("fallback")
+                  ? "A rule-based fallback may be used. Draft boundaries still require researcher review."
+                  : undefined
+              }
+              phase={meaningUnitGenerationStage || "Delineating conservative, meaning-preserving draft units."}
+              title="Meaning-unit generation"
+            />
+            <LongTaskStatus
+              active={isRunningCategories}
+              estimatedRangeSeconds={[15, 180]}
+              fallbackNotice={
+                categoryDraftIsFallback
+                  ? "A temporary fallback draft was created and must not be treated as final analysis."
+                  : undefined
+              }
+              phase={categoryGenerationStage || "Preparing provisional category suggestions."}
+              title="Category generation"
+            />
+            <LongTaskStatus
+              active={Boolean(isExportingFormat)}
+              estimatedRangeSeconds={[2, 20]}
+              phase={exportStage || "Preparing the selected export."}
+              title={`${isExportingFormat?.toUpperCase() ?? "Analysis"} export`}
+            />
             <div className="workbook-task-heading">
               <span className="label">What you’ll work on</span>
               <p>

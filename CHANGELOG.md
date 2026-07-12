@@ -44,3 +44,10 @@
 - Updated transcript preparation, auto-segmentation, repository splitting, and MU generation to use consistent speaker roles.
 - Changed AI and rule-based MU delineation to a conservative, meaning-preserving default.
 - Added Batch 2 verification checks and implementation documentation.
+
+## Batch 3 — Long-task feedback
+
+- Added shared elapsed-time and approximate-range feedback for transcript preparation, meaning-unit generation, category generation, and export.
+- Made fallback state explicit and retained recoverable Retry handling.
+- Added duplicate export protection and reduced-motion support.
+- Added Batch 3 verification and implementation documentation.

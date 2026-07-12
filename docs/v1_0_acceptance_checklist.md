@@ -497,3 +497,14 @@ Smoke check：
 - [ ] A coherent participant answer is not split sentence by sentence.
 - [ ] Filler/backchannel text does not become a standalone MU.
 - [ ] Clear changes in experience, time point, process, or evaluation can still create separate draft MUs.
+
+## Batch 3 — Long-task feedback
+
+- [ ] Transcript preparation shows the current phase and elapsed time.
+- [ ] Meaning-unit generation shows the current phase and elapsed time.
+- [ ] Category generation shows the current phase and elapsed time.
+- [ ] Export shows a processing state and blocks duplicate submissions.
+- [ ] Approximate ranges are labelled as estimates rather than exact countdowns.
+- [ ] Recoverable failures offer Retry.
+- [ ] Quick local/rule-based fallback is disclosed.
+- [ ] Reduced-motion users do not receive continuous progress animation.

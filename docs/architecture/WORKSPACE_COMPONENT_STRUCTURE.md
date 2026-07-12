@@ -53,3 +53,7 @@ Speaker recognition and conservative MU boundary logic now live outside the work
 - `src/lib/meaning-unit-boundaries.ts`
 
 The repository, auto-segmenter, and AI provider share these rules so speaker roles and MU boundaries do not drift between local fallback and Supabase-backed workflows. UI extraction will continue when later tickets materially change transcript and MU review panels.
+
+## Batch 3 addition
+
+Long-running workflow feedback is now isolated in `gdiqr-workspace/shared/long-task-status.tsx`. The workspace still owns task state and retry orchestration; the shared component owns elapsed-time display, approximate ranges, accessibility announcements, and reduced-motion presentation.
