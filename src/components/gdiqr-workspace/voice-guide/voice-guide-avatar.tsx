@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Captions,
   Mic,
@@ -24,8 +17,8 @@ import styles from "./voice-guide-focused.module.css";
 
 type VoiceGuideState =
   | "idle"
-  | "listening"
-  | "stopping"
+  | "recording"
+  | "transcribing"
   | "thinking"
   | "speaking"
   | "error"
@@ -51,13 +44,6 @@ interface VoiceGuideResponse {
   fallbackReason?: string;
 }
 
-interface VoiceGuideHealthResponse {
-  reachable: boolean;
-  modelAvailable: boolean;
-  model: string;
-  error?: string;
-}
-
 export interface VoiceGuidanceNoteDraft {
   step: WorkflowStep;
   transcribedQuestion: string;
@@ -67,65 +53,46 @@ export interface VoiceGuidanceNoteDraft {
   createdAt: string;
 }
 
+interface VoiceGuideHealthResponse {
+  reachable: boolean;
+  modelAvailable: boolean;
+  model: string;
+  error?: string;
+}
+
 interface VoiceGuideAvatarProps {
   projectId: string;
   step: WorkflowStep;
   projectState: VoiceGuideProjectState;
+
+  /**
+   * Legacy compatibility only.
+   *
+   * Voice Guide interactions are transient in the current design,
+   * so this callback is intentionally not called.
+   */
   onSaveGuidanceNote?: (note: VoiceGuidanceNoteDraft) => Promise<void>;
-}
-
-interface SpeechRecognitionAlternativeLike {
-  transcript: string;
-}
-
-interface SpeechRecognitionResultLike {
-  0: SpeechRecognitionAlternativeLike;
-  isFinal: boolean;
-}
-
-interface SpeechRecognitionEventLike {
-  resultIndex?: number;
-  results: ArrayLike<SpeechRecognitionResultLike>;
-}
-
-interface SpeechRecognitionErrorEventLike {
-  error: string;
-}
-
-interface SpeechRecognitionLike {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onend: (() => void) | null;
-  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  start: () => void;
-  stop: () => void;
-  abort?: () => void;
-}
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-
-declare global {
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-  }
 }
 
 const stateLabels: Record<VoiceGuideState, string> = {
   idle: "Ready",
-  listening: "Listening — release to send",
-  stopping: "Finishing your question",
+  recording: "Recording — click again to send",
+  transcribing: "Transcribing locally",
   thinking: "Thinking",
   speaking: "Speaking",
   error: "Needs attention",
   "captions-only": "Captions on",
 };
 
-function getRecognitionConstructor() {
-  if (typeof window === "undefined") return undefined;
-  return window.SpeechRecognition ?? window.webkitSpeechRecognition;
+function chooseMimeType() {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/mp4",
+  ];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
 }
 
 export function VoiceGuideAvatar({
@@ -139,58 +106,52 @@ export function VoiceGuideAvatar({
   const [error, setError] = useState("");
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
   const [muted, setMuted] = useState(false);
-  const [localAiStatus, setLocalAiStatus] =
-    useState<LocalAiStatus>("unknown");
+  const [localAiStatus, setLocalAiStatus] = useState<LocalAiStatus>("unknown");
   const [localAiMessage, setLocalAiMessage] = useState("");
   const [conversationHistory, setConversationHistory] = useState<
     Array<{ role: "user" | "assistant"; content: string }>
   >([]);
 
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const finalTranscriptRef = useRef("");
-  const interimTranscriptRef = useRef("");
-  const holdingRef = useRef(false);
-  const releaseRequestedRef = useRef(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
   const cancelledRef = useRef(false);
+  const busyRef = useRef(false);
   const sessionRef = useRef(0);
-  const submittingRef = useRef(false);
+  const maxDurationTimerRef = useRef<number | null>(null);
 
   const visibleState = useMemo<VoiceGuideState>(
     () => (captionsEnabled && state === "idle" ? "captions-only" : state),
     [captionsEnabled, state],
   );
 
-  const detachRecognition = useCallback(
-    (recognition: SpeechRecognitionLike | null) => {
-      if (!recognition) return;
-      recognition.onresult = null;
-      recognition.onerror = null;
-      recognition.onend = null;
-    },
-    [],
-  );
+  const stopTracks = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }, []);
 
-  const abortRecognition = useCallback(() => {
-    const recognition = recognitionRef.current;
-    recognitionRef.current = null;
-    if (!recognition) return;
-    detachRecognition(recognition);
-    try {
-      recognition.abort?.();
-    } catch {
-      // The browser may already have ended the recognition session.
+  const clearTimer = useCallback(() => {
+    if (maxDurationTimerRef.current !== null) {
+      window.clearTimeout(maxDurationTimerRef.current);
+      maxDurationTimerRef.current = null;
     }
-  }, [detachRecognition]);
+  }, []);
 
-  const resetRecognitionSession = useCallback(() => {
-    abortRecognition();
-    finalTranscriptRef.current = "";
-    interimTranscriptRef.current = "";
-    holdingRef.current = false;
-    releaseRequestedRef.current = false;
-    cancelledRef.current = false;
-    submittingRef.current = false;
-  }, [abortRecognition]);
+  const resetRecorder = useCallback(() => {
+    clearTimer();
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    if (recorder && recorder.state !== "inactive") {
+      try {
+        recorder.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    chunksRef.current = [];
+    stopTracks();
+    busyRef.current = false;
+  }, [clearTimer, stopTracks]);
 
   const checkLocalAi = useCallback(async () => {
     setLocalAiStatus("checking");
@@ -202,7 +163,6 @@ export function VoiceGuideAvatar({
       const result = (await request.json().catch(() => ({}))) as
         | VoiceGuideHealthResponse
         | { error?: string };
-
       if (!request.ok || !("reachable" in result)) {
         throw new Error(
           "error" in result && result.error
@@ -210,7 +170,6 @@ export function VoiceGuideAvatar({
             : "Local AI health check failed.",
         );
       }
-
       if (!result.reachable) {
         setLocalAiStatus("offline");
         setLocalAiMessage(
@@ -219,43 +178,43 @@ export function VoiceGuideAvatar({
         );
         return false;
       }
-
       if (!result.modelAvailable) {
         setLocalAiStatus("model-missing");
         setLocalAiMessage(
-          `Ollama is running, but model "${result.model}" is not installed.`,
+          `Ollama is running, but model \"${result.model}\" is not installed.`,
         );
         return false;
       }
-
       setLocalAiStatus("ready");
       setLocalAiMessage(`Local AI ready · ${result.model}`);
       return true;
     } catch (caught) {
       setLocalAiStatus("offline");
       setLocalAiMessage(
-        caught instanceof Error
-          ? caught.message
-          : "Ollama is not reachable. Start Ollama and check again.",
+        caught instanceof Error ? caught.message : "Ollama is not reachable.",
       );
       return false;
     }
   }, []);
 
   useEffect(() => {
-    if (expanded && localAiStatus === "unknown") {
-      void checkLocalAi();
-    }
+    if (expanded && localAiStatus === "unknown") void checkLocalAi();
   }, [checkLocalAi, expanded, localAiStatus]);
 
   useEffect(() => {
     const cancelOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (!holdingRef.current && state !== "stopping") return;
+      const recorder = recorderRef.current;
+      if (
+        event.key !== "Escape" ||
+        !recorder ||
+        recorder.state !== "recording"
+      ) {
+        return;
+      }
 
-      sessionRef.current += 1;
       cancelledRef.current = true;
-      resetRecognitionSession();
+      sessionRef.current += 1;
+      resetRecorder();
       setError("");
       setState("idle");
     };
@@ -264,17 +223,16 @@ export function VoiceGuideAvatar({
     return () => {
       window.removeEventListener("keydown", cancelOnEscape);
       sessionRef.current += 1;
-      resetRecognitionSession();
+      resetRecorder();
       window.speechSynthesis?.cancel();
     };
-  }, [resetRecognitionSession, state]);
+  }, [resetRecorder]);
 
   function speakAnswer(answer: string) {
     if (muted || !("speechSynthesis" in window)) {
       setState("idle");
       return;
     }
-
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(answer);
     utterance.lang = projectState.project.language
@@ -296,18 +254,10 @@ export function VoiceGuideAvatar({
 
   async function submitQuestion(question: string) {
     const normalizedQuestion = question.trim();
-    if (!normalizedQuestion) {
-      setError("No speech was recognised. Hold the button and try again.");
-      setState("error");
-      return;
-    }
-    if (submittingRef.current) return;
-
-    submittingRef.current = true;
-    setExpanded(true);
+    if (!normalizedQuestion || busyRef.current) return;
+    busyRef.current = true;
     setError("");
     setState("thinking");
-
     try {
       const request = await fetch("/api/voice-guide", {
         method: "POST",
@@ -323,12 +273,13 @@ export function VoiceGuideAvatar({
       const result = (await request.json().catch(() => ({}))) as
         | VoiceGuideResponse
         | { error?: string };
-
       if (!request.ok || !("spokenAnswer" in result)) {
-        const message = "error" in result ? result.error : undefined;
-        throw new Error(message ?? "Mira could not respond.");
+        throw new Error(
+          "error" in result && result.error
+            ? result.error
+            : "Mira could not respond.",
+        );
       }
-
       setResponse(result);
       setConversationHistory((current) =>
         [
@@ -337,226 +288,165 @@ export function VoiceGuideAvatar({
           { role: "assistant" as const, content: result.spokenAnswer },
         ].slice(-4),
       );
-
-      if (result.provider === "ollama-conversational") {
-        setLocalAiStatus("ready");
-        setLocalAiMessage(`Local AI ready · ${result.model ?? "Ollama"}`);
-      } else if (result.fallbackReason) {
-        setLocalAiStatus("offline");
-        setLocalAiMessage(result.fallbackReason);
-      }
-
       speakAnswer(result.spokenAnswer);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Mira could not respond.");
+      setError(
+        caught instanceof Error ? caught.message : "Mira could not respond.",
+      );
       setState("error");
     } finally {
-      submittingRef.current = false;
+      busyRef.current = false;
     }
   }
 
-  function collectedTranscript() {
-    return `${finalTranscriptRef.current} ${interimTranscriptRef.current}`
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  function finishSession(sessionId: number) {
+  async function transcribeAudio(blob: Blob, sessionId: number) {
     if (sessionId !== sessionRef.current || cancelledRef.current) return;
-    const transcript = collectedTranscript();
-    finalTranscriptRef.current = "";
-    interimTranscriptRef.current = "";
-    releaseRequestedRef.current = false;
-    recognitionRef.current = null;
-
-    if (!transcript) {
-      setError("No speech was recognised. Hold the button and try again.");
+    setState("transcribing");
+    try {
+      const form = new FormData();
+      const extension = blob.type.includes("ogg")
+        ? "ogg"
+        : blob.type.includes("mp4")
+          ? "m4a"
+          : "webm";
+      form.append("audio", blob, `voice-question.${extension}`);
+      form.append("language", projectState.project.language ?? "");
+      const request = await fetch("/api/voice-guide/transcribe", {
+        method: "POST",
+        body: form,
+      });
+      const result = (await request.json().catch(() => ({}))) as {
+        transcript?: string;
+        error?: string;
+      };
+      if (!request.ok || !result.transcript?.trim()) {
+        throw new Error(
+          result.error ??
+            "No speech was recognised. Click Record and try again.",
+        );
+      }
+      await submitQuestion(result.transcript);
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Local transcription failed.",
+      );
       setState("error");
-      return;
     }
-
-    void submitQuestion(transcript);
   }
 
-  function startRecognitionCycle(sessionId: number) {
+  async function startRecording() {
     if (
-      sessionId !== sessionRef.current ||
-      cancelledRef.current ||
-      !holdingRef.current
-    ) {
+      busyRef.current ||
+      state === "transcribing" ||
+      state === "thinking" ||
+      state === "speaking"
+    )
       return;
-    }
-
-    const Recognition = getRecognitionConstructor();
-    if (!Recognition) {
-      holdingRef.current = false;
+    if (
+      !navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === "undefined"
+    ) {
       setError(
-        "Hold-to-talk speech recognition is unavailable in this browser. Use the latest Chrome or Edge.",
+        "Audio recording is unavailable in this browser. Use the latest Chrome or Edge.",
       );
       setState("error");
       return;
     }
 
-    const recognition = new Recognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = projectState.project.language
-      ?.toLowerCase()
-      .startsWith("zh")
-      ? "zh-CN"
-      : "en-GB";
-    recognitionRef.current = recognition;
-
-    recognition.onresult = (event) => {
-      if (sessionId !== sessionRef.current || cancelledRef.current) return;
-
-      let interim = "";
-      const startIndex = event.resultIndex ?? 0;
-      for (let index = startIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const transcript = result[0]?.transcript?.trim() ?? "";
-        if (!transcript) continue;
-        if (result.isFinal) {
-          finalTranscriptRef.current = `${finalTranscriptRef.current} ${transcript}`
-            .replace(/\s+/g, " ")
-            .trim();
-        } else {
-          interim = `${interim} ${transcript}`.trim();
-        }
-      }
-      interimTranscriptRef.current = interim;
-    };
-
-    recognition.onerror = (event) => {
-      if (sessionId !== sessionRef.current || cancelledRef.current) return;
-
-      const recoverable =
-        event.error === "no-speech" ||
-        event.error === "aborted" ||
-        event.error === "audio-capture";
-
-      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-        holdingRef.current = false;
-        releaseRequestedRef.current = false;
-        recognitionRef.current = null;
-        setError(
-          "Microphone permission was denied. Allow microphone access and try again.",
-        );
-        setState("error");
-        return;
-      }
-
-      if (!recoverable) {
-        holdingRef.current = false;
-        releaseRequestedRef.current = false;
-        recognitionRef.current = null;
-        setError(
-          `Speech recognition stopped (${event.error}). Hold to talk and try again.`,
-        );
-        setState("error");
-      }
-    };
-
-    recognition.onend = () => {
-      detachRecognition(recognition);
-      if (recognitionRef.current === recognition) {
-        recognitionRef.current = null;
-      }
-      if (sessionId !== sessionRef.current || cancelledRef.current) return;
-
-      if (holdingRef.current && !releaseRequestedRef.current) {
-        window.setTimeout(() => startRecognitionCycle(sessionId), 60);
-        return;
-      }
-
-      finishSession(sessionId);
-    };
+    sessionRef.current += 1;
+    const sessionId = sessionRef.current;
+    cancelledRef.current = false;
+    chunksRef.current = [];
+    setExpanded(true);
+    setError("");
+    window.speechSynthesis?.cancel();
 
     try {
-      recognition.start();
-      setState("listening");
-    } catch {
-      detachRecognition(recognition);
-      recognitionRef.current = null;
-      holdingRef.current = false;
-      releaseRequestedRef.current = false;
-      setError("The microphone could not start. Hold the button and try again.");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (sessionId !== sessionRef.current || cancelledRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      streamRef.current = stream;
+      const mimeType = chooseMimeType();
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined,
+      );
+      recorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+
+      recorder.onerror = () => {
+        if (sessionId !== sessionRef.current || cancelledRef.current) return;
+        resetRecorder();
+        setError("The browser could not record audio. Please try again.");
+        setState("error");
+      };
+
+      recorder.onstop = () => {
+        clearTimer();
+        const chunks = [...chunksRef.current];
+        const outputType = recorder.mimeType || mimeType || "audio/webm";
+        recorderRef.current = null;
+        chunksRef.current = [];
+        stopTracks();
+        if (sessionId !== sessionRef.current || cancelledRef.current) {
+          setState("idle");
+          return;
+        }
+        const blob = new Blob(chunks, { type: outputType });
+        if (blob.size < 256) {
+          setError("No usable audio was recorded. Click Record and try again.");
+          setState("error");
+          return;
+        }
+        void transcribeAudio(blob, sessionId);
+      };
+
+      recorder.start(250);
+      setState("recording");
+      maxDurationTimerRef.current = window.setTimeout(() => {
+        if (recorderRef.current?.state === "recording")
+          recorderRef.current.stop();
+      }, 90000);
+    } catch (caught) {
+      resetRecorder();
+      const message =
+        caught instanceof DOMException && caught.name === "NotAllowedError"
+          ? "Microphone permission was denied. Allow microphone access and try again."
+          : "The microphone could not start. Please try again.";
+      setError(message);
       setState("error");
     }
   }
 
-  function beginHoldToTalk(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (
-      state === "thinking" ||
-      state === "speaking" ||
-      state === "stopping"
-    ) {
-      return;
-    }
-
-    event.preventDefault();
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId);
-    } catch {
-      // Pointer capture is best-effort on older browsers.
-    }
-
-    sessionRef.current += 1;
-    resetRecognitionSession();
-    const sessionId = sessionRef.current;
-
-    setExpanded(true);
-    setError("");
-    window.speechSynthesis?.cancel();
-    finalTranscriptRef.current = "";
-    interimTranscriptRef.current = "";
-    cancelledRef.current = false;
-    releaseRequestedRef.current = false;
-    holdingRef.current = true;
-    startRecognitionCycle(sessionId);
+  function stopRecordingAndSend() {
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state !== "recording") return;
+    clearTimer();
+    recorder.stop();
   }
 
-  function releaseToSend(event?: ReactPointerEvent<HTMLButtonElement>) {
-    if (!holdingRef.current || releaseRequestedRef.current) return;
-
-    if (event) {
-      try {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      } catch {
-        // Pointer capture may already have been released.
-      }
-    }
-
-    holdingRef.current = false;
-    releaseRequestedRef.current = true;
-    setState("stopping");
-
-    const recognition = recognitionRef.current;
-    if (!recognition) {
-      finishSession(sessionRef.current);
-      return;
-    }
-
-    try {
-      recognition.stop();
-    } catch {
-      finishSession(sessionRef.current);
-    }
+  function toggleRecording() {
+    if (state === "recording") stopRecordingAndSend();
+    else void startRecording();
   }
 
-  function cancelListening() {
-    sessionRef.current += 1;
+  function cancelRecording() {
     cancelledRef.current = true;
-    resetRecognitionSession();
+    sessionRef.current += 1;
+    resetRecorder();
     setError("");
     setState("idle");
   }
 
   function dismissError() {
-    sessionRef.current += 1;
-    resetRecognitionSession();
-    setError("");
-    setState("idle");
+    cancelRecording();
   }
 
   function replay() {
@@ -569,10 +459,21 @@ export function VoiceGuideAvatar({
   return (
     <aside className={`${styles.shell} ${styles[visibleState]}`}>
       {expanded && (
-        <section aria-label="Mira qualitative analysis guide" className={styles.panel}>
+        <section
+          aria-label="Mira qualitative analysis guide"
+          className={styles.panel}
+        >
           <header className={styles.header}>
             <div className={styles.identity}>
-              <MiraAvatar size="panel" state={visibleState} />
+              <MiraAvatar
+                size="panel"
+                state={
+                  visibleState === "recording" ||
+                  visibleState === "transcribing"
+                    ? "listening"
+                    : visibleState
+                }
+              />
               <div>
                 <span>Focused qualitative analysis guide</span>
                 <h2>Mira</h2>
@@ -583,7 +484,7 @@ export function VoiceGuideAvatar({
               aria-label="Close Mira"
               className={styles.iconButton}
               onClick={() => {
-                cancelListening();
+                cancelRecording();
                 window.speechSynthesis?.cancel();
                 setExpanded(false);
               }}
@@ -600,13 +501,15 @@ export function VoiceGuideAvatar({
           </div>
 
           <div className={styles.stagePrompt}>
-            Mira is focused on helping you work with qualitative data through the
-            current analysis stage.
+            Mira is focused on helping you work with qualitative data through
+            the current analysis stage.
           </div>
 
           {localAiStatus !== "unknown" && (
             <div
-              className={localAiNeedsAttention ? styles.error : styles.stagePrompt}
+              className={
+                localAiNeedsAttention ? styles.error : styles.stagePrompt
+              }
               role={localAiNeedsAttention ? "alert" : undefined}
             >
               <p>
@@ -617,12 +520,10 @@ export function VoiceGuideAvatar({
               {localAiNeedsAttention && (
                 <button
                   className={styles.secondaryButton}
-                  disabled={localAiStatus === "checking"}
                   onClick={() => void checkLocalAi()}
                   type="button"
                 >
-                  <RefreshCw aria-hidden="true" size={15} />
-                  Check Ollama again
+                  <RefreshCw aria-hidden="true" size={15} /> Check Ollama again
                 </button>
               )}
             </div>
@@ -652,31 +553,35 @@ export function VoiceGuideAvatar({
           )}
 
           <button
-            aria-label="Hold to talk to Mira"
+            aria-label={
+              state === "recording"
+                ? "Stop recording and send to Mira"
+                : "Start recording a question for Mira"
+            }
+            aria-pressed={state === "recording"}
             className={styles.holdButton}
             disabled={
+              state === "transcribing" ||
               state === "thinking" ||
-              state === "speaking" ||
-              state === "stopping"
+              state === "speaking"
             }
-            onLostPointerCapture={() => {
-              if (holdingRef.current) releaseToSend();
-            }}
-            onPointerCancel={() => cancelListening()}
-            onPointerDown={beginHoldToTalk}
-            onPointerUp={releaseToSend}
+            onClick={toggleRecording}
             type="button"
           >
             <Mic aria-hidden="true" size={24} />
             <span>
               <strong>
-                {state === "listening"
-                  ? "Listening… release to send"
-                  : state === "stopping"
-                    ? "Finishing your question…"
-                    : "Hold to talk"}
+                {state === "recording"
+                  ? "Recording… click to stop and send"
+                  : state === "transcribing"
+                    ? "Transcribing locally…"
+                    : "Record question"}
               </strong>
-              <small>Press Esc to cancel</small>
+              <small>
+                {state === "recording"
+                  ? "Click again to send · Esc cancels"
+                  : "Click once to start"}
+              </small>
             </span>
           </button>
 
@@ -694,7 +599,6 @@ export function VoiceGuideAvatar({
               {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
               {muted ? "Unmute" : "Mute"}
             </button>
-
             <button
               aria-pressed={captionsEnabled}
               className={styles.secondaryButton}
@@ -704,7 +608,6 @@ export function VoiceGuideAvatar({
               <Captions size={16} />
               {captionsEnabled ? "Hide captions" : "Show captions"}
             </button>
-
             <button
               className={styles.secondaryButton}
               disabled={!response || muted || state === "thinking"}
@@ -716,7 +619,8 @@ export function VoiceGuideAvatar({
           </div>
 
           <small className={styles.privacyNote}>
-            Voice interactions are transient and are not saved to the project.
+            Audio is transcribed locally, deleted immediately, and is not saved
+            to the project.
           </small>
         </section>
       )}
@@ -728,7 +632,13 @@ export function VoiceGuideAvatar({
         onClick={() => setExpanded((current) => !current)}
         type="button"
       >
-        <MiraAvatar state={visibleState} />
+        <MiraAvatar
+          state={
+            visibleState === "recording" || visibleState === "transcribing"
+              ? "listening"
+              : visibleState
+          }
+        />
         <span>
           <strong>Mira</strong>
           <small>{stateLabels[visibleState]}</small>

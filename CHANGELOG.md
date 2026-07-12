@@ -122,3 +122,16 @@
 - Distinguished connection, timeout, HTTP, empty-output, and response-parsing failures.
 - Added more robust Qwen3 response extraction and shorter structured fallback responses.
 - Added Batch 11 verification and Chinese implementation guidance.
+
+## Batch 13 - MediaRecorder and local Whisper
+
+- Replaced browser SpeechRecognition with MediaRecorder audio capture.
+- Added local faster-whisper transcription with temporary-file cleanup.
+- Added recording, local transcription, cancellation, permission, and duration handling.
+- Kept audio and Voice Guide interactions transient and outside Supabase.
+
+## Batch 14 - MediaRecorder lifecycle fix
+
+- Fixed an effect cleanup that stopped MediaRecorder immediately whenever the UI state changed.
+- Escape cancellation now checks the active recorder directly.
+- Recorder cleanup now runs only on unmount or explicit cancellation.
