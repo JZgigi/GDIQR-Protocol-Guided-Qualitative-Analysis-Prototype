@@ -10,6 +10,7 @@ import {
 import { buildDeterministicVoiceGuideAnswer } from "@/lib/guidance/voice-guide-response";
 import {
   generateConversationalVoiceGuideAnswer,
+  VoiceGuideModelError,
   type VoiceGuideHistoryItem,
 } from "@/lib/guidance/voice-guide-conversation";
 
@@ -76,6 +77,7 @@ export async function POST(request: NextRequest) {
     const context = buildVoiceGuideContext(state, step, body.selectedContext);
     let answer;
     let fallbackReason: string | undefined;
+    let fallbackCode: string | undefined;
 
     try {
       answer = await generateConversationalVoiceGuideAnswer({
@@ -90,9 +92,22 @@ export async function POST(request: NextRequest) {
       fallbackReason =
         error instanceof Error
           ? error.message
-          : "Local conversational model unavailable.";
+          : "The local conversational model could not answer.";
+      fallbackCode =
+        error instanceof VoiceGuideModelError ? error.code : "unknown";
+
+      const structured = buildDeterministicVoiceGuideAnswer({
+        question,
+        step,
+        context,
+      });
+
       answer = {
-        ...buildDeterministicVoiceGuideAnswer({ question, step, context }),
+        ...structured,
+        spokenAnswer:
+          "The local AI could not complete that response, so I can only give limited structured guidance right now. " +
+          structured.spokenAnswer.split(". ").slice(0, 2).join(". "),
+        captionSummary: structured.captionSummary.slice(0, 2),
         canSaveAsGuidanceNote: false,
         conversationIntent: "workflow_guidance",
         provider: "structured-gdiqr-fallback",
@@ -108,6 +123,7 @@ export async function POST(request: NextRequest) {
       },
       persisted: false,
       fallbackReason,
+      fallbackCode,
     });
   } catch (error) {
     const message =

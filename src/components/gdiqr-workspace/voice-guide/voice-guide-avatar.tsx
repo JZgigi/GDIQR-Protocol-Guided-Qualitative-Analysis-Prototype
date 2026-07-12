@@ -1,7 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Captions, Mic, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import {
+  Captions,
+  Mic,
+  RefreshCw,
+  RotateCcw,
+  Volume2,
+  VolumeX,
+  X,
+} from "lucide-react";
 import type { WorkflowStep } from "@/lib/types";
 import type { VoiceGuideProjectState } from "@/lib/guidance/voice-guide-context";
 import { MiraAvatar } from "./mira-avatar";
@@ -10,10 +25,18 @@ import styles from "./voice-guide-focused.module.css";
 type VoiceGuideState =
   | "idle"
   | "listening"
+  | "stopping"
   | "thinking"
   | "speaking"
   | "error"
   | "captions-only";
+
+type LocalAiStatus =
+  | "unknown"
+  | "checking"
+  | "ready"
+  | "offline"
+  | "model-missing";
 
 interface VoiceGuideResponse {
   spokenAnswer: string;
@@ -26,6 +49,13 @@ interface VoiceGuideResponse {
   conversationIntent?: string;
   model?: string;
   fallbackReason?: string;
+}
+
+interface VoiceGuideHealthResponse {
+  reachable: boolean;
+  modelAvailable: boolean;
+  model: string;
+  error?: string;
 }
 
 export interface VoiceGuidanceNoteDraft {
@@ -54,6 +84,7 @@ interface SpeechRecognitionResultLike {
 }
 
 interface SpeechRecognitionEventLike {
+  resultIndex?: number;
   results: ArrayLike<SpeechRecognitionResultLike>;
 }
 
@@ -85,6 +116,7 @@ declare global {
 const stateLabels: Record<VoiceGuideState, string> = {
   idle: "Ready",
   listening: "Listening — release to send",
+  stopping: "Finishing your question",
   thinking: "Thinking",
   speaking: "Speaking",
   error: "Needs attention",
@@ -107,37 +139,135 @@ export function VoiceGuideAvatar({
   const [error, setError] = useState("");
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [localAiStatus, setLocalAiStatus] =
+    useState<LocalAiStatus>("unknown");
+  const [localAiMessage, setLocalAiMessage] = useState("");
   const [conversationHistory, setConversationHistory] = useState<
     Array<{ role: "user" | "assistant"; content: string }>
   >([]);
+
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const transcriptRef = useRef("");
+  const finalTranscriptRef = useRef("");
+  const interimTranscriptRef = useRef("");
   const holdingRef = useRef(false);
+  const releaseRequestedRef = useRef(false);
   const cancelledRef = useRef(false);
+  const sessionRef = useRef(0);
+  const submittingRef = useRef(false);
 
   const visibleState = useMemo<VoiceGuideState>(
     () => (captionsEnabled && state === "idle" ? "captions-only" : state),
     [captionsEnabled, state],
   );
 
+  const detachRecognition = useCallback(
+    (recognition: SpeechRecognitionLike | null) => {
+      if (!recognition) return;
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+    },
+    [],
+  );
+
+  const abortRecognition = useCallback(() => {
+    const recognition = recognitionRef.current;
+    recognitionRef.current = null;
+    if (!recognition) return;
+    detachRecognition(recognition);
+    try {
+      recognition.abort?.();
+    } catch {
+      // The browser may already have ended the recognition session.
+    }
+  }, [detachRecognition]);
+
+  const resetRecognitionSession = useCallback(() => {
+    abortRecognition();
+    finalTranscriptRef.current = "";
+    interimTranscriptRef.current = "";
+    holdingRef.current = false;
+    releaseRequestedRef.current = false;
+    cancelledRef.current = false;
+    submittingRef.current = false;
+  }, [abortRecognition]);
+
+  const checkLocalAi = useCallback(async () => {
+    setLocalAiStatus("checking");
+    setLocalAiMessage("");
+    try {
+      const request = await fetch("/api/voice-guide/health", {
+        cache: "no-store",
+      });
+      const result = (await request.json().catch(() => ({}))) as
+        | VoiceGuideHealthResponse
+        | { error?: string };
+
+      if (!request.ok || !("reachable" in result)) {
+        throw new Error(
+          "error" in result && result.error
+            ? result.error
+            : "Local AI health check failed.",
+        );
+      }
+
+      if (!result.reachable) {
+        setLocalAiStatus("offline");
+        setLocalAiMessage(
+          result.error ??
+            "Ollama is not reachable. Start Ollama, then check again.",
+        );
+        return false;
+      }
+
+      if (!result.modelAvailable) {
+        setLocalAiStatus("model-missing");
+        setLocalAiMessage(
+          `Ollama is running, but model "${result.model}" is not installed.`,
+        );
+        return false;
+      }
+
+      setLocalAiStatus("ready");
+      setLocalAiMessage(`Local AI ready · ${result.model}`);
+      return true;
+    } catch (caught) {
+      setLocalAiStatus("offline");
+      setLocalAiMessage(
+        caught instanceof Error
+          ? caught.message
+          : "Ollama is not reachable. Start Ollama and check again.",
+      );
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (expanded && localAiStatus === "unknown") {
+      void checkLocalAi();
+    }
+  }, [checkLocalAi, expanded, localAiStatus]);
+
   useEffect(() => {
     const cancelOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || !holdingRef.current) return;
+      if (event.key !== "Escape") return;
+      if (!holdingRef.current && state !== "stopping") return;
+
+      sessionRef.current += 1;
       cancelledRef.current = true;
-      holdingRef.current = false;
-      recognitionRef.current?.abort?.();
-      recognitionRef.current = null;
-      transcriptRef.current = "";
+      resetRecognitionSession();
+      setError("");
       setState("idle");
     };
 
     window.addEventListener("keydown", cancelOnEscape);
     return () => {
       window.removeEventListener("keydown", cancelOnEscape);
-      recognitionRef.current?.abort?.();
+      sessionRef.current += 1;
+      resetRecognitionSession();
       window.speechSynthesis?.cancel();
     };
-  }, []);
+  }, [resetRecognitionSession, state]);
 
   function speakAnswer(answer: string) {
     if (muted || !("speechSynthesis" in window)) {
@@ -147,7 +277,9 @@ export function VoiceGuideAvatar({
 
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(answer);
-    utterance.lang = projectState.project.language?.toLowerCase().startsWith("zh")
+    utterance.lang = projectState.project.language
+      ?.toLowerCase()
+      .startsWith("zh")
       ? "zh-CN"
       : "en-GB";
     utterance.rate = 1.02;
@@ -169,7 +301,9 @@ export function VoiceGuideAvatar({
       setState("error");
       return;
     }
+    if (submittingRef.current) return;
 
+    submittingRef.current = true;
     setExpanded(true);
     setError("");
     setState("thinking");
@@ -203,123 +337,234 @@ export function VoiceGuideAvatar({
           { role: "assistant" as const, content: result.spokenAnswer },
         ].slice(-4),
       );
+
+      if (result.provider === "ollama-conversational") {
+        setLocalAiStatus("ready");
+        setLocalAiMessage(`Local AI ready · ${result.model ?? "Ollama"}`);
+      } else if (result.fallbackReason) {
+        setLocalAiStatus("offline");
+        setLocalAiMessage(result.fallbackReason);
+      }
+
       speakAnswer(result.spokenAnswer);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Mira could not respond.");
       setState("error");
+    } finally {
+      submittingRef.current = false;
     }
   }
 
-  function createRecognition() {
+  function collectedTranscript() {
+    return `${finalTranscriptRef.current} ${interimTranscriptRef.current}`
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function finishSession(sessionId: number) {
+    if (sessionId !== sessionRef.current || cancelledRef.current) return;
+    const transcript = collectedTranscript();
+    finalTranscriptRef.current = "";
+    interimTranscriptRef.current = "";
+    releaseRequestedRef.current = false;
+    recognitionRef.current = null;
+
+    if (!transcript) {
+      setError("No speech was recognised. Hold the button and try again.");
+      setState("error");
+      return;
+    }
+
+    void submitQuestion(transcript);
+  }
+
+  function startRecognitionCycle(sessionId: number) {
+    if (
+      sessionId !== sessionRef.current ||
+      cancelledRef.current ||
+      !holdingRef.current
+    ) {
+      return;
+    }
+
     const Recognition = getRecognitionConstructor();
     if (!Recognition) {
+      holdingRef.current = false;
       setError(
         "Hold-to-talk speech recognition is unavailable in this browser. Use the latest Chrome or Edge.",
       );
       setState("error");
-      return null;
+      return;
     }
 
     const recognition = new Recognition();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = projectState.project.language?.toLowerCase().startsWith("zh")
+    recognition.lang = projectState.project.language
+      ?.toLowerCase()
+      .startsWith("zh")
       ? "zh-CN"
       : "en-GB";
+    recognitionRef.current = recognition;
 
     recognition.onresult = (event) => {
-      transcriptRef.current = Array.from(event.results)
-        .map((result) => result[0]?.transcript ?? "")
-        .join(" ")
-        .trim();
+      if (sessionId !== sessionRef.current || cancelledRef.current) return;
+
+      let interim = "";
+      const startIndex = event.resultIndex ?? 0;
+      for (let index = startIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result[0]?.transcript?.trim() ?? "";
+        if (!transcript) continue;
+        if (result.isFinal) {
+          finalTranscriptRef.current = `${finalTranscriptRef.current} ${transcript}`
+            .replace(/\s+/g, " ")
+            .trim();
+        } else {
+          interim = `${interim} ${transcript}`.trim();
+        }
+      }
+      interimTranscriptRef.current = interim;
     };
 
     recognition.onerror = (event) => {
-      if (cancelledRef.current) return;
-      holdingRef.current = false;
-      recognitionRef.current = null;
-      setState("error");
-      setError(
-        event.error === "not-allowed" || event.error === "service-not-allowed"
-          ? "Microphone permission was denied. Allow microphone access and try again."
-          : `Speech recognition stopped (${event.error}). Hold to talk and try again.`,
-      );
-    };
+      if (sessionId !== sessionRef.current || cancelledRef.current) return;
 
-    recognition.onend = () => {
-      recognitionRef.current = null;
-      if (cancelledRef.current) {
-        cancelledRef.current = false;
-        transcriptRef.current = "";
-        setState("idle");
+      const recoverable =
+        event.error === "no-speech" ||
+        event.error === "aborted" ||
+        event.error === "audio-capture";
+
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        holdingRef.current = false;
+        releaseRequestedRef.current = false;
+        recognitionRef.current = null;
+        setError(
+          "Microphone permission was denied. Allow microphone access and try again.",
+        );
+        setState("error");
         return;
       }
 
-      if (holdingRef.current) {
-        try {
-          recognition.start();
-          recognitionRef.current = recognition;
-          return;
-        } catch {
-          holdingRef.current = false;
-        }
+      if (!recoverable) {
+        holdingRef.current = false;
+        releaseRequestedRef.current = false;
+        recognitionRef.current = null;
+        setError(
+          `Speech recognition stopped (${event.error}). Hold to talk and try again.`,
+        );
+        setState("error");
       }
-
-      const transcript = transcriptRef.current;
-      transcriptRef.current = "";
-      void submitQuestion(transcript);
     };
 
-    return recognition;
-  }
+    recognition.onend = () => {
+      detachRecognition(recognition);
+      if (recognitionRef.current === recognition) {
+        recognitionRef.current = null;
+      }
+      if (sessionId !== sessionRef.current || cancelledRef.current) return;
 
-  function beginHoldToTalk(event: React.PointerEvent<HTMLButtonElement>) {
-    if (state === "thinking" || state === "speaking") return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setExpanded(true);
-    setError("");
-    window.speechSynthesis?.cancel();
-    transcriptRef.current = "";
-    cancelledRef.current = false;
-    holdingRef.current = true;
+      if (holdingRef.current && !releaseRequestedRef.current) {
+        window.setTimeout(() => startRecognitionCycle(sessionId), 60);
+        return;
+      }
 
-    const recognition = createRecognition();
-    if (!recognition) {
-      holdingRef.current = false;
-      return;
-    }
+      finishSession(sessionId);
+    };
 
-    recognitionRef.current = recognition;
     try {
       recognition.start();
       setState("listening");
     } catch {
+      detachRecognition(recognition);
       recognitionRef.current = null;
       holdingRef.current = false;
+      releaseRequestedRef.current = false;
+      setError("The microphone could not start. Hold the button and try again.");
       setState("error");
-      setError("The microphone could not start. Please try again.");
     }
   }
 
-  function releaseToSend() {
-    if (!holdingRef.current) return;
+  function beginHoldToTalk(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (
+      state === "thinking" ||
+      state === "speaking" ||
+      state === "stopping"
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is best-effort on older browsers.
+    }
+
+    sessionRef.current += 1;
+    resetRecognitionSession();
+    const sessionId = sessionRef.current;
+
+    setExpanded(true);
+    setError("");
+    window.speechSynthesis?.cancel();
+    finalTranscriptRef.current = "";
+    interimTranscriptRef.current = "";
+    cancelledRef.current = false;
+    releaseRequestedRef.current = false;
+    holdingRef.current = true;
+    startRecognitionCycle(sessionId);
+  }
+
+  function releaseToSend(event?: ReactPointerEvent<HTMLButtonElement>) {
+    if (!holdingRef.current || releaseRequestedRef.current) return;
+
+    if (event) {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture may already have been released.
+      }
+    }
+
     holdingRef.current = false;
-    recognitionRef.current?.stop();
+    releaseRequestedRef.current = true;
+    setState("stopping");
+
+    const recognition = recognitionRef.current;
+    if (!recognition) {
+      finishSession(sessionRef.current);
+      return;
+    }
+
+    try {
+      recognition.stop();
+    } catch {
+      finishSession(sessionRef.current);
+    }
   }
 
   function cancelListening() {
-    if (!holdingRef.current) return;
+    sessionRef.current += 1;
     cancelledRef.current = true;
-    holdingRef.current = false;
-    recognitionRef.current?.abort?.();
-    recognitionRef.current = null;
-    transcriptRef.current = "";
+    resetRecognitionSession();
+    setError("");
+    setState("idle");
+  }
+
+  function dismissError() {
+    sessionRef.current += 1;
+    resetRecognitionSession();
+    setError("");
     setState("idle");
   }
 
   function replay() {
     if (response) speakAnswer(response.spokenAnswer);
   }
+
+  const localAiNeedsAttention =
+    localAiStatus === "offline" || localAiStatus === "model-missing";
 
   return (
     <aside className={`${styles.shell} ${styles[visibleState]}`}>
@@ -359,12 +604,36 @@ export function VoiceGuideAvatar({
             current analysis stage.
           </div>
 
+          {localAiStatus !== "unknown" && (
+            <div
+              className={localAiNeedsAttention ? styles.error : styles.stagePrompt}
+              role={localAiNeedsAttention ? "alert" : undefined}
+            >
+              <p>
+                {localAiStatus === "checking"
+                  ? "Checking local AI…"
+                  : localAiMessage}
+              </p>
+              {localAiNeedsAttention && (
+                <button
+                  className={styles.secondaryButton}
+                  disabled={localAiStatus === "checking"}
+                  onClick={() => void checkLocalAi()}
+                  type="button"
+                >
+                  <RefreshCw aria-hidden="true" size={15} />
+                  Check Ollama again
+                </button>
+              )}
+            </div>
+          )}
+
           {error && (
             <div className={styles.error} role="alert">
               <p>{error}</p>
               <button
                 className={styles.secondaryButton}
-                onClick={() => setError("")}
+                onClick={dismissError}
                 type="button"
               >
                 <RotateCcw aria-hidden="true" size={15} /> Dismiss
@@ -377,9 +646,7 @@ export function VoiceGuideAvatar({
               <span>Mira</span>
               <p>{response.spokenAnswer}</p>
               {response.fallbackReason && (
-                <small>
-                  Structured fallback used because Ollama was unavailable.
-                </small>
+                <small>{response.fallbackReason}</small>
               )}
             </div>
           )}
@@ -387,19 +654,27 @@ export function VoiceGuideAvatar({
           <button
             aria-label="Hold to talk to Mira"
             className={styles.holdButton}
-            disabled={state === "thinking" || state === "speaking"}
-            onPointerCancel={cancelListening}
-            onPointerDown={beginHoldToTalk}
-            onPointerLeave={(event) => {
-              if (event.buttons === 0) releaseToSend();
+            disabled={
+              state === "thinking" ||
+              state === "speaking" ||
+              state === "stopping"
+            }
+            onLostPointerCapture={() => {
+              if (holdingRef.current) releaseToSend();
             }}
+            onPointerCancel={() => cancelListening()}
+            onPointerDown={beginHoldToTalk}
             onPointerUp={releaseToSend}
             type="button"
           >
             <Mic aria-hidden="true" size={24} />
             <span>
               <strong>
-                {state === "listening" ? "Listening… release to send" : "Hold to talk"}
+                {state === "listening"
+                  ? "Listening… release to send"
+                  : state === "stopping"
+                    ? "Finishing your question…"
+                    : "Hold to talk"}
               </strong>
               <small>Press Esc to cancel</small>
             </span>

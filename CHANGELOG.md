@@ -114,3 +114,11 @@
 - Added a browser TTS voice selector with language-aware defaults.
 - Preserved reduced-motion, captions-only, privacy, and transient-conversation behaviour.
 - Added Batch 9 verification and implementation documentation.
+
+## Batch 11 - Voice reliability and Ollama recovery
+
+- Reworked push-to-talk recognition lifecycle so no-speech, cancellation, pointer loss, and browser-ended sessions recover without a page refresh.
+- Added a local Ollama health endpoint and in-panel retry control.
+- Distinguished connection, timeout, HTTP, empty-output, and response-parsing failures.
+- Added more robust Qwen3 response extraction and shorter structured fallback responses.
+- Added Batch 11 verification and Chinese implementation guidance.
