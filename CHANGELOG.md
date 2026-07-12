@@ -68,3 +68,11 @@
 - Connected the avatar to the structured Voice Guide API without retaining chat history.
 - Kept guidance interactions transient pending researcher-selected note saving in Batch 6.
 - Added keyboard, ARIA, responsive, and reduced-motion support.
+
+## Batch 6 — Voice interaction and saved notes
+
+- Added browser speech recognition and speech synthesis to the floating Voice Guide.
+- Added captions-only, replay, microphone-permission, and text fallback handling.
+- Kept raw audio and unsaved interactions out of project storage.
+- Added researcher-selected Voice Guide note saving through the existing guidance memo, audit, and export pathways.
+- Added the `voice_guidance_note_saved` audit action type.

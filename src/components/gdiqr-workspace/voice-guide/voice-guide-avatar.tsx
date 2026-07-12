@@ -1,7 +1,17 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Bot, Captions, RotateCcw, Sparkles, Volume2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bot,
+  Captions,
+  Mic,
+  RotateCcw,
+  Save,
+  Sparkles,
+  Square,
+  Volume2,
+  X,
+} from "lucide-react";
 import type { WorkflowStep } from "@/lib/types";
 import type { VoiceGuideProjectState } from "@/lib/guidance/voice-guide-context";
 
@@ -23,10 +33,51 @@ interface VoiceGuideResponse {
   provider: string;
 }
 
+export interface VoiceGuidanceNoteDraft {
+  step: WorkflowStep;
+  transcribedQuestion: string;
+  spokenAnswer: string;
+  captionSummary: string[];
+  boundaryReminder: string;
+  createdAt: string;
+}
+
 interface VoiceGuideAvatarProps {
   projectId: string;
   step: WorkflowStep;
   projectState: VoiceGuideProjectState;
+  onSaveGuidanceNote: (note: VoiceGuidanceNoteDraft) => Promise<void>;
+}
+
+interface SpeechRecognitionEventLike {
+  results: ArrayLike<{
+    0: { transcript: string };
+    isFinal: boolean;
+  }>;
+}
+
+interface SpeechRecognitionErrorEventLike {
+  error: string;
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onend: (() => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
 }
 
 const stateLabels: Record<VoiceGuideState, string> = {
@@ -38,10 +89,16 @@ const stateLabels: Record<VoiceGuideState, string> = {
   "captions-only": "Captions only",
 };
 
+function getRecognitionConstructor() {
+  if (typeof window === "undefined") return undefined;
+  return window.SpeechRecognition ?? window.webkitSpeechRecognition;
+}
+
 export function VoiceGuideAvatar({
   projectId,
   step,
   projectState,
+  onSaveGuidanceNote,
 }: VoiceGuideAvatarProps) {
   const [expanded, setExpanded] = useState(false);
   const [state, setState] = useState<VoiceGuideState>("idle");
@@ -49,28 +106,53 @@ export function VoiceGuideAvatar({
   const [error, setError] = useState("");
   const [lastQuestion, setLastQuestion] = useState("");
   const [captionsOnly, setCaptionsOnly] = useState(false);
+  const [fallbackQuestion, setFallbackQuestion] = useState("");
+  const [showTextFallback, setShowTextFallback] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const visibleState = useMemo<VoiceGuideState>(
     () => (captionsOnly && state === "idle" ? "captions-only" : state),
     [captionsOnly, state],
   );
 
-  async function askGuide() {
-    setExpanded(true);
-    setError("");
-    setState("listening");
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.stop();
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
 
-    const question = window.prompt(
-      "Voice input arrives in the next batch. For this UI test, type the methodological question you would ask aloud.",
-      lastQuestion,
-    );
-
-    if (!question?.trim()) {
+  function speakAnswer(answer: string) {
+    if (captionsOnly || !("speechSynthesis" in window)) {
       setState("idle");
       return;
     }
 
-    setLastQuestion(question.trim());
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(answer);
+    utterance.lang = projectState.project.language?.toLowerCase().startsWith("zh")
+      ? "zh-CN"
+      : "en-GB";
+    utterance.onstart = () => setState("speaking");
+    utterance.onend = () => setState("idle");
+    utterance.onerror = () => {
+      setCaptionsOnly(true);
+      setState("captions-only");
+      setError("Audio playback was unavailable. The guidance remains available as captions.");
+    };
+    window.speechSynthesis.speak(utterance);
+  }
+
+  async function submitQuestion(question: string) {
+    const normalizedQuestion = question.trim();
+    if (!normalizedQuestion) return;
+
+    setExpanded(true);
+    setError("");
+    setSaved(false);
+    setLastQuestion(normalizedQuestion);
     setState("thinking");
 
     try {
@@ -80,7 +162,7 @@ export function VoiceGuideAvatar({
         body: JSON.stringify({
           projectId,
           step,
-          spokenQuestionTranscript: question.trim(),
+          spokenQuestionTranscript: normalizedQuestion,
           projectState,
         }),
       });
@@ -93,8 +175,7 @@ export function VoiceGuideAvatar({
       }
 
       setResponse(result);
-      setState("speaking");
-      window.setTimeout(() => setState("idle"), 700);
+      speakAnswer(result.spokenAnswer);
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Voice Guide could not respond.",
@@ -103,8 +184,107 @@ export function VoiceGuideAvatar({
     }
   }
 
+  function startListening() {
+    setExpanded(true);
+    setError("");
+    setShowTextFallback(false);
+
+    const Recognition = getRecognitionConstructor();
+    if (!Recognition) {
+      setState("error");
+      setShowTextFallback(true);
+      setError(
+        "Speech recognition is not available in this browser. Use the captions-only text fallback or try the latest Chrome or Edge.",
+      );
+      return;
+    }
+
+    window.speechSynthesis?.cancel();
+    const recognition = new Recognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = projectState.project.language?.toLowerCase().startsWith("zh")
+      ? "zh-CN"
+      : "en-GB";
+    recognitionRef.current = recognition;
+
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map((result) => result[0]?.transcript ?? "")
+        .join(" ")
+        .trim();
+      recognitionRef.current = null;
+      if (!transcript) {
+        setState("error");
+        setShowTextFallback(true);
+        setError("No speech was recognised. Try again or use the text fallback.");
+        return;
+      }
+      void submitQuestion(transcript);
+    };
+
+    recognition.onerror = (event) => {
+      recognitionRef.current = null;
+      setState("error");
+      setShowTextFallback(true);
+      const permissionMessage =
+        event.error === "not-allowed" || event.error === "service-not-allowed"
+          ? "Microphone permission was denied. Allow microphone access in the browser, or use the text fallback."
+          : `Speech recognition stopped (${event.error}). Try again or use the text fallback.`;
+      setError(permissionMessage);
+    };
+
+    recognition.onend = () => {
+      recognitionRef.current = null;
+      setState((current) => (current === "listening" ? "idle" : current));
+    };
+
+    try {
+      recognition.start();
+      setState("listening");
+    } catch {
+      recognitionRef.current = null;
+      setState("error");
+      setShowTextFallback(true);
+      setError("The microphone could not start. Try again or use the text fallback.");
+    }
+  }
+
+  function stopListening() {
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    setState("idle");
+  }
+
+  function replay() {
+    if (response) speakAnswer(response.spokenAnswer);
+  }
+
+  async function saveNote() {
+    if (!response || !lastQuestion || saved || isSaving) return;
+    setIsSaving(true);
+    setError("");
+    try {
+      await onSaveGuidanceNote({
+        step,
+        transcribedQuestion: lastQuestion,
+        spokenAnswer: response.spokenAnswer,
+        captionSummary: response.captionSummary,
+        boundaryReminder: response.boundaryReminder,
+        createdAt: new Date().toISOString(),
+      });
+      setSaved(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Guidance note could not be saved.");
+      setState("error");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   function retry() {
-    void askGuide();
+    if (lastQuestion) void submitQuestion(lastQuestion);
+    else startListening();
   }
 
   return (
@@ -123,7 +303,11 @@ export function VoiceGuideAvatar({
             <button
               aria-label="Close Voice Guide"
               className="icon-button"
-              onClick={() => setExpanded(false)}
+              onClick={() => {
+                stopListening();
+                window.speechSynthesis?.cancel();
+                setExpanded(false);
+              }}
               type="button"
             >
               <X aria-hidden="true" size={18} />
@@ -136,6 +320,9 @@ export function VoiceGuideAvatar({
             <span>· {step.replace("-", " ")}</span>
           </div>
 
+          {state === "listening" && (
+            <p className="voice-guide-thinking">Listening for one methodological question…</p>
+          )}
           {state === "thinking" && (
             <p className="voice-guide-thinking">
               Checking the current workflow state and GDI-QR guidance…
@@ -151,7 +338,34 @@ export function VoiceGuideAvatar({
             </div>
           )}
 
-          {response && !error && (
+          {showTextFallback && (
+            <form
+              className="voice-guide-text-fallback"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitQuestion(fallbackQuestion);
+              }}
+            >
+              <label htmlFor="voice-guide-fallback-question">
+                Captions-only question fallback
+              </label>
+              <input
+                id="voice-guide-fallback-question"
+                onChange={(event) => setFallbackQuestion(event.target.value)}
+                placeholder="Type one methodological question"
+                value={fallbackQuestion}
+              />
+              <button
+                className="secondary-button"
+                disabled={!fallbackQuestion.trim() || state === "thinking"}
+                type="submit"
+              >
+                <Sparkles aria-hidden="true" size={16} /> Ask with captions
+              </button>
+            </form>
+          )}
+
+          {response && (
             <div className="voice-guide-latest-response">
               <span className="label">Latest guide summary</span>
               <ol>
@@ -161,34 +375,45 @@ export function VoiceGuideAvatar({
               </ol>
               <p className="voice-guide-boundary">{response.boundaryReminder}</p>
               <small>
-                This interaction is transient and has not been added to the audit
-                record.
+                {saved
+                  ? "Saved as a researcher-selected guidance note."
+                  : "This interaction is transient and has not been added to the audit record."}
               </small>
             </div>
           )}
 
-          {!response && !error && state !== "thinking" && (
+          {!response && !error && state !== "thinking" && state !== "listening" && (
             <p className="small">
               Ask about the purpose of this step, what evidence to inspect, or a
-              methodological checklist. The guide will not make the analytic
-              decision for you.
+              methodological checklist. The guide will not make the analytic decision
+              for you.
             </p>
           )}
 
           <div className="voice-guide-actions">
-            <button
-              className="primary-button"
-              disabled={state === "thinking" || state === "listening"}
-              onClick={() => void askGuide()}
-              type="button"
-            >
-              <Sparkles aria-hidden="true" size={16} />
-              {response ? "Ask again" : "Ask guidance"}
-            </button>
+            {state === "listening" ? (
+              <button className="primary-button" onClick={stopListening} type="button">
+                <Square aria-hidden="true" size={16} /> Stop listening
+              </button>
+            ) : (
+              <button
+                className="primary-button"
+                disabled={state === "thinking" || isSaving}
+                onClick={startListening}
+                type="button"
+              >
+                <Mic aria-hidden="true" size={16} />
+                {response ? "Ask again" : "Ask guidance"}
+              </button>
+            )}
             <button
               aria-pressed={captionsOnly}
               className="secondary-button"
-              onClick={() => setCaptionsOnly((current) => !current)}
+              onClick={() => {
+                window.speechSynthesis?.cancel();
+                setCaptionsOnly((current) => !current);
+                setState("idle");
+              }}
               type="button"
             >
               <Captions aria-hidden="true" size={16} />
@@ -196,11 +421,20 @@ export function VoiceGuideAvatar({
             </button>
             <button
               className="secondary-button"
-              disabled={!response}
-              title="Audio replay is enabled in the next voice-interaction batch."
+              disabled={!response || captionsOnly || state === "thinking"}
+              onClick={replay}
               type="button"
             >
               <Volume2 aria-hidden="true" size={16} /> Replay
+            </button>
+            <button
+              className="secondary-button"
+              disabled={!response?.canSaveAsGuidanceNote || saved || isSaving}
+              onClick={() => void saveNote()}
+              type="button"
+            >
+              <Save aria-hidden="true" size={16} />
+              {saved ? "Saved" : isSaving ? "Saving…" : "Save note"}
             </button>
           </div>
         </section>

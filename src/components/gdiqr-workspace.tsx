@@ -182,7 +182,7 @@ import {
 import { ProjectBar } from "./gdiqr-workspace/project/project-bar";
 import { WorkflowNavigation } from "./gdiqr-workspace/workflow/workflow-navigation";
 import { LongTaskStatus } from "./gdiqr-workspace/shared/long-task-status";
-import { VoiceGuideAvatar } from "./gdiqr-workspace/voice-guide/voice-guide-avatar";
+import { VoiceGuideAvatar, type VoiceGuidanceNoteDraft } from "./gdiqr-workspace/voice-guide/voice-guide-avatar";
 
 const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
@@ -241,6 +241,7 @@ interface GuidanceMessage {
   projectId?: string;
   question: string;
   saved?: boolean;
+  source?: "legacy-guidance" | "voice-guide";
   step: WorkflowStep;
 }
 
@@ -3564,6 +3565,7 @@ export function GdiqrWorkspace({
       setIntegritySavedAt(new Date().toISOString());
       setApiStatus("Methodological integrity review saved to Supabase.");
       void refreshWorkspace();
+      return true;
     } catch (error) {
       setApiStatus(
         error instanceof Error
@@ -4682,7 +4684,7 @@ export function GdiqrWorkspace({
   async function saveGuidanceAsMemo(message: GuidanceMessage) {
     if (message.saved) {
       setApiStatus("This guidance is already saved as a memo.");
-      return;
+      return false;
     }
 
     if (isLocalOnlyMode) {
@@ -4692,11 +4694,18 @@ export function GdiqrWorkspace({
       );
       setSavedGuidanceMemos((current) => [savedMessage, ...current]);
       recordLocalAuditEvent({
-        action: `Saved methodological guidance memo for ${message.step}`,
-        target: "Guidance panel",
+        action:
+          message.source === "voice-guide"
+            ? `voice_guidance_note_saved for ${message.step}`
+            : `Saved methodological guidance memo for ${message.step}`,
+        target: message.source === "voice-guide" ? "Voice Guide" : "Guidance panel",
       });
-      setApiStatus("Guidance memo saved locally and audit logged.");
-      return;
+      setApiStatus(
+        message.source === "voice-guide"
+          ? "Voice guidance note saved locally and audit logged."
+          : "Guidance memo saved locally and audit logged.",
+      );
+      return true;
     }
 
     try {
@@ -4705,6 +4714,7 @@ export function GdiqrWorkspace({
           answer: message.answer,
           projectId: currentProject.id,
           question: message.question,
+          source: message.source,
           step: message.step,
         }),
         headers: { "Content-Type": "application/json" },
@@ -4720,7 +4730,7 @@ export function GdiqrWorkspace({
           result.error ?? "Guidance memo could not be saved.",
           () => void saveGuidanceAsMemo(message),
         );
-        return;
+        return false;
       }
 
       const savedMessage = result.memo
@@ -4730,8 +4740,13 @@ export function GdiqrWorkspace({
         current.map((item) => (item.id === message.id ? savedMessage : item)),
       );
       setSavedGuidanceMemos((current) => [savedMessage, ...current]);
-      setApiStatus("Guidance memo saved and audit logged.");
+      setApiStatus(
+        message.source === "voice-guide"
+          ? "Voice guidance note saved and audit logged."
+          : "Guidance memo saved and audit logged.",
+      );
       void refreshWorkspace();
+      return true;
     } catch (error) {
       setRecoverableWorkflowError(
         error instanceof Error
@@ -4739,6 +4754,31 @@ export function GdiqrWorkspace({
           : "Guidance memo could not be saved.",
         () => void saveGuidanceAsMemo(message),
       );
+      return false;
+    }
+  }
+
+  async function saveVoiceGuidanceNote(note: VoiceGuidanceNoteDraft) {
+    const answer = [
+      note.spokenAnswer,
+      "",
+      `Boundary reminder: ${note.boundaryReminder}`,
+      "",
+      "Caption summary:",
+      ...note.captionSummary.map((item) => `- ${item}`),
+    ].join("\n");
+    const message: GuidanceMessage = {
+      answer,
+      createdAt: note.createdAt,
+      id: `voice_guidance_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      projectId: currentProject.id,
+      question: note.transcribedQuestion,
+      source: "voice-guide",
+      step: note.step,
+    };
+    const wasSaved = await saveGuidanceAsMemo(message);
+    if (!wasSaved) {
+      throw new Error("Voice guidance note could not be saved.");
     }
   }
 
@@ -7454,6 +7494,7 @@ export function GdiqrWorkspace({
           <RunLogPanel logs={runLogs} onClear={clearFinishedRunLogs} />
         </main>
       <VoiceGuideAvatar
+        onSaveGuidanceNote={saveVoiceGuidanceNote}
         projectId={currentProject.id}
         step={activeStep}
         projectState={{

@@ -8,6 +8,7 @@ export async function POST(request: NextRequest) {
     answer?: string;
     projectId?: string;
     question?: string;
+    source?: "legacy-guidance" | "voice-guide";
     step?: WorkflowStep;
   };
 
@@ -27,6 +28,7 @@ export async function POST(request: NextRequest) {
       answer: body.answer,
       projectId: body.projectId ?? defaultProjectId,
       question: body.question,
+      source: body.source,
       step: body.step,
     });
 

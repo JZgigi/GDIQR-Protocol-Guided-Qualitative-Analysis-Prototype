@@ -62,6 +62,7 @@ export type AuditActionType =
   | "export_generated"
   | "workspace_cleared"
   | "guidance_memo_saved"
+  | "voice_guidance_note_saved"
   | "segment_updated"
   | "segment_speaker_role_updated"
   | "other";

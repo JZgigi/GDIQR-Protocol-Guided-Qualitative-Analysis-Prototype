@@ -76,3 +76,7 @@ This prevents the future avatar component from owning methodology rules or direc
 The Voice Guide UI is isolated under `gdiqr-workspace/voice-guide/`. The workspace
 passes a current in-browser snapshot into the avatar, while the avatar owns transient
 interaction UI state. Voice recording and persistence remain separate follow-up concerns.
+
+## Batch 6 voice interaction boundary
+
+`voice-guide/voice-guide-avatar.tsx` owns transient browser microphone/TTS state. The workspace remains responsible for project persistence: it receives a structured `VoiceGuidanceNoteDraft` only after the researcher selects **Save note**, converts it into the existing guidance memo record, and logs the save. This keeps unsaved voice interaction out of workspace persistence and export.

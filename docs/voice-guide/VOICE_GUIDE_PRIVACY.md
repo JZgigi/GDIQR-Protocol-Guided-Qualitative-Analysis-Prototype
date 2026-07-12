@@ -1,13 +1,11 @@
-# Voice Guide privacy and retention
+# Voice Guide privacy boundary
 
-## Batch 4
-
-- The guide API receives a transcribed question, not raw audio.
-- The request is transient and is not written to guidance memos, audit logs, or exports.
-- In Supabase mode, project state is retrieved server-side.
-- In local-only mode, the browser sends only the current project snapshot needed to create context.
-- The response exposes a limited context summary rather than echoing full project material.
-
-## Later voice interaction
-
-Raw microphone audio must not be stored. Only a researcher-selected saved guidance note may enter the project record. Unselected interactions must remain transient.
+- Voice Guide interactions are transient unless the researcher explicitly chooses **Save note**.
+- The application does not persist raw microphone audio.
+- The browser speech-recognition capability converts a short question to text. Browser-vendor implementations may process speech through vendor services; this is outside the application's storage layer.
+- For strict local-only or sensitive-data workflows, use captions-only text fallback unless browser speech recognition is explicitly approved in the research environment.
+- The transcribed question is sent to `/api/voice-guide` with the minimum workflow context needed to provide methodological guidance.
+- The guide API does not save the question, answer, or selected context.
+- A saved note contains the transcribed question, answer text, caption summary, boundary reminder, workflow step, and timestamp.
+- Saved notes enter the guidance memo record, audit trail, and analysis export.
+- Unsaved interactions do not enter the project record.

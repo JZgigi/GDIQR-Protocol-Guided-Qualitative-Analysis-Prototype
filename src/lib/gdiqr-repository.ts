@@ -2565,11 +2565,13 @@ export async function saveGuidanceMemo({
   answer,
   projectId = defaultProjectId,
   question,
+  source = "legacy-guidance",
   step,
 }: {
   answer: string;
   projectId?: string;
   question: string;
+  source?: "legacy-guidance" | "voice-guide";
   step: WorkflowStep;
 }) {
   const supabase = createSupabaseServerClient();
@@ -2593,8 +2595,14 @@ export async function saveGuidanceMemo({
   }
 
   await recordEditLog({
-    action: `Saved methodological guidance memo for ${step}`,
-    actionType: "guidance_memo_saved",
+    action:
+      source === "voice-guide"
+        ? `Saved Voice Guide note for ${step}`
+        : `Saved methodological guidance memo for ${step}`,
+    actionType:
+      source === "voice-guide"
+        ? "voice_guidance_note_saved"
+        : "guidance_memo_saved",
     actor: "Researcher",
     newValue: memo,
     projectId,

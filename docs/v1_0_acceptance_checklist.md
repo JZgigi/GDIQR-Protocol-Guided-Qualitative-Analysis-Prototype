@@ -530,3 +530,15 @@ Smoke check：
 - [ ] Current step and project state are used by `/api/voice-guide`.
 - [ ] Closing the guide discards the transient presentation; no audit record is created.
 - [ ] Keyboard focus and reduced-motion behaviour are usable.
+
+## Batch 6 — Voice input/output and saved notes
+
+- [ ] Current desktop Chrome/Edge can capture one short Voice Guide question by microphone.
+- [ ] The app does not create or retain a raw audio record.
+- [ ] The guide answer can be spoken with browser TTS and replayed.
+- [ ] Captions-only mode works without TTS.
+- [ ] Microphone denial or unavailable speech recognition exposes a compact text fallback.
+- [ ] Unsaved interactions do not appear in the audit trail or export.
+- [ ] Save note persists the transcribed question, answer, summary, boundary reminder, step, and timestamp.
+- [ ] Saved Voice Guide notes appear in audit and JSON/TXT/DOCX/PDF-oriented export content.
+- [ ] Saved Voice Guide notes use audit action type `voice_guidance_note_saved`.

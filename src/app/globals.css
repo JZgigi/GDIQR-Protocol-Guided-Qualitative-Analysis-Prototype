@@ -2384,3 +2384,26 @@ button {
     padding: 7px;
   }
 }
+
+.voice-guide-text-fallback {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.75rem;
+  background: var(--surface-muted);
+}
+
+.voice-guide-text-fallback label {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.voice-guide-text-fallback input {
+  width: 100%;
+  min-width: 0;
+}
+
+.voice-guide-actions {
+  flex-wrap: wrap;
+}
