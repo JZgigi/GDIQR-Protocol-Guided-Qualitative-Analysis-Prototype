@@ -19,3 +19,9 @@
 - Added `.env.example`, `README.md`, and `SETUP_GUIDE.md` for local, GitHub, Vercel, and later Supabase setup.
 - Installed project dependencies and verified the prototype with TypeScript and production build checks.
 - Added a PostCSS dependency override to address the npm audit warning without downgrading Next.js.
+
+## Unreleased — Batch 0 workspace decomposition
+
+- Split supporting workspace UI and helper functions out of the 12,110-line workspace component.
+- Kept the existing `GdiqrWorkspace` public import and runtime behaviour unchanged.
+- Added workspace architecture guidance for subsequent v1.0 feature batches.

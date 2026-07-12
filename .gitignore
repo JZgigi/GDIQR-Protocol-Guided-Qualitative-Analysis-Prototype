@@ -20,3 +20,4 @@ local_docs/
 DEMO_SETUP_GUIDE_FOR_NON_TECHNICAL_USER.md
 prototype_intro_slide_outline.md
 prototype_intro_speaker_notes.md
+Add-Content .git/info/exclude ".batch0-backup-*/"
