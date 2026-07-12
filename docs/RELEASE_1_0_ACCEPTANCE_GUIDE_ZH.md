@@ -296,3 +296,16 @@ Voice Guide 不得给出最终 yes/no、final definition 或完整最终 narrati
 - saved guidance note 正确进入 audit/export；
 - 所有 Blocker/High 缺陷已修复或有明确不发布决定；
 - 已记录已知限制、浏览器限制和隐私限制。
+
+## Batch 8：对话式 Voice Agent 验收
+
+1. 确认 Ollama 正在运行，并已安装 `.env.local` 中配置的模型。
+2. 问普通闲聊问题，例如“你好，今天怎么样？”：回答应自然，不应强行列出 research question 或 data suitability。
+3. 问情绪支持问题，例如“我今天分析得有点累”：回答应温和，并可提供简短支持，不应机械输出 checklist。
+4. 问方法学问题，例如“What is a domain of investigation?”：回答应针对问题解释，并以 GDI-QR 知识库为依据。
+5. 问当前工作流问题，例如“What should I do next?”：回答应结合当前 step 和项目状态。
+6. 问分析决定，例如“Should I split this MU?”：不得替研究者给出最终 yes/no；应引导检查 evidence。
+7. 连续追问“Can you explain that more simply?”：应能利用当前临时会话上下文继续回答。
+8. 检查 API 返回 provider：正常应为 `ollama-conversational`；Ollama 不可用时应为 `structured-gdiqr-fallback` 并显示原因。
+9. 刷新页面后，未保存的闲聊和临时上下文不应进入 audit/export。
+10. 只有点击 Save note 的研究者选定内容才应持久化。

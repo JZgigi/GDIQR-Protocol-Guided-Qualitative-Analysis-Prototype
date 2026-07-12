@@ -31,6 +31,9 @@ interface VoiceGuideResponse {
   canSaveAsGuidanceNote: boolean;
   persisted: boolean;
   provider: string;
+  conversationIntent?: string;
+  model?: string;
+  fallbackReason?: string;
 }
 
 export interface VoiceGuidanceNoteDraft {
@@ -110,6 +113,7 @@ export function VoiceGuideAvatar({
   const [showTextFallback, setShowTextFallback] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [conversationHistory, setConversationHistory] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const visibleState = useMemo<VoiceGuideState>(
@@ -164,6 +168,7 @@ export function VoiceGuideAvatar({
           step,
           spokenQuestionTranscript: normalizedQuestion,
           projectState,
+          conversationHistory,
         }),
       });
       const result = (await request.json().catch(() => ({}))) as
@@ -175,6 +180,11 @@ export function VoiceGuideAvatar({
       }
 
       setResponse(result);
+      setConversationHistory((current) => [
+        ...current,
+        { role: "user" as const, content: normalizedQuestion },
+        { role: "assistant" as const, content: result.spokenAnswer },
+      ].slice(-8));
       speakAnswer(result.spokenAnswer);
     } catch (caught) {
       setError(
@@ -297,8 +307,8 @@ export function VoiceGuideAvatar({
         >
           <header className="voice-guide-popover-header">
             <div>
-              <span className="voice-guide-eyebrow">Methodological reflection</span>
-              <h2>Voice Guide</h2>
+              <span className="voice-guide-eyebrow">Conversational research companion</span>
+              <h2>Mira</h2>
             </div>
             <button
               aria-label="Close Voice Guide"
@@ -321,11 +331,11 @@ export function VoiceGuideAvatar({
           </div>
 
           {state === "listening" && (
-            <p className="voice-guide-thinking">Listening for one methodological question…</p>
+            <p className="voice-guide-thinking">I’m listening…</p>
           )}
           {state === "thinking" && (
             <p className="voice-guide-thinking">
-              Checking the current workflow state and GDI-QR guidance…
+              Thinking about what you asked…
             </p>
           )}
 
@@ -352,7 +362,7 @@ export function VoiceGuideAvatar({
               <input
                 id="voice-guide-fallback-question"
                 onChange={(event) => setFallbackQuestion(event.target.value)}
-                placeholder="Type one methodological question"
+                placeholder="Type what you would like to ask"
                 value={fallbackQuestion}
               />
               <button
@@ -367,13 +377,21 @@ export function VoiceGuideAvatar({
 
           {response && (
             <div className="voice-guide-latest-response">
-              <span className="label">Latest guide summary</span>
-              <ol>
-                {response.captionSummary.slice(0, 4).map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ol>
-              <p className="voice-guide-boundary">{response.boundaryReminder}</p>
+              <span className="label">Mira’s response</span>
+              <p className="voice-guide-full-answer">{response.spokenAnswer}</p>
+              {response.captionSummary.length > 1 && (
+                <ol>
+                  {response.captionSummary.slice(0, 4).map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ol>
+              )}
+              {response.boundaryReminder && (
+                <p className="voice-guide-boundary">{response.boundaryReminder}</p>
+              )}
+              {response.fallbackReason && (
+                <small className="voice-guide-fallback-note">Structured fallback used because Ollama was unavailable: {response.fallbackReason}</small>
+              )}
               <small>
                 {saved
                   ? "Saved as a researcher-selected guidance note."
@@ -384,9 +402,9 @@ export function VoiceGuideAvatar({
 
           {!response && !error && state !== "thinking" && state !== "listening" && (
             <p className="small">
-              Ask about the purpose of this step, what evidence to inspect, or a
-              methodological checklist. The guide will not make the analytic decision
-              for you.
+              You can talk with Mira naturally. She can chat, help with the app, and
+              support your thinking. When the conversation concerns GDI-QR analysis,
+              she uses the methodological guidance and keeps final judgements with you.
             </p>
           )}
 
@@ -451,7 +469,7 @@ export function VoiceGuideAvatar({
           <Bot size={30} />
         </span>
         <span className="voice-guide-avatar-copy">
-          <strong>AI Guide</strong>
+          <strong>Mira</strong>
           <small>{stateLabels[visibleState]}</small>
         </span>
       </button>

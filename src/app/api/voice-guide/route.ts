@@ -8,6 +8,7 @@ import {
   type VoiceGuideSelectedContext,
 } from "@/lib/guidance/voice-guide-context";
 import { buildDeterministicVoiceGuideAnswer } from "@/lib/guidance/voice-guide-response";
+import { generateConversationalVoiceGuideAnswer, type VoiceGuideHistoryItem } from "@/lib/guidance/voice-guide-conversation";
 
 const WORKFLOW_STEPS: WorkflowStep[] = [
   "pre-analysis",
@@ -25,6 +26,7 @@ export async function POST(request: NextRequest) {
     spokenQuestionTranscript?: string;
     selectedContext?: VoiceGuideSelectedContext;
     projectState?: VoiceGuideProjectState;
+    conversationHistory?: VoiceGuideHistoryItem[];
   };
 
   const question = body.spokenQuestionTranscript?.trim() ?? "";
@@ -67,11 +69,23 @@ export async function POST(request: NextRequest) {
     }
 
     const context = buildVoiceGuideContext(state, step, body.selectedContext);
-    const answer = buildDeterministicVoiceGuideAnswer({
-      question,
-      step,
-      context,
-    });
+    let answer;
+    let fallbackReason: string | undefined;
+    try {
+      answer = await generateConversationalVoiceGuideAnswer({
+        question,
+        step,
+        context,
+        history: Array.isArray(body.conversationHistory) ? body.conversationHistory : [],
+      });
+    } catch (error) {
+      fallbackReason = error instanceof Error ? error.message : "Local conversational model unavailable.";
+      answer = {
+        ...buildDeterministicVoiceGuideAnswer({ question, step, context }),
+        conversationIntent: "workflow_guidance",
+        provider: "structured-gdiqr-fallback",
+      };
+    }
 
     return NextResponse.json({
       ...answer,
@@ -81,7 +95,7 @@ export async function POST(request: NextRequest) {
         selectedObjectType: context.selectedObject?.type ?? null,
       },
       persisted: false,
-      provider: "structured-gdiqr-guidance",
+      fallbackReason,
     });
   } catch (error) {
     const message =

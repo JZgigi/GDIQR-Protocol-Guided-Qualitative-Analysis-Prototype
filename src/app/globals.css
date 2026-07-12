@@ -2407,3 +2407,15 @@ button {
 .voice-guide-actions {
   flex-wrap: wrap;
 }
+
+.voice-guide-full-answer {
+  margin: 0 0 0.75rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.voice-guide-fallback-note {
+  display: block;
+  margin-top: 0.65rem;
+  color: var(--muted-foreground, #667085);
+}

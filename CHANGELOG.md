@@ -84,3 +84,13 @@
 - Confirmed that Batch 0–6 require no additional Supabase migration when the five documented migrations are already present.
 - Updated current testing, setup, acceptance, and technical-debt documentation.
 - Archived early audits, plans, backlog, and Batch implementation notes so they are not mistaken for current product status.
+
+## Batch 8 — Conversational Ollama Voice Agent
+
+- Replaced fixed readiness-check responses with question-aware Ollama conversation.
+- Added natural casual conversation, general support, app help, methodology explanation, workflow guidance, and analytic-decision routing.
+- Used the GDI-QR knowledge base as methodological grounding rather than a closed topic list.
+- Added transient short-term conversation context for follow-up questions.
+- Retained deterministic analytic-decision boundaries and output guarding.
+- Added explicit structured fallback reporting when Ollama is unavailable.
+- Introduced the warm conversational assistant persona “Mira”.
