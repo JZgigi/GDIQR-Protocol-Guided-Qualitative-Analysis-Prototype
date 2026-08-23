@@ -70,6 +70,7 @@ assert.match(workspace, /LOCAL_DRAFT_SESSION_KEY/);
 assert.match(workspace, /LOCAL_MU_JOB_SESSION_KEY/);
 assert.match(workspace, /Recovered the local transcript draft/);
 assert.match(workspace, /pollMeaningUnitJob/);
+assert.match(workspace, /generateMeaningUnits\(undefined, false\)/);
 assert.match(meaningUnitJobs, /startMeaningUnitJob/);
 assert.match(meaningUnitJobs, /completeMeaningUnitJob/);
 assert.match(meaningUnitJobs, /cancelMeaningUnitJob/);

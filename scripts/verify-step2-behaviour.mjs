@@ -163,6 +163,20 @@ assert.ok(
   preprocessing.isOpeningBackgroundTurn(participantTurns[0]),
   "Opening participant background must remain reviewable rather than being silently excluded.",
 );
+assert.equal(
+  provider.reconstructAnchoredParticipantExcerpt(
+    "I'm uncertain,",
+    "peer support helped",
+    [
+      {
+        content: "I’m uncertain — but peer support helped.",
+        turnIndex: 0,
+      },
+    ],
+  ),
+  "I’m uncertain — but peer support helped",
+  "Anchor recovery may tolerate quote, whitespace, and punctuation differences, but must reconstruct the verbatim excerpt from participant source text.",
+);
 
 const windows = preprocessing.buildSemanticAnalysisWindows(turns, 6000);
 assert.equal(
@@ -241,6 +255,11 @@ assert.match(
   providerSource,
   /neither valid meaning units nor an explicit, traceable no-substantive-meaning decision/,
   "An ambiguous empty response must still fail safely after one clarification attempt.",
+);
+assert.match(
+  providerSource,
+  /requesting one focused anchor correction/,
+  "Invalid model anchors must receive a focused per-window correction before the whole run fails.",
 );
 
 console.log(

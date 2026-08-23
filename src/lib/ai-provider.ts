@@ -536,20 +536,18 @@ async function generateMeaningUnitsForWindowWithSafeguards({
           noSubstantiveSourceTurnIds: explicitNoMeaning.sourceTurnIds,
         };
       }
-      if (result.returnedCandidateCount > 0) {
-        throw new Error(
-          "Ollama returned draft candidates, but none had valid participant source turns and exact boundary anchors.",
-        );
-      }
-
       addRunEvent(
         input.runId,
-        `Semantic window ${windowIndex + 1} returned no units without a valid no-substantive decision; requesting one focused clarification`,
+        result.returnedCandidateCount > 0
+          ? `Semantic window ${windowIndex + 1} returned ${result.returnedCandidateCount} draft candidate${result.returnedCandidateCount === 1 ? "" : "s"} whose participant TURN ids or boundary anchors could not be mapped back to the source; requesting one focused anchor correction`
+          : `Semantic window ${windowIndex + 1} returned no units without a valid no-substantive decision; requesting one focused clarification`,
       );
       result = await generateMeaningUnitsForWindow({
         input,
         revisionDirective:
-          "The previous response returned no valid units. Reassess the full window. If it contains any substantive or uncertain participant meaning, return correctly anchored units. Only if every participant turn is clearly procedural, conversational, or non-analytic may you return analysisDecision \"no_substantive_meaning\" with a non-empty decisionReason and every participant TURN id in noSubstantiveSourceTurnIds.",
+          result.returnedCandidateCount > 0
+            ? "The previous draft candidates could not be mapped back to the source. Return the same meaning-based analysis with corrected traceability. For every unit: copy sourceTurnIds exactly from the PARTICIPANT TURN identifiers shown in this window; copy short startQuote and endQuote phrases verbatim from those participant turns; do not paraphrase anchors, add ellipses, include speaker labels, or use facilitator wording. Both anchors must occur in source order inside the listed participant turns. If the window genuinely has no substantive meaning, use the explicit no_substantive_meaning decision instead of inventing anchors."
+            : "The previous response returned no valid units. Reassess the full window. If it contains any substantive or uncertain participant meaning, return correctly anchored units. Only if every participant turn is clearly procedural, conversational, or non-analytic may you return analysisDecision \"no_substantive_meaning\" with a non-empty decisionReason and every participant TURN id in noSubstantiveSourceTurnIds.",
         startingNumber,
         window,
         windowIndex,
@@ -572,7 +570,7 @@ async function generateMeaningUnitsForWindowWithSafeguards({
         }
         if (result.returnedCandidateCount > 0) {
           throw new Error(
-            "Ollama returned draft candidates after clarification, but none had valid participant source turns and exact boundary anchors.",
+            "Ollama returned draft candidates after focused traceability correction, but none could be mapped safely to participant source turns and boundary anchors.",
           );
         }
         throw new Error(
@@ -1928,9 +1926,11 @@ function normalizeSemanticMeaningUnits(
             turn.content.includes(rawExcerpt) || rawExcerpt.includes(turn.content),
         );
       }
-      if (sourceTurns.length === 0 && startQuote) {
-        sourceTurns = participantTurns.filter((turn) =>
-          containsQuote(turn.content, startQuote),
+      if (sourceTurns.length === 0 && (startQuote || endQuote)) {
+        sourceTurns = participantTurns.filter(
+          (turn) =>
+            (startQuote && containsQuote(turn.content, startQuote)) ||
+            (endQuote && containsQuote(turn.content, endQuote)),
         );
       }
       if (sourceTurns.length === 0) {
@@ -2016,10 +2016,10 @@ function normalizeSemanticMeaningUnits(
 }
 
 function containsQuote(source: string, quote: string) {
-  return source.toLocaleLowerCase().includes(quote.toLocaleLowerCase());
+  return Boolean(findParticipantQuote(source, quote));
 }
 
-function reconstructAnchoredParticipantExcerpt(
+export function reconstructAnchoredParticipantExcerpt(
   startQuote: string,
   endQuote: string,
   sourceTurns: ClassifiedTranscriptTurn[],
@@ -2031,21 +2031,109 @@ function reconstructAnchoredParticipantExcerpt(
     (left, right) => left.turnIndex - right.turnIndex,
   );
   const participantText = orderedTurns.map((turn) => turn.content).join("\n");
-  const lowerText = participantText.toLocaleLowerCase();
-  const startIndex = lowerText.indexOf(startQuote.toLocaleLowerCase());
-  if (startIndex < 0) {
+  const startMatch = findParticipantQuote(participantText, startQuote);
+  if (!startMatch) {
     return "";
   }
-  const endIndex = lowerText.indexOf(
-    endQuote.toLocaleLowerCase(),
-    startIndex,
+  const endMatch = findParticipantQuote(
+    participantText,
+    endQuote,
+    startMatch.start,
   );
-  if (endIndex < startIndex) {
+  if (!endMatch || endMatch.end < startMatch.end) {
     return "";
   }
-  return participantText
-    .slice(startIndex, endIndex + endQuote.length)
-    .trim();
+  return participantText.slice(startMatch.start, endMatch.end).trim();
+}
+
+function findParticipantQuote(
+  source: string,
+  quote: string,
+  fromSourceIndex = 0,
+) {
+  if (!source || !quote) {
+    return undefined;
+  }
+  const directStart = source
+    .toLocaleLowerCase()
+    .indexOf(quote.toLocaleLowerCase(), fromSourceIndex);
+  if (directStart >= 0) {
+    return { end: directStart + quote.length, start: directStart };
+  }
+
+  const searchableSource = buildAnchorSearchText(source);
+  const searchableQuote = buildAnchorSearchText(quote).text.trim();
+  if (searchableQuote.replace(/\s/gu, "").length < 3) {
+    return undefined;
+  }
+  const normalizedFrom = Math.max(
+    0,
+    searchableSource.ends.findIndex((end) => end > fromSourceIndex),
+  );
+  let matchIndex = searchableSource.text.indexOf(
+    searchableQuote,
+    normalizedFrom,
+  );
+  while (matchIndex >= 0) {
+    const matchEnd = matchIndex + searchableQuote.length;
+    const beginsAtWordBoundary =
+      matchIndex === 0 || searchableSource.text[matchIndex - 1] === " ";
+    const endsAtWordBoundary =
+      matchEnd === searchableSource.text.length ||
+      searchableSource.text[matchEnd] === " ";
+    if (beginsAtWordBoundary && endsAtWordBoundary) {
+      return {
+        end: searchableSource.ends[matchEnd - 1],
+        start: searchableSource.starts[matchIndex],
+      };
+    }
+    matchIndex = searchableSource.text.indexOf(
+      searchableQuote,
+      matchIndex + 1,
+    );
+  }
+  return undefined;
+}
+
+function buildAnchorSearchText(value: string) {
+  let text = "";
+  const starts: number[] = [];
+  const ends: number[] = [];
+  for (let index = 0; index < value.length; ) {
+    const codePoint = value.codePointAt(index);
+    if (codePoint === undefined) {
+      break;
+    }
+    const character = String.fromCodePoint(codePoint);
+    const characterEnd = index + character.length;
+    const folded = character
+      .normalize("NFKD")
+      .toLocaleLowerCase()
+      .replace(/\p{M}/gu, "");
+    for (const foldedCharacter of folded) {
+      if (/^[\p{L}\p{N}]$/u.test(foldedCharacter)) {
+        text += foldedCharacter;
+        starts.push(index);
+        ends.push(characterEnd);
+        continue;
+      }
+      if (/^[’‘'"“”]$/u.test(foldedCharacter)) {
+        continue;
+      }
+      if (text && !text.endsWith(" ")) {
+        text += " ";
+        starts.push(index);
+        ends.push(characterEnd);
+      }
+    }
+    index = characterEnd;
+  }
+  if (text.endsWith(" ")) {
+    text = text.slice(0, -1);
+    starts.pop();
+    ends.pop();
+  }
+  return { ends, starts, text };
 }
 
 function resolveRequestedSourceTurn(

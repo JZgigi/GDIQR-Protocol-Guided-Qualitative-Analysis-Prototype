@@ -745,7 +745,10 @@ export function GdiqrWorkspace({
           error instanceof Error
             ? error.message
             : "Meaning-unit background job failed.";
-        setRecoverableWorkflowError(message);
+        setRecoverableWorkflowError(
+          message,
+          () => void generateMeaningUnits(undefined, false),
+        );
         setMeaningUnitGenerationStage(message);
         setIsGeneratingMeaningUnits(false);
         setGenerationProgress(null);
