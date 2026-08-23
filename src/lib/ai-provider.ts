@@ -448,8 +448,15 @@ ${window.promptText}`,
     ],
     {
       maxTokens: Number(
-        process.env.OLLAMA_MU_BOUNDARY_MAX_TOKENS ?? 1200,
+        process.env.OLLAMA_MU_BOUNDARY_MAX_TOKENS ?? 2400,
       ),
+      onJsonRetry: (stage, message) =>
+        addRunEvent(
+          input.runId,
+          stage === "repair"
+            ? `Semantic window ${windowIndex + 1} returned malformed JSON; attempting a lossless JSON repair. ${message}`
+            : `Semantic window ${windowIndex + 1} repair output was still invalid; regenerating this window once as compact JSON. ${message}`,
+        ),
       signal: input.abortSignal,
       temperature: 0,
       timeoutMs: getMeaningUnitChunkTimeoutMs(),
@@ -1373,6 +1380,10 @@ async function callOllamaJson<T>(
   messages: OllamaMessage[],
   options: {
     maxTokens?: number;
+    onJsonRetry?: (
+      stage: "repair" | "regenerate",
+      message: string,
+    ) => void;
     signal?: AbortSignal;
     temperature?: number;
     timeoutMs?: number;
@@ -1388,9 +1399,16 @@ async function callOllamaJson<T>(
     options.temperature,
   );
 
+  let initialParseError: unknown;
   try {
     return parseJsonObject<T>(content);
-  } catch {
+  } catch (error) {
+    initialParseError = error;
+    options.onJsonRetry?.(
+      "repair",
+      error instanceof Error ? error.message : "Invalid JSON output.",
+    );
+    const retryMaxTokens = getJsonRetryMaxTokens(maxTokens);
     const repaired = await callOllamaContent(
       [
         systemMessage(),
@@ -1403,13 +1421,63 @@ ${content}`,
         },
       ],
       Math.min(timeoutMs, 120000),
-      Math.min(maxTokens, 1600),
+      retryMaxTokens,
       options.signal,
-      options.temperature,
+      0,
     );
 
-    return parseJsonObject<T>(repaired);
+    try {
+      return parseJsonObject<T>(repaired);
+    } catch (repairError) {
+      options.onJsonRetry?.(
+        "regenerate",
+        repairError instanceof Error
+          ? repairError.message
+          : "Repaired output was still invalid JSON.",
+      );
+      const regenerated = await callOllamaContent(
+        [
+          ...messages,
+          {
+            role: "user",
+            content:
+              "Your previous response could not be parsed as JSON. Regenerate the requested result once as compact valid JSON with no markdown, comments, or trailing text. Keep summaries concise, preserve the requested evidence and fields, and close every array and object. Do not explain the correction.",
+          },
+        ],
+        timeoutMs,
+        retryMaxTokens,
+        options.signal,
+        0,
+      );
+
+      try {
+        return parseJsonObject<T>(regenerated);
+      } catch (regenerationError) {
+        const lastMessage =
+          regenerationError instanceof Error
+            ? regenerationError.message
+            : "Regenerated output was still invalid JSON.";
+        const firstMessage =
+          initialParseError instanceof Error
+            ? initialParseError.message
+            : "Initial output was invalid JSON.";
+        throw new Error(
+          `Ollama returned malformed JSON after local repair and two controlled format retries. Initial parse: ${firstMessage} Final parse: ${lastMessage}`,
+        );
+      }
+    }
   }
+}
+
+function getJsonRetryMaxTokens(maxTokens: number) {
+  const configured = Number(
+    process.env.OLLAMA_JSON_REPAIR_MAX_TOKENS ?? 4096,
+  );
+  const upperBound =
+    Number.isFinite(configured) && configured >= maxTokens
+      ? configured
+      : Math.max(maxTokens, 4096);
+  return Math.min(Math.max(maxTokens * 2, 2400), upperBound);
 }
 
 async function callOllamaContent(
@@ -1527,7 +1595,7 @@ function throwIfAborted(signal?: AbortSignal) {
   }
 }
 
-function parseJsonObject<T>(content: string): T {
+export function parseJsonObject<T>(content: string): T {
   const stripped = content
     .trim()
     .replace(/^```json\s*/i, "")
@@ -1540,7 +1608,117 @@ function parseJsonObject<T>(content: string): T {
     throw new Error("Ollama response did not contain a JSON object.");
   }
 
-  return JSON.parse(stripped.slice(start, end + 1)) as T;
+  const candidate = stripped.slice(start, end + 1);
+  try {
+    return JSON.parse(candidate) as T;
+  } catch (error) {
+    const locallyRepaired = repairCommonJsonPunctuation(candidate);
+    if (locallyRepaired !== candidate) {
+      try {
+        return JSON.parse(locallyRepaired) as T;
+      } catch {
+        // Preserve the original parse error for clearer diagnostics and retries.
+      }
+    }
+    throw error;
+  }
+}
+
+function repairCommonJsonPunctuation(candidate: string) {
+  const output: string[] = [];
+  const stack: string[] = [];
+  let escaped = false;
+  let inString = false;
+  let lastSignificant = "";
+
+  const nextSignificantCharacter = (fromIndex: number) => {
+    for (let index = fromIndex; index < candidate.length; index += 1) {
+      if (!/\s/u.test(candidate[index] ?? "")) {
+        return candidate[index] ?? "";
+      }
+    }
+    return "";
+  };
+
+  for (let index = 0; index < candidate.length; index += 1) {
+    const character = candidate[index] ?? "";
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        output.push(character);
+        continue;
+      }
+      if (character === "\\") {
+        escaped = true;
+        output.push(character);
+        continue;
+      }
+      if (character === '"') {
+        inString = false;
+        lastSignificant = '"';
+        output.push(character);
+        continue;
+      }
+      if (character === "\n" || character === "\r") {
+        output.push(character === "\n" ? "\\n" : "\\r");
+        continue;
+      }
+      output.push(character);
+      continue;
+    }
+
+    if (character === '"') {
+      const container = stack.at(-1);
+      if (
+        (container === "{" && ["}", "]", '"'].includes(lastSignificant)) ||
+        (container === "[" && ["}", "]", '"'].includes(lastSignificant))
+      ) {
+        output.push(",");
+      }
+      inString = true;
+      lastSignificant = '"';
+      output.push(character);
+      continue;
+    }
+
+    if (character === ",") {
+      const next = nextSignificantCharacter(index + 1);
+      if (next === "]" || next === "}") {
+        continue;
+      }
+      lastSignificant = character;
+      output.push(character);
+      continue;
+    }
+
+    if (character === "{" || character === "[") {
+      const container = stack.at(-1);
+      if (
+        container === "[" &&
+        (lastSignificant === "}" || lastSignificant === "]")
+      ) {
+        output.push(",");
+      }
+      stack.push(character);
+      lastSignificant = character;
+      output.push(character);
+      continue;
+    }
+
+    if (character === "}" || character === "]") {
+      stack.pop();
+      lastSignificant = character;
+      output.push(character);
+      continue;
+    }
+
+    if (!/\s/u.test(character)) {
+      lastSignificant = character;
+    }
+    output.push(character);
+  }
+
+  return output.join("");
 }
 
 function getOllamaTimeoutMs() {

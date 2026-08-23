@@ -99,6 +99,28 @@ const noSubstantiveWindow = {
   participantTurns: [{ id: "TURN-0002" }, { id: "TURN-0004" }],
 };
 assert.deepEqual(
+  provider.parseJsonObject(
+    '{"units":[{"number":1,"summary":"first"}\n{"number":2,"summary":"second"}],}',
+  ),
+  {
+    units: [
+      { number: 1, summary: "first" },
+      { number: 2, summary: "second" },
+    ],
+  },
+  "A missing comma between array objects and a trailing comma must be repaired without changing field values.",
+);
+assert.deepEqual(
+  provider.parseJsonObject(
+    '{"decisionReason":"Keep the literal }{ sequence inside this string.","units":[]}',
+  ),
+  {
+    decisionReason: "Keep the literal }{ sequence inside this string.",
+    units: [],
+  },
+  "JSON punctuation repair must never alter string content.",
+);
+assert.deepEqual(
   provider.validateNoSubstantiveWindowDecision(
     {
       analysisDecision: "no_substantive_meaning",
