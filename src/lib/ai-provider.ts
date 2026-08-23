@@ -59,6 +59,19 @@ interface SemanticMeaningUnitCandidate extends Partial<MeaningUnit> {
   source_turn_ids?: string[];
 }
 
+type SemanticWindowDecision =
+  | "meaning_units"
+  | "no_substantive_meaning";
+
+interface SemanticWindowResult {
+  analysisDecision?: SemanticWindowDecision;
+  decisionReason: string;
+  meaningUnits: MeaningUnit[];
+  noSubstantiveSourceTurnIds: string[];
+  returnedCandidateCount: number;
+  uncertainties: Array<{ unit: number; note: string }>;
+}
+
 interface MeaningUnitInput {
   abortSignal?: AbortSignal;
   caseId?: string;
@@ -190,6 +203,7 @@ export async function generateMeaningUnits(
   const initialNumber = input.startingNumber ?? 1;
   const allUnits: MeaningUnit[] = [];
   const allUncertainties: Array<{ unit: number; note: string }> = [];
+  const noSubstantiveSourceTurnIds = new Set<string>();
 
   addRunEvent(
     input.runId,
@@ -215,6 +229,9 @@ export async function generateMeaningUnits(
     );
     allUnits.push(...result.meaningUnits);
     allUncertainties.push(...result.uncertainties);
+    result.noSubstantiveSourceTurnIds.forEach((turnId) =>
+      noSubstantiveSourceTurnIds.add(turnId),
+    );
   }
 
   const reviewedUnits = addCrossUnitBoundaryWarnings(allUnits, turns);
@@ -223,7 +240,11 @@ export async function generateMeaningUnits(
     turns,
     initialNumber,
   );
-  const counts = countGenerationRecords(turns, meaningUnits);
+  const counts = countGenerationRecords(
+    turns,
+    meaningUnits,
+    noSubstantiveSourceTurnIds,
+  );
   console.info("[gdiqr:mu] generation finished", {
     counts,
     fallbackTriggered: false,
@@ -339,10 +360,16 @@ async function generateMeaningUnitsForWindow({
   windowIndex: number;
 }) {
   const result = await callOllamaJson<{
+    analysisDecision?: SemanticWindowDecision;
+    analysis_decision?: SemanticWindowDecision;
     caseId?: string;
+    decisionReason?: string;
+    decision_reason?: string;
     segmentId?: string;
     meaningUnits?: SemanticMeaningUnitCandidate[];
     meaning_units?: SemanticMeaningUnitCandidate[];
+    noSubstantiveSourceTurnIds?: string[];
+    no_substantive_source_turn_ids?: string[];
     units?: SemanticMeaningUnitCandidate[];
     uncertainties?: Array<{ unit?: number; note?: string }>;
   }>(
@@ -360,8 +387,13 @@ Task-specific rules:
 - Never combine different participants' speech in one MU. A participant may be reconnected across a short facilitator clarification when the later turn continues the same meaning.
 - Preserve participant meaning closely and privilege participant wording over facilitator paraphrases or leading questions.
 - Keep each summary concise, descriptive, data-near, and in the transcript language. Condense the central participant meaning without copying the excerpt or adding theory, diagnosis, motivation, unsupported causality, or category-level interpretation.
-- Evaluate relevance to the research question. Mark clearly unrelated participant material "non_analytic". Mark genuinely uncertain relevance "uncertain" so a researcher can decide; do not silently omit it.
-- Classification is assistance only. Return, delineate, and summarise every participant span, including opening/icebreaker and apparently non-analytic material; the researcher alone decides whether to exclude it.
+- Evaluate relevance against the overall research question, not merely the immediately preceding facilitator question. Mark genuinely uncertain relevance "uncertain" so a researcher can decide; do not silently omit uncertain material.
+- A participant turn is a source container, not an automatic MU. A window may legitimately produce no substantive MU when all of its participant material is purely procedural, conversational, clearly unrelated to the research purpose, or otherwise non-analytic.
+- If the entire window has no substantive meaning, return analysisDecision "no_substantive_meaning", an empty units array, a brief decisionReason, and noSubstantiveSourceTurnIds containing every participant TURN identifier in the window. This is a provisional AI classification, not a researcher exclusion.
+- Never use an empty units array for uncertainty, output failure, or difficulty choosing boundaries. If relevance is uncertain, return a reviewable unit classified "uncertain".
+- Otherwise return analysisDecision "meaning_units" and delineate every substantive or uncertain participant meaning. Opening/icebreaker and background material remains eligible and reviewable when it carries a substantive or uncertain meaning.
+- If a window mixes substantive or uncertain meanings with a clearly non-analytic participant span, return that span as a "non_analytic" review record so it is not silently lost or categorised.
+- Classification is assistance only. Every returned classification and every no-substantive decision remains provisional until researcher review.
 - Use conservative, meaning-preserving delineation. Sentence punctuation and speaker turns are not MU boundaries. Treat each participant turn only as a source container, never as a default MU.
 - Split at a substantial shift in experience, evaluation, concern, proposal, reason, time point, or perspective when one concise summary cannot accurately cover the full span.
 - Keep connected examples, explanations, reasons, and consequences together when they elaborate the same meaning.
@@ -383,6 +415,9 @@ Task-specific rules:
 {
   "caseId": "${input.caseId ?? "CASE-001"}",
   "segmentId": "${sourceReferenceForMeaningUnit(input.segmentId, windowIndex)}",
+  "analysisDecision": "meaning_units",
+  "decisionReason": "brief reason for the window-level decision",
+  "noSubstantiveSourceTurnIds": [],
   "units": [
     {
       "speaker": "Participant F1",
@@ -423,7 +458,17 @@ ${window.promptText}`,
 
   const returnedUnits =
     result.meaningUnits ?? result.meaning_units ?? result.units ?? [];
+  const analysisDecision =
+    result.analysisDecision ?? result.analysis_decision;
+  const requestedNoSubstantiveTurnIds =
+    result.noSubstantiveSourceTurnIds ??
+    result.no_substantive_source_turn_ids ??
+    [];
   return {
+    analysisDecision,
+    decisionReason: cleanText(
+      result.decisionReason ?? result.decision_reason,
+    ),
     meaningUnits: normalizeSemanticMeaningUnits(
       returnedUnits,
       startingNumber,
@@ -436,6 +481,14 @@ ${window.promptText}`,
       },
       window.turns,
     ),
+    noSubstantiveSourceTurnIds: Array.isArray(
+      requestedNoSubstantiveTurnIds,
+    )
+      ? requestedNoSubstantiveTurnIds.map(cleanText).filter(Boolean)
+      : [],
+    returnedCandidateCount: Array.isArray(returnedUnits)
+      ? returnedUnits.length
+      : 0,
     uncertainties: (result.uncertainties ?? [])
       .filter((item) => item.unit && item.note)
       .map((item) => ({ unit: item.unit ?? 0, note: item.note ?? "" })),
@@ -454,14 +507,71 @@ async function generateMeaningUnitsForWindowWithSafeguards({
   windowIndex: number;
 }) {
   try {
-    const result = await generateMeaningUnitsForWindow({
+    let result = await generateMeaningUnitsForWindow({
       input,
       startingNumber,
       window,
       windowIndex,
     });
     if (result.meaningUnits.length === 0) {
-      throw new Error("Ollama returned no draft meaning units.");
+      const explicitNoMeaning = validateNoSubstantiveWindowDecision(
+        result,
+        window,
+      );
+      if (explicitNoMeaning.valid) {
+        addRunEvent(
+          input.runId,
+          `Semantic window ${windowIndex + 1} was provisionally assessed as containing no substantive participant meaning (${explicitNoMeaning.sourceTurnIds.length} participant turn${explicitNoMeaning.sourceTurnIds.length === 1 ? "" : "s"}). Reason: ${result.decisionReason}`,
+        );
+        return {
+          ...result,
+          fallbackUsed: false,
+          noSubstantiveSourceTurnIds: explicitNoMeaning.sourceTurnIds,
+        };
+      }
+      if (result.returnedCandidateCount > 0) {
+        throw new Error(
+          "Ollama returned draft candidates, but none had valid participant source turns and exact boundary anchors.",
+        );
+      }
+
+      addRunEvent(
+        input.runId,
+        `Semantic window ${windowIndex + 1} returned no units without a valid no-substantive decision; requesting one focused clarification`,
+      );
+      result = await generateMeaningUnitsForWindow({
+        input,
+        revisionDirective:
+          "The previous response returned no valid units. Reassess the full window. If it contains any substantive or uncertain participant meaning, return correctly anchored units. Only if every participant turn is clearly procedural, conversational, or non-analytic may you return analysisDecision \"no_substantive_meaning\" with a non-empty decisionReason and every participant TURN id in noSubstantiveSourceTurnIds.",
+        startingNumber,
+        window,
+        windowIndex,
+      });
+      if (result.meaningUnits.length === 0) {
+        const clarifiedNoMeaning = validateNoSubstantiveWindowDecision(
+          result,
+          window,
+        );
+        if (clarifiedNoMeaning.valid) {
+          addRunEvent(
+            input.runId,
+            `Semantic window ${windowIndex + 1} was provisionally assessed as containing no substantive participant meaning after clarification (${clarifiedNoMeaning.sourceTurnIds.length} participant turn${clarifiedNoMeaning.sourceTurnIds.length === 1 ? "" : "s"}). Reason: ${result.decisionReason}`,
+          );
+          return {
+            ...result,
+            fallbackUsed: false,
+            noSubstantiveSourceTurnIds: clarifiedNoMeaning.sourceTurnIds,
+          };
+        }
+        if (result.returnedCandidateCount > 0) {
+          throw new Error(
+            "Ollama returned draft candidates after clarification, but none had valid participant source turns and exact boundary anchors.",
+          );
+        }
+        throw new Error(
+          "Ollama returned neither valid meaning units nor an explicit, traceable no-substantive-meaning decision after clarification.",
+        );
+      }
     }
     const initialBoundaryConcerns = semanticBoundaryConcerns(
       result.meaningUnits,
@@ -532,6 +642,27 @@ async function generateMeaningUnitsForWindowWithSafeguards({
       `Semantic meaning-unit delineation failed for window ${windowIndex + 1}. Existing meaning units were left unchanged; retry the AI generation instead of treating speaker- or length-based spans as MUs. ${message}`,
     );
   }
+}
+
+export function validateNoSubstantiveWindowDecision(
+  result: SemanticWindowResult,
+  window: SemanticAnalysisWindow,
+) {
+  const participantTurnIds = window.participantTurns.map((turn) => turn.id);
+  const requestedIds = new Set(
+    result.noSubstantiveSourceTurnIds.map((id) => id.trim().toUpperCase()),
+  );
+  const sourceTurnIds = participantTurnIds.filter((id) =>
+    requestedIds.has(id.toUpperCase()),
+  );
+  const valid = Boolean(
+    result.analysisDecision === "no_substantive_meaning" &&
+      result.decisionReason.trim() &&
+      participantTurnIds.length > 0 &&
+      sourceTurnIds.length === participantTurnIds.length &&
+      result.returnedCandidateCount === 0,
+  );
+  return { sourceTurnIds, valid };
 }
 
 interface SemanticBoundaryConcern {
@@ -1825,6 +1956,7 @@ function orderAndNumberAnalysisRecords(
 function countGenerationRecords(
   turns: ClassifiedTranscriptTurn[],
   records: MeaningUnit[],
+  noSubstantiveSourceTurnIds: ReadonlySet<string> = new Set<string>(),
 ) {
   return {
     participantTurns: turns.filter((turn) => turn.role === "participant").length,
@@ -1839,7 +1971,10 @@ function countGenerationRecords(
       records.filter((unit) => unit.classification === "non_analytic").length +
       turns.filter(
         (turn) =>
-          turn.role !== "participant" && turn.classification === "non_analytic",
+          (turn.role !== "participant" &&
+            turn.classification === "non_analytic") ||
+          (turn.role === "participant" &&
+            noSubstantiveSourceTurnIds.has(turn.id)),
       ).length,
     uncertainSegments:
       records.filter((unit) => unit.classification === "uncertain").length +

@@ -50,6 +50,9 @@ const speakers = loadTypeScriptModule(
 const preprocessing = loadTypeScriptModule(
   path.join(root, "src", "lib", "meaning-unit-preprocessing.ts"),
 );
+const provider = loadTypeScriptModule(
+  path.join(root, "src", "lib", "ai-provider.ts"),
+);
 
 assert.equal(
   speakers.normalizeTranscriptSpeakerRole("Moderator"),
@@ -90,6 +93,40 @@ assert.equal(contextTurns.length, 2);
 assert.ok(
   contextTurns.every((turn) => turn.classification === "context_only"),
   "Moderator/facilitator turns must be classified only as context.",
+);
+
+const noSubstantiveWindow = {
+  participantTurns: [{ id: "TURN-0002" }, { id: "TURN-0004" }],
+};
+assert.deepEqual(
+  provider.validateNoSubstantiveWindowDecision(
+    {
+      analysisDecision: "no_substantive_meaning",
+      decisionReason: "The participant turns are procedural acknowledgements.",
+      meaningUnits: [],
+      noSubstantiveSourceTurnIds: ["TURN-0002", "TURN-0004"],
+      returnedCandidateCount: 0,
+      uncertainties: [],
+    },
+    noSubstantiveWindow,
+  ),
+  { sourceTurnIds: ["TURN-0002", "TURN-0004"], valid: true },
+  "An explicit, reasoned zero-MU decision covering every participant turn must be accepted.",
+);
+assert.equal(
+  provider.validateNoSubstantiveWindowDecision(
+    {
+      analysisDecision: "no_substantive_meaning",
+      decisionReason: "",
+      meaningUnits: [],
+      noSubstantiveSourceTurnIds: ["TURN-0002"],
+      returnedCandidateCount: 0,
+      uncertainties: [],
+    },
+    noSubstantiveWindow,
+  ).valid,
+  false,
+  "An empty or incomplete zero-MU decision must not be treated as valid model output.",
 );
 
 const participantTurns = turns.filter((turn) => turn.role === "participant");
@@ -158,6 +195,16 @@ assert.match(
   providerSource,
   /No fallback categories were created or saved/,
   "Category generation failure must preserve the evidence instead of creating fake categories.",
+);
+assert.match(
+  providerSource,
+  /analysisDecision "no_substantive_meaning"/,
+  "The model must explicitly distinguish a valid zero-MU decision from an output failure.",
+);
+assert.match(
+  providerSource,
+  /neither valid meaning units nor an explicit, traceable no-substantive-meaning decision/,
+  "An ambiguous empty response must still fail safely after one clarification attempt.",
 );
 
 console.log(

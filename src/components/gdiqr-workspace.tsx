@@ -33,6 +33,7 @@ import type {
   IntegrityReviewItemStatus,
   IntegrationRelationshipLabel,
   MeaningUnit,
+  MeaningUnitGenerationCounts,
   Project,
   ProjectDataSource,
   PreAnalysisNotes,
@@ -480,6 +481,8 @@ export function GdiqrWorkspace({
     useState("");
   const [meaningUnitGenerationMethod, setMeaningUnitGenerationMethod] =
     useState<"ai_semantic" | "mixed" | "rule_based_fallback" | "">("");
+  const [lastMeaningUnitGenerationCounts, setLastMeaningUnitGenerationCounts] =
+    useState<MeaningUnitGenerationCounts | null>(null);
   const [isRunningCategories, setIsRunningCategories] = useState(false);
   const [categoryGenerationStage, setCategoryGenerationStage] = useState("");
   const [isRunningReviewer, setIsRunningReviewer] = useState(false);
@@ -531,6 +534,10 @@ export function GdiqrWorkspace({
   const transcriptTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const segmentTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const meaningUnitAbortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    setLastMeaningUnitGenerationCounts(null);
+  }, [editableTranscript]);
 
   function setRecoverableWorkflowError(message: string, retry?: () => void) {
     retryActionRef.current = retry ?? null;
@@ -882,7 +889,7 @@ export function GdiqrWorkspace({
     ),
   );
   const generationButtonLabel = "Generate draft meaning units";
-  const generationCounts = useMemo(
+  const derivedGenerationCounts = useMemo(
     () => ({
       participantTurns: new Set(
         currentMeaningUnits
@@ -909,6 +916,8 @@ export function GdiqrWorkspace({
     }),
     [currentMeaningUnits],
   );
+  const generationCounts =
+    lastMeaningUnitGenerationCounts ?? derivedGenerationCounts;
   const acceptedMeaningUnitNumberKey = confirmedMeaningUnits
     .map((unit) => unit.number)
     .join(",");
@@ -2584,9 +2593,12 @@ export function GdiqrWorkspace({
         targetType: "meaning_unit",
       });
       setMeaningUnitGenerationMethod(runMethod);
+      setLastMeaningUnitGenerationCounts(result.counts ?? null);
       setMeaningUnitGenerationStage(
         runMethod === "ai_semantic"
-          ? "AI-assisted semantic draft generated. Review every boundary, classification, context link, and summary before accepting."
+          ? (result.counts?.substantiveMeaningUnits ?? 0) === 0
+            ? "AI completed semantic review and explicitly identified no substantive meaning units. Review the transcript and add a manual MU if you disagree."
+            : "AI-assisted semantic draft generated. Review every boundary, classification, context link, and summary before accepting."
           : runMethod === "mixed"
             ? `AI semantic MUs were generated for successful windows; ${result.counts?.uncertainSegments ?? 0} provisional structural spans still require semantic delineation and summaries.`
             : "Provisional structural spans generated. Semantic MU delineation and summaries have not been generated and require researcher review.",
@@ -2633,7 +2645,7 @@ export function GdiqrWorkspace({
     const controller = new AbortController();
     const slowNoticeTimer = window.setTimeout(() => {
       setMeaningUnitGenerationStage(
-        "Still working through semantic windows. Any window that cannot be completed will remain a clearly segregated provisional structural span for researcher review.",
+        "Still working through semantic windows. A window with no substantive meaning must be explicitly identified and justified; invalid output will be retried once without creating structural fallback MUs.",
       );
     }, 30000);
     meaningUnitAbortControllerRef.current = controller;
@@ -2646,7 +2658,7 @@ export function GdiqrWorkspace({
     setMeaningUnitGenerationStage(
       forceRuleBased
         ? "Generating provisional structural spans for manual semantic review."
-        : "Parsing speaker roles and context before AI-assisted semantic delineation. Failed windows will be segregated rather than replacing successful semantic MUs.",
+        : "Parsing speaker roles and context before AI-assisted semantic delineation. Valid no-substantive windows will be recorded and skipped; invalid output will be retried once without creating structural fallback MUs.",
     );
 
     try {
@@ -2662,7 +2674,9 @@ export function GdiqrWorkspace({
       if (!controller.signal.aborted) {
         setApiStatus(
           result.generationMethod === "ai_semantic"
-            ? "AI-assisted semantic draft generated. Facilitator questions are retained as context, while participant meanings remain provisional until researcher acceptance."
+            ? (result.counts?.substantiveMeaningUnits ?? 0) === 0
+              ? "AI completed semantic review and provisionally identified no substantive meaning units. The researcher can review the transcript and add a manual MU."
+              : "AI-assisted semantic draft generated. Facilitator questions are retained as context, while participant meanings remain provisional until researcher acceptance."
             : result.generationMethod === "mixed"
               ? "AI semantic MUs were generated where Ollama succeeded. Provisional structural spans are segregated and require researcher delineation before categorisation."
               : "Provisional structural spans generated. Context is retained separately; semantic MU delineation and summaries have not been completed.",
@@ -6741,7 +6755,13 @@ export function GdiqrWorkspace({
                       </p>
                     </div>
                     {currentMeaningUnits.length === 0 && (
-                      <EmptyState text="No draft meaning units yet. Confirm the transcript, then generate draft MUs for researcher review." />
+                      <EmptyState
+                        text={
+                          meaningUnitGenerationMethod === "ai_semantic"
+                            ? "AI completed semantic review and proposed no substantive meaning units. Review the participant account and add a manual MU if you disagree."
+                            : "No draft meaning units yet. Confirm the transcript, then generate draft MUs for researcher review."
+                        }
+                      />
                     )}
                   </section>
 

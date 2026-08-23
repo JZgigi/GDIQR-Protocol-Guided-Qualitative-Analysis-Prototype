@@ -23,6 +23,10 @@ assert.match(ai, /markUnresolvedSemanticBoundaries/);
 assert.match(ai, /Treat each participant turn only as a source container/);
 assert.match(ai, /Unresolved semantic boundary/);
 assert.match(ai, /Classification is assistance only/);
+assert.match(ai, /analysisDecision "no_substantive_meaning"/);
+assert.match(ai, /validateNoSubstantiveWindowDecision/);
+assert.match(ai, /requesting one focused clarification/);
+assert.doesNotMatch(ai, /Ollama returned no draft meaning units/);
 assert.match(ai, /return ordered\.map/);
 assert.match(ai, /contextOnlySegments: turns\.filter/);
 assert.doesNotMatch(ai, /buildContextRecords/);
@@ -52,6 +56,7 @@ assert.match(workspace, /Opening\/icebreaker background suggestions/);
 assert.match(workspace, /all\s+participant MU candidates remain visible/i);
 assert.match(workspace, /semantic MU delineation and summaries have not been completed/i);
 assert.match(workspace, /splitMeaningUnit|handleSplitMeaningUnit/);
+assert.match(workspace, /Valid no-substantive windows will be recorded and skipped/);
 assert.match(workspace, /mergeMeaningUnit|handleMergeMeaningUnit/);
 assert.match(workspace, /deleteMeaningUnit|handleDeleteMeaningUnit/);
 
