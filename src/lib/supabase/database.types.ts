@@ -187,6 +187,7 @@ export interface Database {
           case_id: string;
           speaker: string;
           unit_number: number;
+          ai_excerpt?: string | null;
           excerpt: string;
           ai_summary: string;
           human_summary: string;
@@ -205,6 +206,25 @@ export interface Database {
           transcript_id?: string | null;
           light_interpretation?: boolean;
           uncertainty_note?: string | null;
+          classification?:
+            | "substantive_participant"
+            | "context_only"
+            | "non_analytic"
+            | "uncertain";
+          context_excerpt?: string | null;
+          generation_method?:
+            | "ai_semantic"
+            | "rule_based_fallback"
+            | "researcher";
+          reviewer_warnings?: string[];
+          source_end_line?: number | null;
+          source_start_line?: number | null;
+          source_turn_ids?: string[];
+          speaker_role?:
+            | "facilitator"
+            | "interviewer"
+            | "participant"
+            | "unclear";
         };
         Insert: {
           id?: string;
@@ -213,6 +233,7 @@ export interface Database {
           case_id: string;
           speaker?: string;
           unit_number: number;
+          ai_excerpt?: string | null;
           excerpt: string;
           ai_summary?: string;
           human_summary?: string;
@@ -231,6 +252,25 @@ export interface Database {
           transcript_id?: string | null;
           light_interpretation?: boolean;
           uncertainty_note?: string | null;
+          classification?:
+            | "substantive_participant"
+            | "context_only"
+            | "non_analytic"
+            | "uncertain";
+          context_excerpt?: string | null;
+          generation_method?:
+            | "ai_semantic"
+            | "rule_based_fallback"
+            | "researcher";
+          reviewer_warnings?: string[];
+          source_end_line?: number | null;
+          source_start_line?: number | null;
+          source_turn_ids?: string[];
+          speaker_role?:
+            | "facilitator"
+            | "interviewer"
+            | "participant"
+            | "unclear";
         };
         Update: Partial<
           Database["public"]["Tables"]["meaning_units"]["Insert"]

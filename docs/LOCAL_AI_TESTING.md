@@ -11,17 +11,16 @@ AI_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3:8b
 OLLAMA_API_TIMEOUT_MS=300000
-OLLAMA_MU_MAX_TOKENS=1800
+OLLAMA_MU_BOUNDARY_MAX_TOKENS=1200
 OLLAMA_MU_CHUNK_TIMEOUT_MS=120000
-MU_DEMO_AI_TIMEOUT_MS=120000
-NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS=120000
+NEXT_PUBLIC_MU_JOB_TIMEOUT_MS=5400000
 OLLAMA_CATEGORY_MAX_TOKENS=1800
 OLLAMA_REVIEWER_MAX_TOKENS=1200
 OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS=300000
 NEXT_PUBLIC_TRANSCRIPT_PREPARE_TIMEOUT_MS=300000
 OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS=4096
 TRANSCRIPT_PROCESS_CHUNK_CHARS=6000
-TRANSCRIPT_MU_CHUNK_CHARS=1200
+TRANSCRIPT_MU_WINDOW_CHARS=6000
 ```
 
 Start Ollama:
@@ -62,11 +61,10 @@ Expected:
 | `OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS` | Transcript preparation timeout. | Increase for long transcripts or bigger models. |
 | `NEXT_PUBLIC_TRANSCRIPT_PREPARE_TIMEOUT_MS` | Browser request timeout for transcript preparation. | Keep equal to or slightly above server timeout. |
 | `TRANSCRIPT_PROCESS_CHUNK_CHARS` | Transcript prep chunk size. | Reduce if JSON or privacy/speaker labelling fails. |
-| `TRANSCRIPT_MU_CHUNK_CHARS` | MU generation chunk size. | Increase slowly on stronger GPUs; reduce if output drifts or times out. |
-| `OLLAMA_MU_CHUNK_TIMEOUT_MS` | Server timeout for each MU generation chunk. | Increase if good outputs time out. |
-| `MU_DEMO_AI_TIMEOUT_MS` | Meaning-unit API fallback timeout. | Increase for larger models; reduce for quick smoke checks. |
-| `NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS` | Browser-side MU request timeout. | Keep aligned with `MU_DEMO_AI_TIMEOUT_MS`. |
-| `OLLAMA_MU_MAX_TOKENS` | Maximum tokens for MU output. | Increase only if outputs are truncated. |
+| `TRANSCRIPT_MU_WINDOW_CHARS` | Maximum size of one participant-scoped semantic window. | Reduce only when unusually long same-participant interactions time out. |
+| `OLLAMA_MU_CHUNK_TIMEOUT_MS` | Server timeout for each semantic participant window. | Increase if good outputs time out. |
+| `NEXT_PUBLIC_MU_JOB_TIMEOUT_MS` | Browser timeout for the complete multi-window Step 2 job. | Keep long enough for the full transcript; a failed window stops the job without replacing existing MUs. |
+| `OLLAMA_MU_BOUNDARY_MAX_TOKENS` | Compact boundary-anchor and summary response budget per window. | Increase only if JSON is truncated. |
 | `OLLAMA_CATEGORY_MAX_TOKENS` | Maximum tokens for category output. | Increase only if category JSON is truncated. |
 | `OLLAMA_REVIEWER_MAX_TOKENS` | Maximum tokens for reviewer output. | Increase only if reviewer output is incomplete. |
 
@@ -78,9 +76,9 @@ Do not immediately change every parameter. Use staged comparisons.
 
 ```text
 OLLAMA_MODEL=qwen3:8b
-TRANSCRIPT_MU_CHUNK_CHARS=1200
+TRANSCRIPT_MU_WINDOW_CHARS=6000
 OLLAMA_MU_CHUNK_TIMEOUT_MS=120000
-MU_DEMO_AI_TIMEOUT_MS=120000
+NEXT_PUBLIC_MU_JOB_TIMEOUT_MS=5400000
 ```
 
 Record:
@@ -98,7 +96,7 @@ Record:
 Only change:
 
 ```text
-TRANSCRIPT_MU_CHUNK_CHARS=1800
+TRANSCRIPT_MU_WINDOW_CHARS=7500
 ```
 
 Compare whether MU boundaries improve or whether outputs become too broad.
@@ -109,8 +107,7 @@ Only change:
 
 ```text
 OLLAMA_MU_CHUNK_TIMEOUT_MS=240000
-MU_DEMO_AI_TIMEOUT_MS=240000
-NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS=240000
+NEXT_PUBLIC_MU_JOB_TIMEOUT_MS=5400000
 ```
 
 Use this if the model produces good output but times out.
@@ -123,7 +120,7 @@ Only change:
 OLLAMA_MODEL=<larger-local-model>
 ```
 
-Keep the same chunk and timeout settings for the first comparison. Then tune chunk size and timeouts if the stronger model is stable.
+Keep the same semantic-window and timeout settings for the first comparison. Then tune window size and timeouts if the stronger model is stable.
 
 ## 4. Quality Criteria
 
@@ -155,7 +152,7 @@ Ollama model:
 Transcript source:
 Transcript length:
 TRANSCRIPT_PROCESS_CHUNK_CHARS:
-TRANSCRIPT_MU_CHUNK_CHARS:
+TRANSCRIPT_MU_WINDOW_CHARS:
 Timeout settings:
 Transcript prep time:
 MU generation time:
@@ -180,14 +177,14 @@ ollama list
 
 Then confirm `OLLAMA_BASE_URL=http://localhost:11434`.
 
-### Meaning units fall back too quickly
+### Semantic meaning-unit generation times out
 
 Increase:
 
 ```text
 OLLAMA_MU_CHUNK_TIMEOUT_MS
-MU_DEMO_AI_TIMEOUT_MS
-NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS
+OLLAMA_MU_BOUNDARY_MAX_TOKENS
+NEXT_PUBLIC_MU_JOB_TIMEOUT_MS
 ```
 
 ### Outputs are too broad or over-interpretive
@@ -195,7 +192,7 @@ NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS
 Reduce:
 
 ```text
-TRANSCRIPT_MU_CHUNK_CHARS
+TRANSCRIPT_MU_WINDOW_CHARS
 ```
 
 Then re-run the same transcript.
@@ -204,7 +201,7 @@ Then re-run the same transcript.
 
 Try one or more:
 
-- reduce chunk size,
+- reduce semantic-window size,
 - reduce max tokens,
 - use a stronger instruction-following model,
 - keep the transcript test shorter for smoke checks.

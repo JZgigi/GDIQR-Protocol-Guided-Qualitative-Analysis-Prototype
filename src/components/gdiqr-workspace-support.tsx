@@ -8,6 +8,8 @@ import type {
 import type { RunLog } from "@/lib/run-logs";
 import type { AutoSegmentMode } from "@/lib/auto-segmenter";
 import { containsNonTranscriptMaterial } from "@/lib/transcript-source-cleaner";
+import { formatDateTime, formatTime } from "@/lib/date-format";
+import { isOpeningBackgroundCandidate } from "@/lib/meaning-unit-review-flags";
 
 const METHODOLOGICAL_FRAME = "GDI-QR-informed";
 
@@ -23,12 +25,49 @@ const steps: Array<{ id: WorkflowStep; label: string }> = [
 type AnalysisExportFormat = "json" | "csv" | "txt" | "docx" | "pdf";
 type SensitiveRiskLevel = "low" | "medium" | "high";
 type SensitiveReviewStatus = "pending" | "confirmed" | "ignored" | "edited";
-interface SensitiveReviewItem { id:string; placeholder:string; category:string; matchedText?:string; riskLevel:SensitiveRiskLevel; replacementText:string; startOffset?:number; endOffset?:number; status:SensitiveReviewStatus; explanation:string; }
-interface MeaningUnitValidationFlag { label:string; tone?:"blue"|"danger"|"warning"; }
-interface ReviewerIssueContext { label:string; text:string; }
-interface IntegrationRelationshipDraft { evidenceUnitNumbers:number[]; id:string; label:IntegrationRelationshipLabel; rationale:string; researcherNote:string; sourceCategoryId:string; targetCategoryId:string; }
-interface IntegrationMapGroup { categories:CategoryNode[]; description:string; label:string; }
-interface GuidanceMessage { answer:string; createdAt:string; id:string; projectId?:string; question:string; saved?:boolean; step:WorkflowStep; }
+interface SensitiveReviewItem {
+  id: string;
+  placeholder: string;
+  category: string;
+  matchedText?: string;
+  riskLevel: SensitiveRiskLevel;
+  replacementText: string;
+  startOffset?: number;
+  endOffset?: number;
+  status: SensitiveReviewStatus;
+  explanation: string;
+}
+interface MeaningUnitValidationFlag {
+  label: string;
+  tone?: "blue" | "danger" | "warning";
+}
+interface ReviewerIssueContext {
+  label: string;
+  text: string;
+}
+interface IntegrationRelationshipDraft {
+  evidenceUnitNumbers: number[];
+  id: string;
+  label: IntegrationRelationshipLabel;
+  rationale: string;
+  researcherNote: string;
+  sourceCategoryId: string;
+  targetCategoryId: string;
+}
+interface IntegrationMapGroup {
+  categories: CategoryNode[];
+  description: string;
+  label: string;
+}
+interface GuidanceMessage {
+  answer: string;
+  createdAt: string;
+  id: string;
+  projectId?: string;
+  question: string;
+  saved?: boolean;
+  step: WorkflowStep;
+}
 
 export function WorkflowErrorPanel({
   message,
@@ -122,7 +161,7 @@ export function GuidanceChatPanel({
                 <div>
                   <span className="label">
                     {getStepShortLabel(message.step)} ·{" "}
-                    {new Date(message.createdAt).toLocaleTimeString()}
+                    {formatTime(message.createdAt)}
                   </span>
                   <strong>{message.question}</strong>
                 </div>
@@ -279,7 +318,7 @@ export function TranscriptReviewHistory({
         {transcriptRecords.slice(0, 5).map((record) => (
           <div className="timeline-item" key={record.id}>
             <span className="mono small">
-              {new Date(record.createdAt).toLocaleString()}
+              {formatDateTime(record.createdAt)}
             </span>
             <div>
               <strong>{record.versionLabel}</strong>
@@ -829,9 +868,7 @@ export function MethodologicalIntegrityChecklist({
             : "Save methodological integrity review"}
         </button>
         {lastSavedAt && (
-          <span className="small">
-            Last saved: {new Date(lastSavedAt).toLocaleTimeString()}
-          </span>
+          <span className="small">Last saved: {formatTime(lastSavedAt)}</span>
         )}
       </div>
       <div className="integrity-checklist">
@@ -895,7 +932,11 @@ export function MethodologicalIntegrityChecklist({
   );
 }
 
-export function AuditTrailPanel({ auditEvents }: { auditEvents: AuditEvent[] }) {
+export function AuditTrailPanel({
+  auditEvents,
+}: {
+  auditEvents: AuditEvent[];
+}) {
   return (
     <div className="mini-card soft">
       <div className="category-header">
@@ -1087,6 +1128,10 @@ export function canRunMeaningUnitsForSegment(segment: TranscriptSegment) {
 export function isConfirmedMeaningUnit(unit: MeaningUnit) {
   return (
     !unit.analysisExcluded &&
+    (unit.classification ?? "substantive_participant") ===
+      "substantive_participant" &&
+    ((unit.speakerRole ?? "participant") === "participant" ||
+      unit.generationMethod === "researcher") &&
     unit.humanStatus === "Accepted" &&
     (!containsNonTranscriptMaterial(unit.excerpt) ||
       Boolean(unit.exclusionReason?.trim()))
@@ -1101,7 +1146,7 @@ export function normalizeMeaningUnitNumbersForSegments(
     segments.map((segment, index) => [segment.segmentId, index]),
   );
 
-  return units
+  const ordered = [...units]
     .sort((left, right) => {
       const leftSegment =
         segmentOrder.get(left.segmentId) ?? Number.MAX_SAFE_INTEGER;
@@ -1110,9 +1155,24 @@ export function normalizeMeaningUnitNumbersForSegments(
       if (leftSegment !== rightSegment) {
         return leftSegment - rightSegment;
       }
-      return left.number - right.number;
-    })
-    .map((unit, index) => ({
+      return (
+        (left.sourceStartLine ?? Number.MAX_SAFE_INTEGER) -
+          (right.sourceStartLine ?? Number.MAX_SAFE_INTEGER) ||
+        left.number - right.number
+      );
+    });
+  const reviewableMeaningUnits = ordered.filter(
+    (unit) =>
+      unit.speakerRole === "participant" ||
+      unit.generationMethod === "researcher",
+  );
+  const contextRecords = ordered.filter(
+    (unit) =>
+      unit.speakerRole !== "participant" &&
+      unit.generationMethod !== "researcher",
+  );
+
+  return [...reviewableMeaningUnits, ...contextRecords].map((unit, index) => ({
       ...unit,
       number: index + 1,
     }));
@@ -1127,9 +1187,12 @@ export function getMeaningUnitValidationFlags(
   const wordCount = approximateWordCount(excerpt);
   const speaker = unit.speaker.toLowerCase();
 
-  if (unit.uncertainty?.toLowerCase().includes("rule-based draft")) {
+  if (
+    unit.generationMethod === "rule_based_fallback" ||
+    unit.uncertainty?.toLowerCase().includes("rule-based draft")
+  ) {
     flags.push({
-      label: "Rule-based draft — review required",
+      label: "Provisional structural span — semantic review required",
       tone: "warning",
     });
   }
@@ -1138,7 +1201,7 @@ export function getMeaningUnitValidationFlags(
   ) {
     flags.push({ label: "Summary needs researcher review", tone: "warning" });
   }
-  if (!reviewedSummary) {
+  if (unit.speakerRole === "participant" && !reviewedSummary) {
     flags.push({ label: "Researcher summary needed", tone: "warning" });
   }
   if (excerpt && meaningUnitEndsMidSentence(excerpt)) {
@@ -1222,7 +1285,7 @@ export function buildMeaningUnitIntegrityIssues(units: MeaningUnit[]) {
     const wordCount = approximateWordCount(excerpt);
     const speaker = unit.speaker.toLowerCase();
 
-    if (!summary) {
+    if (unit.speakerRole === "participant" && !summary) {
       addIssue(
         unit,
         "Researcher summary needed",
@@ -1436,7 +1499,10 @@ export function truncateForReviewSnippet(text: string, maxLength = 220) {
   return `${trimmed.slice(0, maxLength - 1).trim()}…`;
 }
 
-export function summaryPossiblyGoesBeyondExcerpt(summary: string, excerpt: string) {
+export function summaryPossiblyGoesBeyondExcerpt(
+  summary: string,
+  excerpt: string,
+) {
   const lowerSummary = summary.toLowerCase();
   const lowerExcerpt = excerpt.toLowerCase();
   const interpretiveTerms = [
@@ -1545,7 +1611,10 @@ export function approximateWordCount(text: string) {
   return text.trim() ? 1 : 0;
 }
 
-export function getSegmentSplitIndex(text: string, cursorPosition?: number | null) {
+export function getSegmentSplitIndex(
+  text: string,
+  cursorPosition?: number | null,
+) {
   if (
     typeof cursorPosition === "number" &&
     cursorPosition > 0 &&
@@ -1674,7 +1743,9 @@ export function prepareTranscriptForStorage(transcript: string) {
   );
 }
 
-export function serialiseSensitiveItemsForStorage(items: SensitiveReviewItem[]) {
+export function serialiseSensitiveItemsForStorage(
+  items: SensitiveReviewItem[],
+) {
   return items.map(
     ({
       category,
@@ -1866,7 +1937,9 @@ export function markCategoriesEditableDraft(
   }));
 }
 
-export function formatCategoryStatus(status: NonNullable<CategoryNode["status"]>) {
+export function formatCategoryStatus(
+  status: NonNullable<CategoryNode["status"]>,
+) {
   const labels: Record<NonNullable<CategoryNode["status"]>, string> = {
     ai_draft: "Suggested draft",
     edited: "Edited",
@@ -2070,7 +2143,7 @@ export function RunLogPanel({
                 <div>
                   <h3>{log.label}</h3>
                   <p className="small">
-                    Started {new Date(log.startedAt).toLocaleTimeString()}
+                    Started {formatTime(log.startedAt)}
                     {log.durationMs
                       ? ` · ${formatMs(log.durationMs)} total`
                       : ""}
@@ -2082,7 +2155,7 @@ export function RunLogPanel({
                 {log.events.slice(-20).map((event) => (
                   <div className="timeline-item compact" key={event.id}>
                     <span className="mono small">
-                      {new Date(event.timestamp).toLocaleTimeString()}
+                      {formatTime(event.timestamp)}
                     </span>
                     <p className="small">{event.message}</p>
                   </div>
@@ -2148,7 +2221,7 @@ export async function fetchWithTimeout(
         throw new Error("Generation stopped by user.");
       }
       throw new Error(
-        "Local AI request timed out in the browser. Check the live log panel to see whether the server is still processing chunks, or increase OLLAMA_API_TIMEOUT_MS / reduce TRANSCRIPT_MU_CHUNK_CHARS.",
+        "Local AI request timed out in the browser. Check the live log panel to see whether the server is still processing semantic windows, or increase NEXT_PUBLIC_MU_JOB_TIMEOUT_MS / OLLAMA_MU_CHUNK_TIMEOUT_MS, or reduce TRANSCRIPT_MU_WINDOW_CHARS.",
       );
     }
     throw error;
@@ -2171,10 +2244,10 @@ export function guidanceMemoToMessage(memo: GuidanceMemo): GuidanceMessage {
 
 export function getMeaningUnitRequestTimeoutMs() {
   return getClientConfiguredTimeoutMs(
-    process.env.NEXT_PUBLIC_MU_DEMO_AI_TIMEOUT_MS,
+    process.env.NEXT_PUBLIC_MU_JOB_TIMEOUT_MS,
+    5400000,
     120000,
-    15000,
-    600000,
+    7200000,
   );
 }
 
@@ -2917,6 +2990,7 @@ export function MeaningUnitReviewCard({
   unit: MeaningUnit;
 }) {
   const validationFlags = getMeaningUnitValidationFlags(unit);
+  const openingBackgroundCandidate = isOpeningBackgroundCandidate(unit);
 
   return (
     <article
@@ -2924,13 +2998,37 @@ export function MeaningUnitReviewCard({
       id={`mu-${unit.number}`}
     >
       <div className="category-header">
-        <strong>MU #{unit.number}</strong>
+        <strong>
+          {unit.speakerRole === "participant" ||
+          unit.generationMethod === "researcher"
+            ? `MU #${unit.number}`
+            : "Source context"}
+        </strong>
         <StatusBadge label={unit.humanStatus} />
+      </div>
+      <div className="button-row">
+        <span className="badge blue">
+          {openingBackgroundCandidate
+            ? "Opening/background candidate — researcher decision"
+            : formatMeaningUnitClassification(unit.classification)}
+        </span>
+        {unit.generationMethod && (
+          <span className="badge">
+            {unit.generationMethod === "ai_semantic"
+              ? "AI semantic draft"
+              : unit.generationMethod === "rule_based_fallback"
+                ? "Provisional structural span"
+                : "Researcher created"}
+          </span>
+        )}
       </div>
       <p className="small">
         Source reference: {unit.caseId || "No case"} ·{" "}
         {unit.segmentId || "Transcript source"} · Speaker:{" "}
         {unit.speaker || "Unspecified"}
+        {unit.sourceStartLine
+          ? ` · line${unit.sourceEndLine && unit.sourceEndLine !== unit.sourceStartLine ? "s" : ""} ${unit.sourceStartLine}${unit.sourceEndLine && unit.sourceEndLine !== unit.sourceStartLine ? `–${unit.sourceEndLine}` : ""}`
+          : ""}
       </p>
       {validationFlags.length > 0 && (
         <div className="button-row">
@@ -2944,10 +3042,63 @@ export function MeaningUnitReviewCard({
           ))}
         </div>
       )}
-      <span className="label">AI draft excerpt</span>
-      <p className="small">{unit.aiExcerpt ?? unit.excerpt}</p>
+      {unit.reviewerWarnings && unit.reviewerWarnings.length > 0 && (
+        <ul className="small panel-note">
+          {unit.reviewerWarnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      )}
+      <div className="mini-card">
+        <span className="label">
+          {unit.speakerRole !== "participant"
+            ? "Contextual transcript material"
+            : openingBackgroundCandidate
+              ? "Participant opening/background material"
+            : unit.generationMethod === "rule_based_fallback"
+              ? "Provisional participant span"
+              : "Participant excerpt"}
+        </span>
+        <p>{unit.excerpt}</p>
+      </div>
+      {openingBackgroundCandidate ? (
+        <div className="mini-card soft">
+          <span className="label">Assistant inclusion suggestion</span>
+          <p className="small">
+            The system detected this material inside a likely opening or
+            icebreaker phase before the first formal research question. It has
+            still been delineated and summarised. This is background guidance
+            only: you decide whether to include or exclude it.
+          </p>
+        </div>
+      ) : null}
+      {unit.speakerRole === "participant" ? (
+        <div className="mini-card soft">
+          <span className="label">Draft meaning-unit summary</span>
+          <p className="small">
+            {unit.aiSummary ||
+              (unit.generationMethod === "rule_based_fallback"
+                ? "Not generated — semantic delineation and summary are still required."
+                : "No safe draft summary was generated; researcher wording is required.")}
+          </p>
+        </div>
+      ) : null}
+      {unit.uncertainty &&
+        !unit.uncertainty.toLowerCase().includes("rule-based draft") && (
+          <p className="small panel-note">{unit.uncertainty}</p>
+        )}
+      {unit.contextExcerpt && (
+        <details className="mini-card soft">
+          <summary className="label">
+            Interaction context — not participant evidence
+          </summary>
+          <p className="small">{unit.contextExcerpt}</p>
+        </details>
+      )}
       <label className="label">
-        Researcher-reviewed excerpt
+        {unit.speakerRole === "participant"
+          ? "Researcher-reviewed participant excerpt"
+          : "Researcher-reviewed contextual material"}
         <textarea
           className="field"
           disabled={unit.analysisExcluded}
@@ -2956,22 +3107,18 @@ export function MeaningUnitReviewCard({
           value={unit.excerpt}
         />
       </label>
-      <span className="label">Draft Meaning Unit Summary</span>
-      <p className="small">{unit.aiSummary || "No draft yet."}</p>
-      {unit.uncertainty &&
-        !unit.uncertainty.toLowerCase().includes("rule-based draft") && (
-          <p className="small panel-note">{unit.uncertainty}</p>
-        )}
-      <label className="label">
-        Researcher summary
-        <textarea
-          className="field"
-          disabled={unit.analysisExcluded}
-          onBlur={() => void onSaveSummary(unit.id)}
-          onChange={(event) => onEditSummary(unit.id, event.target.value)}
-          value={unit.humanSummary}
-        />
-      </label>
+      {unit.speakerRole === "participant" && (
+        <label className="label">
+          Researcher-reviewed summary
+          <textarea
+            className="field"
+            disabled={unit.analysisExcluded}
+            onBlur={() => void onSaveSummary(unit.id)}
+            onChange={(event) => onEditSummary(unit.id, event.target.value)}
+            value={unit.humanSummary}
+          />
+        </label>
+      )}
       <label className="label">
         Researcher memo / exclusion reason
         <textarea
@@ -3007,13 +3154,24 @@ export function MeaningUnitReviewCard({
             Restore
           </button>
         ) : (
-          <button
-            className="button"
-            onClick={() => void onExclude(unit)}
-            type="button"
-          >
-            Exclude
-          </button>
+          <>
+            {unit.classification !== "substantive_participant" && (
+              <button
+                className="button"
+                onClick={() => void onRestore(unit)}
+                type="button"
+              >
+                Include as substantive
+              </button>
+            )}
+            <button
+              className="button"
+              onClick={() => void onExclude(unit)}
+              type="button"
+            >
+              Exclude
+            </button>
+          </>
         )}
         <button
           className="button"
@@ -3056,6 +3214,21 @@ export function MeaningUnitReviewCard({
       </div>
     </article>
   );
+}
+
+function formatMeaningUnitClassification(
+  classification: MeaningUnit["classification"],
+) {
+  if (classification === "context_only") {
+    return "Context only";
+  }
+  if (classification === "non_analytic") {
+    return "Non-analytic / housekeeping";
+  }
+  if (classification === "uncertain") {
+    return "Uncertain — review required";
+  }
+  return "Substantive participant MU";
 }
 
 export function reviewSummaryText(
@@ -3258,7 +3431,7 @@ export function isSystemGeneratedCategoryDescription(description: string) {
 
 export function getOptionalCategoryDraft(
   category: CategoryNode,
-  includedUnits: MeaningUnit[],
+  _includedUnits: MeaningUnit[],
 ) {
   const assistantLabel =
     !isAutomaticCategoryTitle(category.name) &&
@@ -3274,96 +3447,20 @@ export function getOptionalCategoryDraft(
     category.definition.trim()
       ? category.definition.trim()
       : "";
-  const evidenceText = includedUnits
-    .map((unit) => `${unit.humanSummary || unit.aiSummary} ${unit.excerpt}`)
-    .join("\n\n")
-    .toLowerCase();
-  const evidenceSuggestion = buildEvidenceBasedCategorySuggestion(evidenceText);
-  const label = assistantLabel || evidenceSuggestion.label;
-  const definition = assistantDefinition || evidenceSuggestion.definition;
+  const label = assistantLabel;
+  const definition = assistantDefinition;
   const rationale =
     category.rationale &&
     !isSystemGeneratedCategoryDescription(category.rationale)
       ? category.rationale
-      : evidenceSuggestion.rationale;
+      : "";
 
   return {
     available: Boolean(label || definition),
     definition,
     label,
     rationale,
-    statusNote: isFallbackCategory(category)
-      ? "Assistant draft label unavailable; this cautious suggestion is derived from the assigned MUs for review."
-      : "Assistant suggestion only · researcher confirmation required",
-  };
-}
-
-export function buildEvidenceBasedCategorySuggestion(evidenceText: string) {
-  if (!evidenceText.trim()) {
-    return {
-      definition: "",
-      label: "",
-      rationale: "",
-    };
-  }
-  if (
-    /(safe|safety|trust|therapist|therapy|pace|overwhelm|emotion|emotional)/i.test(
-      evidenceText,
-    )
-  ) {
-    return {
-      definition:
-        "These MUs may share a meaning around feeling sufficiently safe to approach difficult emotional experience.",
-      label: "Feeling safe enough to engage with difficult emotions",
-      rationale:
-        "The assigned MUs appear to connect emotional difficulty with conditions that made engagement feel safer. Review whether this wording fits the participant account.",
-    };
-  }
-  if (
-    /(confidence|confident|capable|able|ability|self-confidence)/i.test(
-      evidenceText,
-    )
-  ) {
-    return {
-      definition:
-        "These MUs may share a meaning around developing a stronger sense of personal capability.",
-      label: "Developing a stronger sense of capability",
-      rationale:
-        "Several assigned MUs appear to describe shifts in confidence or perceived ability. Review similarities and exceptions before naming.",
-    };
-  }
-  if (
-    /(uncertain|uncertainty|change|changing|transition|different)/i.test(
-      evidenceText,
-    )
-  ) {
-    return {
-      definition:
-        "These MUs may share a meaning around making sense of uncertainty or change in experience.",
-      label: "Making sense of uncertainty and change",
-      rationale:
-        "The assigned MUs appear to involve uncertainty, transition, or changing self-understanding. Check whether they belong together.",
-    };
-  }
-  if (
-    /(stress|body|physical|symptom|tired|sleep|pain|breath|breathing)/i.test(
-      evidenceText,
-    )
-  ) {
-    return {
-      definition:
-        "These MUs may share a meaning around how experience is noticed or expressed through the body.",
-      label: "Noticing experience through the body",
-      rationale:
-        "Several assigned MUs appear to connect participant experience with bodily sensations or physical states. Review for fit.",
-    };
-  }
-  return {
-    definition:
-      "These MUs may share a related meaning. Compare their summaries and excerpts before deciding how to name the category.",
-    label: "Possible shared meaning across accepted MUs",
-    rationale:
-      "This is a structural draft to support comparison, not a confirmed category name.",
+    statusNote: "Assistant suggestion only · researcher confirmation required",
   };
 }
 

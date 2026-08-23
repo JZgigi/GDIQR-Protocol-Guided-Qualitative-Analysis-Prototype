@@ -162,7 +162,6 @@ import {
   isAutomaticCategoryTitle,
   isSystemGeneratedCategoryDescription,
   getOptionalCategoryDraft,
-  buildEvidenceBasedCategorySuggestion,
   CategoryBlock,
   UnassignedMeaningUnits,
   toIntegrationRelationshipLabel,
@@ -183,6 +182,8 @@ import { ProjectBar } from "./gdiqr-workspace/project/project-bar";
 import { WorkflowNavigation } from "./gdiqr-workspace/workflow/workflow-navigation";
 import { LongTaskStatus } from "./gdiqr-workspace/shared/long-task-status";
 import { VoiceGuideAvatar, type VoiceGuidanceNoteDraft } from "./gdiqr-workspace/voice-guide/voice-guide-avatar";
+import { formatDateTime, formatTime } from "@/lib/date-format";
+import { isOpeningBackgroundCandidate } from "@/lib/meaning-unit-review-flags";
 
 const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
@@ -477,6 +478,8 @@ export function GdiqrWorkspace({
   } | null>(null);
   const [meaningUnitGenerationStage, setMeaningUnitGenerationStage] =
     useState("");
+  const [meaningUnitGenerationMethod, setMeaningUnitGenerationMethod] =
+    useState<"ai_semantic" | "mixed" | "rule_based_fallback" | "">("");
   const [isRunningCategories, setIsRunningCategories] = useState(false);
   const [categoryGenerationStage, setCategoryGenerationStage] = useState("");
   const [isRunningReviewer, setIsRunningReviewer] = useState(false);
@@ -737,6 +740,24 @@ export function GdiqrWorkspace({
     () => normalizeMeaningUnitNumbersForSegments(units, displaySegments),
     [displaySegments, units],
   );
+  const reviewableMeaningUnits = useMemo(
+    () =>
+      currentMeaningUnits.filter(
+        (unit) =>
+          unit.speakerRole === "participant" ||
+          unit.generationMethod === "researcher",
+      ),
+    [currentMeaningUnits],
+  );
+  const contextMaterialRecords = useMemo(
+    () =>
+      currentMeaningUnits.filter(
+        (unit) =>
+          unit.speakerRole !== "participant" &&
+          unit.generationMethod !== "researcher",
+      ),
+    [currentMeaningUnits],
+  );
   const segmentMeaningUnitCounts = useMemo(() => {
     const counts = new Map<
       string,
@@ -764,12 +785,12 @@ export function GdiqrWorkspace({
     [currentMeaningUnits],
   );
   const unconfirmedMeaningUnits = useMemo(
-    () => currentMeaningUnits.filter((unit) => !isConfirmedMeaningUnit(unit)),
-    [currentMeaningUnits],
+    () => reviewableMeaningUnits.filter((unit) => !isConfirmedMeaningUnit(unit)),
+    [reviewableMeaningUnits],
   );
   const excludedMeaningUnits = useMemo(
-    () => currentMeaningUnits.filter((unit) => unit.analysisExcluded),
-    [currentMeaningUnits],
+    () => reviewableMeaningUnits.filter((unit) => unit.analysisExcluded),
+    [reviewableMeaningUnits],
   );
   const hasFallbackCategoryLabels = displayCategories.some(isFallbackCategory);
   const hasTemporaryFallbackCategories = categoryDraftIsFallback;
@@ -826,7 +847,7 @@ export function GdiqrWorkspace({
         displayCategories.length > 0 &&
         !hasTemporaryFallbackCategories &&
         allSegmentsProcessedForModeC));
-  const canRunReviewer = currentMeaningUnits.length > 0;
+  const canRunReviewer = reviewableMeaningUnits.length > 0;
   const meaningUnitReviewIssues = useMemo(
     () =>
       reviewerOutputs.filter(
@@ -860,10 +881,34 @@ export function GdiqrWorkspace({
       (unit) => unit.segmentId === selectedMeaningUnitSegment.segmentId,
     ),
   );
-  const generationButtonLabel =
-    currentMeaningUnits.length > 0
-      ? "Assistant support: redelineate draft meaning units"
-      : "Assistant support: draft meaning units";
+  const generationButtonLabel = "Generate draft meaning units";
+  const generationCounts = useMemo(
+    () => ({
+      participantTurns: new Set(
+        currentMeaningUnits
+          .filter((unit) => unit.speakerRole === "participant")
+          .flatMap((unit) => unit.sourceTurnIds ?? []),
+      ).size,
+      substantiveMeaningUnits: currentMeaningUnits.filter(
+        (unit) =>
+          (unit.classification ?? "substantive_participant") ===
+          "substantive_participant",
+      ).length,
+      contextOnlySegments: currentMeaningUnits.filter(
+        (unit) => unit.classification === "context_only",
+      ).length,
+      nonAnalyticSegments: currentMeaningUnits.filter(
+        (unit) => unit.classification === "non_analytic",
+      ).length,
+      uncertainSegments: currentMeaningUnits.filter(
+        (unit) => unit.classification === "uncertain",
+      ).length,
+      openingBackgroundCandidates: currentMeaningUnits.filter(
+        isOpeningBackgroundCandidate,
+      ).length,
+    }),
+    [currentMeaningUnits],
+  );
   const acceptedMeaningUnitNumberKey = confirmedMeaningUnits
     .map((unit) => unit.number)
     .join(",");
@@ -1039,7 +1084,7 @@ export function GdiqrWorkspace({
       setUploadLanguage(projectLanguage);
       setProjectSetupSavedAt(now);
       setApiStatus(
-        `Project setup saved locally at ${new Date(now).toLocaleTimeString()}. Nothing was saved to Supabase.`,
+        `Project setup saved locally at ${formatTime(now)}. Nothing was saved to Supabase.`,
       );
       setIsSavingProject(false);
       return;
@@ -1347,7 +1392,9 @@ export function GdiqrWorkspace({
 
     clearWorkflowError();
     setIsUploadingAudio(true);
-    setTranscriptPreparationStage("Uploading audio securely before local transcription.");
+    setTranscriptPreparationStage(
+      "Uploading audio securely before local transcription.",
+    );
     setApiStatus(
       "Uploading and transcribing. You can follow progress in the activity panel below.",
     );
@@ -1720,24 +1767,26 @@ export function GdiqrWorkspace({
       const splitStartedAt = Date.now();
       const localSegments =
         splitResult.segments.length > 0
-          ? splitResult.segments.map((segment, index): TranscriptSegment => ({
-              caseId: "CASE-001",
-              createdBy: "auto",
-              endTimestamp: "00:00",
-              endTurnIndex: segment.endTurnIndex,
-              id: `local-seg-${splitStartedAt}-${index + 1}`,
-              segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
-              segmentNumber: index + 1,
-              sourceTranscriptId: segment.sourceTranscriptId,
-              speakerInfo: segment.title,
-              splittingMode: segment.splittingMode,
-              startingMuNumber: index * 100 + 1,
-              startTimestamp: "00:00",
-              startTurnIndex: segment.startTurnIndex,
-              status: "Needs Review",
-              text: segment.text,
-              topicLabel: segment.title || `Segment ${index + 1}`,
-            }))
+          ? splitResult.segments.map(
+              (segment, index): TranscriptSegment => ({
+                caseId: "CASE-001",
+                createdBy: "auto",
+                endTimestamp: "00:00",
+                endTurnIndex: segment.endTurnIndex,
+                id: `local-seg-${splitStartedAt}-${index + 1}`,
+                segmentId: `SEG-${String(index + 1).padStart(3, "0")}`,
+                segmentNumber: index + 1,
+                sourceTranscriptId: segment.sourceTranscriptId,
+                speakerInfo: segment.title,
+                splittingMode: segment.splittingMode,
+                startingMuNumber: index * 100 + 1,
+                startTimestamp: "00:00",
+                startTurnIndex: segment.startTurnIndex,
+                status: "Needs Review",
+                text: segment.text,
+                topicLabel: segment.title || `Segment ${index + 1}`,
+              }),
+            )
           : [
               buildLocalTranscriptSegment({
                 caseId: "CASE-001",
@@ -2350,24 +2399,7 @@ export function GdiqrWorkspace({
   }
 
   function getTranscriptForMeaningUnitGeneration() {
-    const analysisSegments = displaySegments.filter(
-      (segment) => segment.speakerRole !== "interviewer" && segment.text.trim(),
-    );
-    const ignoredInterviewerCount = displaySegments.filter(
-      (segment) => segment.speakerRole === "interviewer",
-    ).length;
-
-    if (analysisSegments.length > 0) {
-      return {
-        ignoredInterviewerCount,
-        transcript: analysisSegments
-          .map((segment) => segment.text.trim())
-          .join("\n\n"),
-      };
-    }
-
     return {
-      ignoredInterviewerCount: 0,
       transcript: editableTranscript,
     };
   }
@@ -2428,7 +2460,7 @@ export function GdiqrWorkspace({
       setDisplaySegments(result.segments);
       setSelectedSegmentId(result.segments[0]?.id ?? "");
       setMeaningUnitSegmentId(
-        result.segments.find((segment) => segment.speakerRole !== "interviewer")
+        result.segments.find((segment) => segment.speakerRole === "participant")
           ?.id ??
           result.segments[0]?.id ??
           "",
@@ -2474,6 +2506,7 @@ export function GdiqrWorkspace({
         caseId: displaySegments[0]?.caseId ?? "CASE-001",
         forceRuleBased,
         lightInterpretation,
+        project: currentProject,
         projectId: currentProject.id,
         startingNumber: 1,
         timeoutMs: meaningUnitTimeoutMs,
@@ -2493,6 +2526,15 @@ export function GdiqrWorkspace({
     }
 
     const result = (await response.json()) as {
+      counts?: {
+        participantTurns: number;
+        substantiveMeaningUnits: number;
+        contextOnlySegments: number;
+        nonAnalyticSegments: number;
+        uncertainSegments: number;
+        openingBackgroundCandidates: number;
+      };
+      generationMethod?: "ai_semantic" | "mixed" | "rule_based_fallback";
       meaningUnits?: MeaningUnit[];
       fallbackUsed?: boolean;
       model?: string;
@@ -2502,27 +2544,52 @@ export function GdiqrWorkspace({
 
     const newUnits = result.meaningUnits;
     if (newUnits) {
-      const draftUnits: MeaningUnit[] = newUnits.map((unit): MeaningUnit => ({
-        ...unit,
-        aiExcerpt: unit.aiExcerpt ?? unit.excerpt,
-        humanStatus:
-          unit.analysisExcluded || unit.humanStatus === "Excluded"
-            ? "Excluded"
-            : "Draft",
-      }));
+      const draftUnits: MeaningUnit[] = newUnits.map(
+        (unit): MeaningUnit => ({
+          ...unit,
+          aiExcerpt: unit.aiExcerpt ?? unit.excerpt,
+          humanStatus:
+            unit.analysisExcluded || unit.humanStatus === "Excluded"
+              ? "Excluded"
+              : unit.classification === "uncertain"
+                ? "Needs review"
+                : "Draft",
+        }),
+      );
       setUnits(draftUnits.sort((left, right) => left.number - right.number));
       setDisplaySegments((current) =>
         current.map((item) => ({ ...item, status: "Analysed" })),
       );
+      const runMethod =
+        result.generationMethod ??
+        (forceRuleBased || result.fallbackUsed
+          ? "rule_based_fallback"
+          : "ai_semantic");
+      const runDescription =
+        runMethod === "ai_semantic"
+          ? "Generated AI-assisted semantic"
+          : runMethod === "mixed"
+            ? "Generated AI-assisted semantic draft with provisional structural spans"
+            : "Generated provisional structural spans";
       recordLocalAuditEvent({
         actor: "AI",
-        action: `${forceRuleBased || result.fallbackUsed ? "Generated rule-based" : "Generated AI-assisted"} ${draftUnits.length} draft meaning unit${draftUnits.length === 1 ? "" : "s"} from the confirmed transcript`,
+        action: `${runDescription}: ${result.counts?.substantiveMeaningUnits ?? draftUnits.filter((unit) => unit.classification === "substantive_participant").length} substantive MUs, ${result.counts?.contextOnlySegments ?? 0} context-only, ${result.counts?.nonAnalyticSegments ?? 0} non-analytic, ${result.counts?.uncertainSegments ?? 0} uncertain/provisional`,
+        actionType:
+          currentMeaningUnits.length > 0
+            ? "meaning_units_redelineated"
+            : "meaning_units_generated",
+        newValue: draftUnits,
+        previousValue: currentMeaningUnits,
         target: "Step 2 Meaning Units",
+        targetType: "meaning_unit",
       });
+      setMeaningUnitGenerationMethod(runMethod);
       setMeaningUnitGenerationStage(
-        forceRuleBased || result.fallbackUsed
-          ? "Rule-based draft MUs generated. Review carefully before accepting."
-          : "AI-assisted draft MUs generated. Review carefully before accepting.",
+        runMethod === "ai_semantic"
+          ? "AI-assisted semantic draft generated. Review every boundary, classification, context link, and summary before accepting."
+          : runMethod === "mixed"
+            ? `AI semantic MUs were generated for successful windows; ${result.counts?.uncertainSegments ?? 0} provisional structural spans still require semantic delineation and summaries.`
+            : "Provisional structural spans generated. Semantic MU delineation and summaries have not been generated and require researcher review.",
       );
     }
 
@@ -2566,7 +2633,7 @@ export function GdiqrWorkspace({
     const controller = new AbortController();
     const slowNoticeTimer = window.setTimeout(() => {
       setMeaningUnitGenerationStage(
-        "Still working. If local AI is slow, the system will switch to rule-based draft MUs automatically.",
+        "Still working through semantic windows. Any window that cannot be completed will remain a clearly segregated provisional structural span for researcher review.",
       );
     }, 30000);
     meaningUnitAbortControllerRef.current = controller;
@@ -2578,14 +2645,14 @@ export function GdiqrWorkspace({
     });
     setMeaningUnitGenerationStage(
       forceRuleBased
-        ? "Generating rule-based draft MUs from speaker turns and meaning-preserving boundaries."
-        : "Generation started. Trying local AI first; rule-based fallback will be used if it takes too long. This may take a moment.",
+        ? "Generating provisional structural spans for manual semantic review."
+        : "Parsing speaker roles and context before AI-assisted semantic delineation. Failed windows will be segregated rather than replacing successful semantic MUs.",
     );
 
     try {
       setApiStatus(
         forceRuleBased
-          ? "Generating rule-based draft meaning units..."
+          ? "Generating provisional structural spans..."
           : "Delineating draft meaning units from the confirmed transcript...",
       );
       const result = await generateMeaningUnitsFromTranscript(
@@ -2594,9 +2661,11 @@ export function GdiqrWorkspace({
       );
       if (!controller.signal.aborted) {
         setApiStatus(
-          result.fallbackUsed || forceRuleBased
-            ? "Rule-based draft meaning units generated. Interviewer-only speaker segments were ignored where marked. Review, edit, accept, or exclude each MU before categorizing."
-            : "Draft meaning units generated. Interviewer-only speaker segments were ignored where marked. Review, edit, accept, or exclude each MU before categorizing.",
+          result.generationMethod === "ai_semantic"
+            ? "AI-assisted semantic draft generated. Facilitator questions are retained as context, while participant meanings remain provisional until researcher acceptance."
+            : result.generationMethod === "mixed"
+              ? "AI semantic MUs were generated where Ollama succeeded. Provisional structural spans are segregated and require researcher delineation before categorisation."
+              : "Provisional structural spans generated. Context is retained separately; semantic MU delineation and summaries have not been completed.",
         );
       }
     } catch (error) {
@@ -3215,8 +3284,10 @@ export function GdiqrWorkspace({
 
   async function addCategoryDraft(unitNumbers: number[] = []) {
     const name =
-      promptWorkspaceText("New category title:", "New draft category")?.trim() ||
-      "New draft category";
+      promptWorkspaceText(
+        "New category title:",
+        "New draft category",
+      )?.trim() || "New draft category";
     const previousCategories = displayCategories;
     const nextCategory: CategoryNode = {
       definition:
@@ -3801,12 +3872,20 @@ export function GdiqrWorkspace({
 
   function recordLocalAuditEvent({
     action,
+    actionType,
     actor = "Researcher",
+    newValue,
+    previousValue,
     target = "Step 2 meaning-unit pipeline",
+    targetType,
   }: {
     action: string;
+    actionType?: AuditEvent["actionType"];
     actor?: AuditEvent["actor"];
+    newValue?: unknown;
+    previousValue?: unknown;
     target?: string;
+    targetType?: AuditEvent["targetType"];
   }) {
     if (!isLocalOnlyMode) {
       return;
@@ -3816,8 +3895,12 @@ export function GdiqrWorkspace({
       {
         actor,
         action,
+        actionType,
         id: `audit_local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        newValue,
+        previousValue,
         target,
+        targetType,
         timestamp: now,
       },
       ...current,
@@ -3836,7 +3919,7 @@ export function GdiqrWorkspace({
     speaker?: string;
   }): MeaningUnit {
     const nextNumber =
-      Math.max(0, ...currentMeaningUnits.map((unit) => unit.number)) + 1;
+      Math.max(0, ...reviewableMeaningUnits.map((unit) => unit.number)) + 1;
     const sourceSegment =
       displaySegments.find((segment) => segment.segmentId === segmentId) ??
       selectedMeaningUnitSegment ??
@@ -3846,7 +3929,9 @@ export function GdiqrWorkspace({
       aiSummary: "",
       analysisExcluded: false,
       caseId: sourceSegment?.caseId ?? "CASE-001",
+      classification: "substantive_participant",
       excerpt: excerpt.trim(),
+      generationMethod: "researcher",
       humanStatus: "Needs review",
       humanSummary: humanSummary.trim(),
       id: `mu_manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -3854,14 +3939,13 @@ export function GdiqrWorkspace({
       reviewerStatus: "Not run",
       segmentId: segmentId ?? sourceSegment?.segmentId ?? "SEG-001",
       speaker,
+      speakerRole: "participant",
       uncertainty: "Researcher-created meaning unit",
     };
   }
 
   function renumberMeaningUnitsForDisplay(nextUnits: MeaningUnit[]) {
-    return [...nextUnits]
-      .sort((left, right) => left.number - right.number)
-      .map((unit, index) => ({ ...unit, number: index + 1 }));
+    return normalizeMeaningUnitNumbersForSegments(nextUnits, displaySegments);
   }
 
   async function addManualMeaningUnit() {
@@ -3954,7 +4038,7 @@ export function GdiqrWorkspace({
     unit: MeaningUnit,
     direction: "previous" | "next",
   ) {
-    const ordered = [...currentMeaningUnits].sort(
+    const ordered = [...reviewableMeaningUnits].sort(
       (left, right) => left.number - right.number,
     );
     const index = ordered.findIndex((item) => item.id === unit.id);
@@ -4017,11 +4101,15 @@ export function GdiqrWorkspace({
           aiExcerpt: secondExcerpt,
           aiSummary: "",
           excerpt: secondExcerpt,
+          generationMethod: "researcher",
           humanStatus: "Needs review",
           humanSummary: "",
           id: `mu_split_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           number: unit.number + 0.1,
           uncertainty: "Researcher split from an existing MU",
+          reviewerWarnings: [
+            "Researcher split: review this new semantic boundary.",
+          ],
         };
         setUnits((current) =>
           renumberMeaningUnitsForDisplay(
@@ -4031,8 +4119,12 @@ export function GdiqrWorkspace({
                     {
                       ...item,
                       excerpt: firstExcerpt,
+                      generationMethod: "researcher" as const,
                       humanStatus: "Needs review" as const,
                       humanSummary: item.humanSummary || item.aiSummary || "",
+                      reviewerWarnings: [
+                        "Researcher split: review this revised semantic boundary.",
+                      ],
                     },
                     secondUnit,
                   ]
@@ -4151,8 +4243,18 @@ export function GdiqrWorkspace({
                       analysisExcluded: false,
                       exclusionReason: undefined,
                       excerpt: mergedExcerpt,
+                      generationMethod: "researcher" as const,
                       humanStatus: "Needs review" as const,
                       humanSummary: mergedSummary,
+                      reviewerWarnings: [
+                        "Researcher merge: review the combined semantic boundary.",
+                      ],
+                      sourceTurnIds: [
+                        ...new Set([
+                          ...(first.sourceTurnIds ?? []),
+                          ...(second.sourceTurnIds ?? []),
+                        ]),
+                      ],
                     }
                   : item,
               ),
@@ -4317,7 +4419,12 @@ export function GdiqrWorkspace({
 
   async function acceptAllReviewedMeaningUnits() {
     const includableUnits = currentMeaningUnits.filter(
-      (unit) => !unit.analysisExcluded,
+      (unit) =>
+        !unit.analysisExcluded &&
+        (unit.classification ?? "substantive_participant") ===
+          "substantive_participant" &&
+        ((unit.speakerRole ?? "participant") === "participant" ||
+          unit.generationMethod === "researcher"),
     );
     if (includableUnits.length === 0) {
       setApiStatus("Generate meaning units before accepting summaries.");
@@ -4361,9 +4468,10 @@ export function GdiqrWorkspace({
 
     try {
       if (isLocalOnlyMode) {
+        const includableIds = new Set(includableUnits.map((unit) => unit.id));
         setUnits((current) =>
           current.map((unit) =>
-            unit.analysisExcluded
+            !includableIds.has(unit.id)
               ? unit
               : {
                   ...unit,
@@ -4535,7 +4643,14 @@ export function GdiqrWorkspace({
           ? {
               ...item,
               analysisExcluded: false,
+              classification: "substantive_participant",
+              generationMethod: "researcher",
               humanStatus: "Needs review",
+              reviewerStatus: "Warning",
+              reviewerWarnings: [
+                ...(item.reviewerWarnings ?? []),
+                "Researcher override: material was reclassified from context/non-analytic status for substantive review.",
+              ],
             }
           : item,
       ),
@@ -4546,6 +4661,14 @@ export function GdiqrWorkspace({
     if (isLocalOnlyMode) {
       recordLocalAuditEvent({
         action: `Restored MU #${unit.number} for review`,
+        actionType: "meaning_unit_restored",
+        newValue: {
+          ...unit,
+          analysisExcluded: false,
+          classification: "substantive_participant",
+          generationMethod: "researcher",
+        },
+        previousValue: unit,
         target: unit.id,
       });
       setApiStatus(
@@ -4557,7 +4680,9 @@ export function GdiqrWorkspace({
     const response = await fetch(`/api/meaning-units/${unit.id}`, {
       body: JSON.stringify({
         analysisExcluded: false,
+        classification: "substantive_participant",
         exclusionReason: null,
+        generationMethod: "researcher",
       }),
       headers: { "Content-Type": "application/json" },
       method: "PATCH",
@@ -4698,7 +4823,8 @@ export function GdiqrWorkspace({
           message.source === "voice-guide"
             ? `voice_guidance_note_saved for ${message.step}`
             : `Saved methodological guidance memo for ${message.step}`,
-        target: message.source === "voice-guide" ? "Voice Guide" : "Guidance panel",
+        target:
+          message.source === "voice-guide" ? "Voice Guide" : "Guidance panel",
       });
       setApiStatus(
         message.source === "voice-guide"
@@ -5184,6 +5310,15 @@ export function GdiqrWorkspace({
     if (!unit) {
       return;
     }
+    if (
+      (unit.classification ?? "substantive_participant") !==
+      "substantive_participant"
+    ) {
+      setApiStatus(
+        "Only substantive participant material can be accepted as a meaning unit. Restore/reclassify this source segment first if you intend to override its context status.",
+      );
+      return;
+    }
     const reviewedExcerpt = unit.excerpt.trim();
     const reviewedSummary = (unit.humanSummary || unit.aiSummary).trim();
     const acceptedDraftSummaryWithoutEdit =
@@ -5343,7 +5478,9 @@ export function GdiqrWorkspace({
             dataSuitabilityBlocksAnalysis={dataSuitabilityBlocksAnalysis}
             guidedSteps={guidedSteps}
             onBlockedNavigation={() => {
-              void ensureDataSuitabilityConfirmed("moving beyond project setup");
+              void ensureDataSuitabilityConfirmed(
+                "moving beyond project setup",
+              );
             }}
             onSelectStep={setActiveStep}
           />
@@ -5364,7 +5501,10 @@ export function GdiqrWorkspace({
               </details>
               <div className="voice-guide-entry" aria-label="Voice Guide entry">
                 <strong>Need guidance?</strong>
-                <span>Open the floating AI Guide for step-aware methodological reflection.</span>
+                <span>
+                  Open the floating AI Guide for step-aware methodological
+                  reflection.
+                </span>
               </div>
             </div>
             {workflowError && (
@@ -5384,9 +5524,7 @@ export function GdiqrWorkspace({
                   : undefined
               }
               onRetry={
-                workflowError
-                  ? () => retryActionRef.current?.()
-                  : undefined
+                workflowError ? () => retryActionRef.current?.() : undefined
               }
               phase={
                 transcriptPreparationStage ||
@@ -5394,18 +5532,27 @@ export function GdiqrWorkspace({
                   ? "Uploading and transcribing the selected audio file."
                   : "Preparing the transcript for researcher review.")
               }
-              title={isUploadingAudio ? "Audio transcription" : "Transcript preparation"}
+              title={
+                isUploadingAudio
+                  ? "Audio transcription"
+                  : "Transcript preparation"
+              }
             />
             <LongTaskStatus
               active={isGeneratingMeaningUnits}
               estimatedRangeSeconds={[10, 90]}
               fallbackNotice={
-                meaningUnitGenerationStage.toLowerCase().includes("rule-based") ||
+                meaningUnitGenerationStage
+                  .toLowerCase()
+                  .includes("rule-based") ||
                 meaningUnitGenerationStage.toLowerCase().includes("fallback")
                   ? "A rule-based fallback may be used. Draft boundaries still require researcher review."
                   : undefined
               }
-              phase={meaningUnitGenerationStage || "Delineating conservative, meaning-preserving draft units."}
+              phase={
+                meaningUnitGenerationStage ||
+                "Delineating conservative, meaning-preserving draft units."
+              }
               title="Meaning-unit generation"
             />
             <LongTaskStatus
@@ -5416,7 +5563,10 @@ export function GdiqrWorkspace({
                   ? "A temporary fallback draft was created and must not be treated as final analysis."
                   : undefined
               }
-              phase={categoryGenerationStage || "Preparing provisional category suggestions."}
+              phase={
+                categoryGenerationStage ||
+                "Preparing provisional category suggestions."
+              }
               title="Category generation"
             />
             <LongTaskStatus
@@ -5586,8 +5736,7 @@ export function GdiqrWorkspace({
                     </button>
                     {preAnalysisSavedAt && (
                       <span className="small">
-                        Last saved:{" "}
-                        {new Date(preAnalysisSavedAt).toLocaleString()}
+                        Last saved: {formatDateTime(preAnalysisSavedAt)}
                       </span>
                     )}
                   </div>
@@ -6287,7 +6436,11 @@ export function GdiqrWorkspace({
                     <details className="workbook-details">
                       <summary>Advanced: speaker / segment handling</summary>
                       <p className="small">
-                        Split by line-level speaker labels such as Interviewer:, Moderator:, Participant:, Q:, A:, 访谈者:, or 受访者:. Continuation lines stay with the preceding turn. Correct low-confidence segments before generating meaning units; interviewer-only turns are ignored by default.
+                        Split by line-level speaker labels such as Interviewer:,
+                        Moderator:, Participant:, Q:, A:, 访谈者:, or 受访者:.
+                        Continuation lines stay with the preceding turn. Correct
+                        low-confidence segments before generating meaning units;
+                        interviewer-only turns are ignored by default.
                       </p>
                       <div className="button-row">
                         <button
@@ -6466,8 +6619,9 @@ export function GdiqrWorkspace({
                           <p className="small panel-note">
                             Current selected segment:{" "}
                             {selectedSegment?.segmentId} · type{" "}
-                            {segmentDraftRole}. Interviewer type is retained for
-                            context but ignored by MU generation.
+                            {segmentDraftRole}. Facilitator/interviewer speech is
+                            retained as traceable context and is not substantive
+                            participant data by default.
                           </p>
                         </div>
                       )}
@@ -6481,7 +6635,9 @@ export function GdiqrWorkspace({
                     <span className="label">Meaning Units</span>
                     <h3>Delineate meaning shifts</h3>
                     <p className="small">
-                      Default delineation is conservative: keep connected examples, explanations, and consequences together, and split only at a clear shift in participant meaning.
+                      Default delineation is conservative: keep connected
+                      examples, explanations, and consequences together, and
+                      split only at a clear shift in participant meaning.
                     </p>
                     <p className="small panel-note">
                       Treat these boundaries as reviewable working decisions,
@@ -6498,7 +6654,7 @@ export function GdiqrWorkspace({
                         onClick={() => void generateMeaningUnits()}
                         title={
                           transcriptConfirmed
-                            ? "Optional assistant support for draft meaning-unit delineation"
+                            ? "Parse roles, retain context, delineate participant meanings, draft summaries, and run safeguards"
                             : "Confirm the transcript before meaning-unit delineation"
                         }
                         type="button"
@@ -6527,9 +6683,13 @@ export function GdiqrWorkspace({
                         onClick={() => void generateMeaningUnits(null, true)}
                         type="button"
                       >
-                        Use rule-based draft MUs
+                        Generate provisional structural spans
                       </button>
                     </div>
+                    <p className="small panel-note">
+                      This recovery option creates structural candidate spans only.
+                      It does not complete semantic MU delineation or summaries.
+                    </p>
                     {(generationProgress || meaningUnitGenerationStage) && (
                       <div className="mini-card warning-card">
                         <strong>
@@ -6541,22 +6701,43 @@ export function GdiqrWorkspace({
                           {meaningUnitGenerationStage ||
                             "Delineating draft meaning units from the confirmed transcript. This may take a moment."}
                         </p>
+                        {meaningUnitGenerationMethod && (
+                          <span className="badge blue">
+                            {meaningUnitGenerationMethod === "ai_semantic"
+                              ? "AI-assisted semantic delineation"
+                              : meaningUnitGenerationMethod === "mixed"
+                                ? "AI semantic + provisional spans"
+                                : "Provisional structural spans"}
+                          </span>
+                        )}
                       </div>
                     )}
                     <div className="mini-card soft">
-                      <span className="label">Current MU review set</span>
+                      <span className="label">Meaning-unit generation</span>
                       <h3>
-                        {currentMeaningUnits.length} draft meaning unit
-                        {currentMeaningUnits.length === 1 ? "" : "s"}
+                        {meaningUnitGenerationMethod === "rule_based_fallback"
+                          ? `${generationCounts.uncertainSegments} provisional structural spans`
+                          : meaningUnitGenerationMethod === "mixed"
+                            ? `${generationCounts.substantiveMeaningUnits} semantic MUs + ${generationCounts.uncertainSegments} provisional spans`
+                            : `${generationCounts.substantiveMeaningUnits} draft substantive MUs`}
                       </h3>
                       <p className="small">
-                        {confirmedMeaningUnits.length} accepted ·{" "}
-                        {excludedMeaningUnits.length} context/excluded ·{" "}
-                        {unconfirmedMeaningUnits.length} awaiting review
+                        Participant material detected: {generationCounts.participantTurns} turns
+                        <br />
+                        Context-only segments: {generationCounts.contextOnlySegments}
+                        <br />
+                        Housekeeping/non-analytic segments: {generationCounts.nonAnalyticSegments}
+                        <br />
+                        Uncertain segments requiring review: {generationCounts.uncertainSegments}
+                        <br />
+                        Opening/icebreaker background suggestions (included for your decision): {generationCounts.openingBackgroundCandidates}
+                        <br />
+                        Researcher accepted substantive MUs: {confirmedMeaningUnits.length}
                       </p>
                       <p className="small panel-note">
-                        Source references are shown on each MU for traceability.
-                        Internal transcript chunks are not analytic units.
+                        Context and source line references remain attached for
+                        traceability. Structural chunks are preprocessing, not
+                        analytic units.
                       </p>
                     </div>
                     {currentMeaningUnits.length === 0 && (
@@ -6570,8 +6751,10 @@ export function GdiqrWorkspace({
                     <h3>Review excerpts and summaries</h3>
                     <p className="small">
                       Each MU is provisional until you edit, accept, or exclude
-                      it. Interviewer questions are retained as context
-                      candidates and excluded by default where detected.
+                      it. Assistant classifications are suggestions only: all
+                      participant MU candidates remain visible in transcript
+                      order, while interviewer questions are retained separately
+                      as interaction context.
                     </p>
                     <p className="small panel-note">
                       Accept only the reviewed summaries that accurately capture
@@ -6581,7 +6764,7 @@ export function GdiqrWorkspace({
                       <button
                         className="button"
                         disabled={
-                          currentMeaningUnits.length === 0 ||
+                          reviewableMeaningUnits.length === 0 ||
                           isAcceptingMeaningUnits
                         }
                         onClick={() => void acceptAllReviewedMeaningUnits()}
@@ -6604,13 +6787,11 @@ export function GdiqrWorkspace({
                       </button>
                     </div>
                     <div className="summary-list">
-                      {currentMeaningUnits.length === 0 ? (
+                      {reviewableMeaningUnits.length === 0 ? (
                         <EmptyState text="No summaries yet. Delineate meaning units, then ask for optional assistant support or write summaries manually." />
                       ) : (
                         <>
-                          {currentMeaningUnits
-                            .filter((unit) => !unit.analysisExcluded)
-                            .map((unit) => (
+                          {reviewableMeaningUnits.map((unit) => (
                               <MeaningUnitReviewCard
                                 key={unit.id}
                                 onAccept={markAccepted}
@@ -6641,14 +6822,14 @@ export function GdiqrWorkspace({
                                 unit={unit}
                               />
                             ))}
-                          {excludedMeaningUnits.length > 0 && (
+                          {contextMaterialRecords.length > 0 && (
                             <details className="workbook-details">
                               <summary>
-                                Context/excluded candidates (
-                                {excludedMeaningUnits.length})
+                                Facilitator/interviewer context retained for
+                                traceability ({contextMaterialRecords.length})
                               </summary>
                               <div className="summary-list">
-                                {excludedMeaningUnits.map((unit) => (
+                                {contextMaterialRecords.map((unit) => (
                                   <MeaningUnitReviewCard
                                     key={unit.id}
                                     onAccept={markAccepted}
@@ -6766,7 +6947,7 @@ export function GdiqrWorkspace({
                       }`}
                     >
                       Accepted meaning units: {confirmedMeaningUnits.length} /{" "}
-                      {currentMeaningUnits.length - excludedMeaningUnits.length}
+                      {reviewableMeaningUnits.length - excludedMeaningUnits.length}
                     </span>
                     {displayCategories.length > 0 && (
                       <span className="badge blue">
@@ -7076,8 +7257,7 @@ export function GdiqrWorkspace({
                     </button>
                     {integrationSavedAt && (
                       <span className="small">
-                        Last saved:{" "}
-                        {new Date(integrationSavedAt).toLocaleTimeString()}
+                        Last saved: {formatTime(integrationSavedAt)}
                       </span>
                     )}
                   </div>
@@ -7432,7 +7612,7 @@ export function GdiqrWorkspace({
                         {displayExportRecords.slice(0, 6).map((record) => (
                           <div className="timeline-item" key={record.id}>
                             <span className="mono small">
-                              {new Date(record.generatedAt).toLocaleString()}
+                              {formatDateTime(record.generatedAt)}
                             </span>
                             <div>
                               <strong>
@@ -7493,52 +7673,56 @@ export function GdiqrWorkspace({
           </section>
           <RunLogPanel logs={runLogs} onClear={clearFinishedRunLogs} />
         </main>
-      <VoiceGuideAvatar
-        onSaveGuidanceNote={saveVoiceGuidanceNote}
-        projectId={currentProject.id}
-        step={activeStep}
-        projectState={{
-          project: {
-            ...currentProject,
-            title: projectTitle,
-            researchQuestion,
-            studyDescription,
-            datasetType,
-            dataSource: projectDataSource,
-            dataSuitabilityConfirmed,
-            researcherNotes: projectResearcherNotes,
-          },
-          preAnalysisNotes: {
-            id: preAnalysisNotes?.id ?? `local_pre_analysis_${currentProject.id}`,
-            projectId: currentProject.id,
-            researchQuestion,
-            studyDescription,
-            researcherPosition: researcherReflexivityNotes,
-            contextualNotes: researcherNotes,
-            initialSensitisingConcepts: researcherExpectations,
-            dataFamiliarisationNotes,
-            createdAt: preAnalysisNotes?.createdAt ?? currentProject.updatedAt,
-            updatedAt: preAnalysisSavedAt || currentProject.updatedAt,
-          },
-          transcriptRecords,
-          meaningUnits: units,
-          categories: displayCategories,
-          integrationRelationships: integrationRelationships.map((relationship) => ({
-            id: relationship.id,
-            projectId: currentProject.id,
-            sourceCategoryId: relationship.sourceCategoryId,
-            targetCategoryId: relationship.targetCategoryId,
-            label: relationship.label,
-            memo: relationship.researcherNote || relationship.rationale,
-            evidenceUnitNumbers: relationship.evidenceUnitNumbers,
-            createdAt: currentProject.updatedAt,
-            updatedAt: currentProject.updatedAt,
-          })),
-          integrityReviewItems: displayIntegrityItems,
-          integratedNarrative: narrative,
-        }}
-      />
-
+        <VoiceGuideAvatar
+          onSaveGuidanceNote={saveVoiceGuidanceNote}
+          projectId={currentProject.id}
+          step={activeStep}
+          projectState={{
+            project: {
+              ...currentProject,
+              title: projectTitle,
+              researchQuestion,
+              studyDescription,
+              datasetType,
+              dataSource: projectDataSource,
+              dataSuitabilityConfirmed,
+              researcherNotes: projectResearcherNotes,
+            },
+            preAnalysisNotes: {
+              id:
+                preAnalysisNotes?.id ??
+                `local_pre_analysis_${currentProject.id}`,
+              projectId: currentProject.id,
+              researchQuestion,
+              studyDescription,
+              researcherPosition: researcherReflexivityNotes,
+              contextualNotes: researcherNotes,
+              initialSensitisingConcepts: researcherExpectations,
+              dataFamiliarisationNotes,
+              createdAt:
+                preAnalysisNotes?.createdAt ?? currentProject.updatedAt,
+              updatedAt: preAnalysisSavedAt || currentProject.updatedAt,
+            },
+            transcriptRecords,
+            meaningUnits: units,
+            categories: displayCategories,
+            integrationRelationships: integrationRelationships.map(
+              (relationship) => ({
+                id: relationship.id,
+                projectId: currentProject.id,
+                sourceCategoryId: relationship.sourceCategoryId,
+                targetCategoryId: relationship.targetCategoryId,
+                label: relationship.label,
+                memo: relationship.researcherNote || relationship.rationale,
+                evidenceUnitNumbers: relationship.evidenceUnitNumbers,
+                createdAt: currentProject.updatedAt,
+                updatedAt: currentProject.updatedAt,
+              }),
+            ),
+            integrityReviewItems: displayIntegrityItems,
+            integratedNarrative: narrative,
+          }}
+        />
       </div>
     </div>
   );

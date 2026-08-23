@@ -2,6 +2,7 @@ import type {
   CategoryMode,
   CategoryNode,
   MeaningUnit,
+  MeaningUnitGenerationCounts,
   Project,
   ReviewerComment,
   ReviewerWorkspace
@@ -9,25 +10,53 @@ import type {
 import { addRunEvent } from "@/lib/run-logs";
 import {
   getOllamaChatCompletionsUrl,
+  getOllamaNativeChatUrl,
   getOllamaConnectionErrorMessage,
-  getOllamaModel
+  getOllamaModel,
 } from "@/lib/ollama-config";
+import { cleanTranscriptSourceForAnalysis } from "@/lib/transcript-source-cleaner";
 import {
-  cleanTranscriptSourceForAnalysis,
-  containsNonTranscriptMaterial
-} from "@/lib/transcript-source-cleaner";
-import {
-  normalizeTranscriptSpeakerRole,
   parseSpeakerLine,
-  splitTranscriptIntoSpeakerTurns
+  splitTranscriptIntoSpeakerTurns,
 } from "@/lib/transcript-speakers";
-import { splitParticipantTurnConservatively } from "@/lib/meaning-unit-boundaries";
+import {
+  countMeaningWords,
+  splitParticipantTurnConservatively,
+} from "@/lib/meaning-unit-boundaries";
+import {
+  addCrossUnitBoundaryWarnings,
+  buildSemanticAnalysisWindows,
+  contextForSourceTurns,
+  isOpeningBackgroundTurn,
+  preprocessTranscriptForMeaningUnits,
+  reviewerWarningsForMeaningUnit,
+  type ClassifiedTranscriptTurn,
+  type SemanticAnalysisWindow,
+} from "@/lib/meaning-unit-preprocessing";
+import {
+  isOpeningBackgroundCandidate,
+  OPENING_BACKGROUND_REVIEW_WARNING,
+} from "@/lib/meaning-unit-review-flags";
+import {
+  buildGdiqrStageKnowledge,
+  buildGdiqrSystemMessage,
+  type GdiqrAiStage,
+} from "@/lib/gdiqr-ai-knowledge";
 
 type AiProvider = "ollama";
 
 interface OllamaMessage {
   role: "system" | "user";
   content: string;
+}
+
+interface SemanticMeaningUnitCandidate extends Partial<MeaningUnit> {
+  end_quote?: string;
+  endQuote?: string;
+  start_quote?: string;
+  startQuote?: string;
+  summary?: string;
+  source_turn_ids?: string[];
 }
 
 interface MeaningUnitInput {
@@ -79,6 +108,8 @@ export interface MeaningUnitResult {
   meaningUnits: MeaningUnit[];
   uncertainties: Array<{ unit: number; note: string }>;
   nextInstruction: string;
+  counts: MeaningUnitGenerationCounts;
+  generationMethod: "ai_semantic" | "mixed" | "rule_based_fallback";
 }
 
 export interface CategoryResult {
@@ -115,35 +146,44 @@ export function getAiProvider(): AiProvider {
 }
 
 export async function generateMeaningUnits(
-  input: MeaningUnitInput
+  input: MeaningUnitInput,
 ): Promise<MeaningUnitResult> {
   assertOllamaConfigured();
-  assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
+  assertNonEmpty(
+    input.transcript,
+    "Transcript is required before generating meaning units.",
+  );
   const cleanedSource = cleanTranscriptSourceForAnalysis(
     input.transcript,
-    input.project
+    input.project,
   );
   assertNonEmpty(
     cleanedSource.transcript,
-    "Interview transcript / participant account is required before generating meaning units."
+    "Interview transcript / participant account is required before generating meaning units.",
   );
   if (cleanedSource.removedLineCount > 0) {
     addRunEvent(
       input.runId,
-      `Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before MU generation`
+      `Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before MU generation`,
     );
   }
 
   const model = getOllamaModel();
-  const chunks = chunkMeaningUnitCandidates(
+  const turns = preprocessTranscriptForMeaningUnits(
     cleanedSource.transcript,
-    Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 1200)
+    input.project,
+  );
+  const windows = buildSemanticAnalysisWindows(
+    turns,
+    Number(process.env.TRANSCRIPT_MU_WINDOW_CHARS ?? 6000),
   );
   console.info("[gdiqr:mu] generation start", {
-    candidateChunkCount: chunks.length,
+    participantTurnCount: turns.filter((turn) => turn.role === "participant")
+      .length,
+    semanticWindowCount: windows.length,
     model,
     provider: "ollama",
-    transcriptChars: cleanedSource.transcript.length
+    transcriptChars: cleanedSource.transcript.length,
   });
   const caseId = input.caseId ?? "CASE-001";
   const segmentId = input.segmentId ?? "SEG-001";
@@ -153,71 +193,41 @@ export async function generateMeaningUnits(
 
   addRunEvent(
     input.runId,
-    `Meaning-unit generation split transcript into ${chunks.length} candidate chunk${chunks.length === 1 ? "" : "s"}`
+    `Classified ${turns.length} transcript turns and prepared ${windows.length} conversational window${windows.length === 1 ? "" : "s"} for semantic delineation`,
   );
 
-  for (const [index, chunk] of chunks.entries()) {
+  for (const [index, window] of windows.entries()) {
     throwIfAborted(input.abortSignal);
     const startedAt = Date.now();
-    const startingNumber = initialNumber + allUnits.length;
     addRunEvent(
       input.runId,
-      `Calling Ollama for MU candidate ${index + 1}/${chunks.length} (${chunk.length} chars)`
+      `Calling Ollama for semantic window ${index + 1}/${windows.length} (${window.participantTurns.length} participant turns plus context)`,
     );
-    const result = await generateMeaningUnitsForChunkWithFallback({
-      chunk,
-      chunkIndex: index,
+    const result = await generateMeaningUnitsForWindowWithSafeguards({
       input,
-      startingNumber
+      startingNumber: initialNumber + allUnits.length,
+      window,
+      windowIndex: index,
     });
     addRunEvent(
       input.runId,
-      `MU chunk ${index + 1}/${chunks.length} finished in ${formatDuration(Date.now() - startedAt)} with ${result.meaningUnits.length} units`
+      `Semantic window ${index + 1}/${windows.length} finished in ${formatDuration(Date.now() - startedAt)} with ${result.meaningUnits.length} substantive draft MUs`,
     );
     allUnits.push(...result.meaningUnits);
     allUncertainties.push(...result.uncertainties);
   }
 
-  const transcriptWordCount = countApproxWords(cleanedSource.transcript);
-  const minimumExpectedUnits = Math.min(
-    8,
-    Math.max(1, Math.floor(transcriptWordCount / 140))
+  const reviewedUnits = addCrossUnitBoundaryWarnings(allUnits, turns);
+  const meaningUnits = orderAndNumberAnalysisRecords(
+    reviewedUnits,
+    turns,
+    initialNumber,
   );
-  const participantUnitCount = allUnits.filter(
-    (unit) => !unit.analysisExcluded && !/interviewer/i.test(unit.speaker)
-  ).length;
-  if (
-    transcriptWordCount >= 280 &&
-    participantUnitCount < minimumExpectedUnits
-  ) {
-    addRunEvent(
-      input.runId,
-      `Ollama returned only ${participantUnitCount} participant MU${participantUnitCount === 1 ? "" : "s"} for ${transcriptWordCount} words; using rule-based fallback delineation`
-    );
-    const fallbackUnits = fallbackMeaningUnitsFromChunk(cleanedSource.transcript, initialNumber, {
-      caseId,
-      segmentId: "Transcript fallback"
-    });
-    if (fallbackUnits.length > allUnits.length) {
-      console.info("[gdiqr:mu] fallback triggered because AI returned too few MUs", {
-        fallbackUnits: fallbackUnits.length,
-        participantUnitCount,
-        transcriptWordCount
-      });
-      allUnits.splice(0, allUnits.length, ...fallbackUnits);
-      allUncertainties.push({
-        note:
-          "Rule-based fallback delineation used because the local AI returned too few meaning units for the transcript length.",
-        unit: initialNumber
-      });
-    }
-  }
+  const counts = countGenerationRecords(turns, meaningUnits);
   console.info("[gdiqr:mu] generation finished", {
-    fallbackTriggered: allUncertainties.some((item) =>
-      item.note.toLowerCase().includes("fallback")
-    ),
-    meaningUnits: allUnits.length,
-    provider: "ollama"
+    counts,
+    fallbackTriggered: false,
+    provider: "ollama",
   });
 
   return {
@@ -226,159 +236,163 @@ export async function generateMeaningUnits(
     caseId,
     segmentId,
     lightInterpretation: input.lightInterpretation,
-    meaningUnits: allUnits,
+    meaningUnits,
     uncertainties: allUncertainties,
-    nextInstruction: "Review and accept or edit the generated meaning units."
+    nextInstruction: "Review and accept or edit the generated meaning units.",
+    counts,
+    generationMethod: "ai_semantic",
   };
 }
 
 export function generateRuleBasedMeaningUnits(
   input: MeaningUnitInput,
-  reason = "Rule-based draft — for researcher review."
+  reason = "Rule-based draft — for researcher review.",
 ): MeaningUnitResult {
-  assertNonEmpty(input.transcript, "Transcript is required before generating meaning units.");
+  assertNonEmpty(
+    input.transcript,
+    "Transcript is required before generating meaning units.",
+  );
   const cleanedSource = cleanTranscriptSourceForAnalysis(
     input.transcript,
-    input.project
+    input.project,
   );
   assertNonEmpty(
     cleanedSource.transcript,
-    "Interview transcript / participant account is required before generating meaning units."
+    "Interview transcript / participant account is required before generating meaning units.",
   );
 
-  const maxChars = Math.min(
-    Number(process.env.TRANSCRIPT_MU_CHUNK_CHARS ?? 900),
-    900
+  const turns = preprocessTranscriptForMeaningUnits(
+    cleanedSource.transcript,
+    input.project,
   );
-  const chunks = chunkMeaningUnitCandidates(cleanedSource.transcript, maxChars);
   const caseId = input.caseId ?? "CASE-001";
+  const segmentId = input.segmentId ?? "Transcript fallback";
   const initialNumber = input.startingNumber ?? 1;
-  const allUnits: MeaningUnit[] = [];
-  const fallbackNote =
-    "Rule-based draft — review and edit before accepting.";
-
   console.info("[gdiqr:mu] rule-based fallback start", {
-    candidateChunkCount: chunks.length,
-    transcriptChars: cleanedSource.transcript.length
+    transcriptTurnCount: turns.length,
+    transcriptChars: cleanedSource.transcript.length,
   });
   if (cleanedSource.removedLineCount > 0) {
     addRunEvent(
       input.runId,
-      `Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before rule-based MU generation`
+      `Removed ${cleanedSource.removedLineCount} non-transcript setup/metadata line${cleanedSource.removedLineCount === 1 ? "" : "s"} before rule-based MU generation`,
     );
   }
   addRunEvent(
     input.runId,
-    `Rule-based fallback split transcript into ${chunks.length} candidate chunk${chunks.length === 1 ? "" : "s"}`
+    `Rule-based fallback classified ${turns.length} transcript turns before structural preprocessing`,
   );
 
-  chunks.forEach((chunk, chunkIndex) => {
-    const chunkUnits = fallbackMeaningUnitsFromChunk(
-      chunk,
-      initialNumber + allUnits.length,
-      {
-        caseId,
-        segmentId: sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)
-      }
-    ).map((unit) => ({
-      ...unit,
-      reviewerStatus: "Warning" as const,
-      uncertainty: [
-        fallbackNote,
-        unit.analysisExcluded ? "Context candidate; review for exclusion." : "",
-        unit.uncertainty
-      ]
-        .filter(Boolean)
-        .join(" ")
-    }));
-    allUnits.push(...chunkUnits);
-  });
+  const substantiveRecords = fallbackMeaningUnitsFromTurns(turns, {
+    caseId,
+    segmentId,
+  }).map((unit) => ({
+    ...unit,
+    contextExcerpt: contextForSourceTurns(unit.sourceTurnIds ?? [], turns),
+  }));
+  const allUnits = orderAndNumberAnalysisRecords(
+    substantiveRecords,
+    turns,
+    initialNumber,
+  );
+  const counts = countGenerationRecords(turns, allUnits);
 
   console.info("[gdiqr:mu] rule-based fallback finished", {
-    meaningUnits: allUnits.length
+    meaningUnits: allUnits.length,
   });
   addRunEvent(
     input.runId,
-    `Rule-based fallback generated ${allUnits.length} draft meaning unit${allUnits.length === 1 ? "" : "s"}`
+    `Rule-based fallback generated ${allUnits.length} traceable structural/context record${allUnits.length === 1 ? "" : "s"}; semantic MUs were not generated`,
   );
 
   return {
     provider: "ollama",
     model: "rule-based-fallback",
     caseId,
-    segmentId: input.segmentId ?? "Transcript fallback",
+    segmentId,
     lightInterpretation: input.lightInterpretation,
     meaningUnits: allUnits,
     uncertainties: [
       {
         note: reason,
-        unit: initialNumber
-      }
+        unit: initialNumber,
+      },
     ],
     nextInstruction:
-      "Rule-based draft MUs are provisional. Review, edit, accept, or exclude each unit."
+      "These are provisional structural spans, not completed semantic MUs. Delineate and summarise participant meanings before accepting them.",
+    counts,
+    generationMethod: "rule_based_fallback",
   };
 }
 
-async function generateMeaningUnitsForChunk({
-  chunk,
-  chunkIndex,
+async function generateMeaningUnitsForWindow({
   input,
-  startingNumber
+  revisionDirective,
+  startingNumber,
+  window,
+  windowIndex,
 }: {
-  chunk: string;
-  chunkIndex: number;
   input: MeaningUnitInput;
+  revisionDirective?: string;
   startingNumber: number;
+  window: SemanticAnalysisWindow;
+  windowIndex: number;
 }) {
   const result = await callOllamaJson<{
     caseId?: string;
     segmentId?: string;
-    meaningUnits?: Array<Partial<MeaningUnit>>;
+    meaningUnits?: SemanticMeaningUnitCandidate[];
+    meaning_units?: SemanticMeaningUnitCandidate[];
+    units?: SemanticMeaningUnitCandidate[];
     uncertainties?: Array<{ unit?: number; note?: string }>;
   }>(
     [
-      systemMessage(),
+      systemMessage("meaning_unit"),
       {
         role: "user",
         content: `/no_think
-Create GDI-QR-informed draft meaning units from this reviewed transcript source excerpt.
+Create GDI-QR-informed draft meaning units from this role-classified conversational window.
+${revisionDirective ? `\nMANDATORY REVISION: ${revisionDirective}\n` : ""}
 
-Rules:
-- Preserve participant meaning closely.
-- Do not create categories in this step.
-- Do not compare this excerpt with other transcripts.
-- Keep summaries concise and descriptive: one short sentence or phrase that condenses the participant's main meaning.
-- Do not copy the MU excerpt into aiSummary or humanSummary.
-- Do not introduce category-level interpretation or final findings in summaries.
-- Write aiSummary and humanSummary in the same language as the interview transcript.
-- Research question, domains, project title, file names, and setup notes are context only. Never turn them into meaning-unit excerpts.
-- If the excerpt contains non-transcript metadata such as "Research Question", "Domains of Investigation", "Project title", "Demo Project", or file/upload labels, exclude that material from meaning units.
-- Treat this transcript excerpt as processing context, not as one meaning unit.
-- Use conservative, meaning-preserving delineation. Do not split at every sentence.
-- A meaning unit must be large enough to communicate one clear participant meaning with enough context to be understood on its own.
-- Split only at a clear and substantial shift in meaning, such as a new experience, time point, process, evaluation, or implication that cannot be represented accurately by the same concise summary.
+Task-specific rules:
+- Analyse only text explicitly marked PARTICIPANT MATERIAL TO ANALYSE. Context is interpretive support, never participant evidence.
+- Never create a substantive MU from facilitator, moderator, interviewer, or researcher speech.
+- Never combine different participants' speech in one MU. A participant may be reconnected across a short facilitator clarification when the later turn continues the same meaning.
+- Preserve participant meaning closely and privilege participant wording over facilitator paraphrases or leading questions.
+- Keep each summary concise, descriptive, data-near, and in the transcript language. Condense the central participant meaning without copying the excerpt or adding theory, diagnosis, motivation, unsupported causality, or category-level interpretation.
+- Evaluate relevance to the research question. Mark clearly unrelated participant material "non_analytic". Mark genuinely uncertain relevance "uncertain" so a researcher can decide; do not silently omit it.
+- Classification is assistance only. Return, delineate, and summarise every participant span, including opening/icebreaker and apparently non-analytic material; the researcher alone decides whether to exclude it.
+- Use conservative, meaning-preserving delineation. Sentence punctuation and speaker turns are not MU boundaries. Treat each participant turn only as a source container, never as a default MU.
+- Split at a substantial shift in experience, evaluation, concern, proposal, reason, time point, or perspective when one concise summary cannot accurately cover the full span.
 - Keep connected examples, explanations, reasons, and consequences together when they elaborate the same meaning.
-- Merge filler, backchannels, and short dependent phrases into the surrounding participant account; never create filler-only meaning units.
-- Prefer one coherent participant turn as one draft MU unless there is strong evidence of multiple meanings.
-- Do not create one large meaning unit from the whole excerpt when it contains multiple clear meaning shifts.
-- Do not merge interviewer/researcher questions into participant meaning units.
-- If the chunk is mainly an interviewer/researcher prompt, return it with speaker "Interviewer", reviewerStatus "Warning", and uncertainty "Context candidate; review for exclusion".
-- Set humanSummary to the exact same summary text as aiSummary.
-- Use reviewerStatus "Not run" unless there is a clear concern, then use "Warning".
+- Before returning JSON, apply the summary test separately to every participant account: if a proposed summary needs a list or joins independent central meanings with "and", "also", or "but", split that span unless the clauses form one reason/example/consequence chain.
+- Before choosing anchors, map the participant's central meanings across the whole turn. A long answer may produce one MU or several MUs; return one only when its single concise summary preserves every central meaning without becoming a list.
+- Do not anchor one MU from the beginning to the end of a long answer merely because it is one uninterrupted turn. Conversely, do not split connected sentences that develop one experience, reason, example, or consequence.
+- A short facilitator clarification does not force a new MU when the same participant continues the same meaning, but a later participant clarification takes priority over the facilitator's wording.
+- Delineate each MU with compact exact boundary anchors instead of repeating the full excerpt: startQuote and endQuote must each be a short verbatim phrase copied from the participant material. The application reconstructs the full participant excerpt between those anchors.
+- Boundary anchors must not contain speaker labels or facilitator wording.
+- Return sourceTurnIds for every MU, using only the TURN identifiers shown below.
+- classification must be "substantive_participant", "non_analytic", or "uncertain". Context turns are retained separately by the application and must not be returned as MUs.
+- If Light Interpretation is OFF, tentativeInterpretation must be an empty string.
+- If Light Interpretation is ON, tentativeInterpretation may contain at most one brief, explicitly tentative, transcript-grounded note. Otherwise leave it empty.
+- Participant claims about institutions, cultures, treatment credibility/effectiveness, or other external matters must be phrased as participant perceptions rather than objective facts.
+- If facilitator/interviewer wording is corrected or qualified by a participant, preserve the participant clarification and do not adopt the facilitator framing as participant meaning.
 - Start numbering at ${startingNumber}.
-- Use caseId "${input.caseId ?? "CASE-001"}" and source reference "${sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)}".
+- Use caseId "${input.caseId ?? "CASE-001"}" and source reference "${sourceReferenceForMeaningUnit(input.segmentId, windowIndex)}".
 - Return only JSON matching this shape:
 {
   "caseId": "${input.caseId ?? "CASE-001"}",
-  "segmentId": "${sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)}",
-  "meaningUnits": [
+  "segmentId": "${sourceReferenceForMeaningUnit(input.segmentId, windowIndex)}",
+  "units": [
     {
-      "speaker": "Participant",
+      "speaker": "Participant F1",
+      "speakerRole": "participant",
+      "classification": "substantive_participant",
+      "sourceTurnIds": ["TURN-0002"],
       "number": 1,
-      "excerpt": "short verbatim excerpt",
-      "aiSummary": "concise summary",
-      "humanSummary": "concise summary",
+      "startQuote": "exact opening words of this MU",
+      "endQuote": "exact closing words of this MU",
+      "summary": "concise summary",
       "tentativeInterpretation": "",
       "uncertainty": "",
       "reviewerStatus": "Not run"
@@ -391,30 +405,36 @@ Project title: ${input.project.title}
 Research question: ${input.project.researchQuestion}
 Interview language: ${input.project.language}
 Light interpretation: ${input.lightInterpretation ? "on" : "off"}
-Transcript chunk: ${chunkIndex + 1}
+Conversational window: ${windowIndex + 1}
 
-Transcript:
-${chunk}`
-      }
+Role-classified conversation (context and participant material are deliberately separated):
+${window.promptText}`,
+      },
     ],
     {
-      maxTokens: Number(process.env.OLLAMA_MU_MAX_TOKENS ?? 1800),
+      maxTokens: Number(
+        process.env.OLLAMA_MU_BOUNDARY_MAX_TOKENS ?? 1200,
+      ),
       signal: input.abortSignal,
-      timeoutMs: getMeaningUnitChunkTimeoutMs()
-    }
+      temperature: 0,
+      timeoutMs: getMeaningUnitChunkTimeoutMs(),
+    },
   );
 
+  const returnedUnits =
+    result.meaningUnits ?? result.meaning_units ?? result.units ?? [];
   return {
-    meaningUnits: normalizeMeaningUnits(
-      result.meaningUnits ?? [],
+    meaningUnits: normalizeSemanticMeaningUnits(
+      returnedUnits,
       startingNumber,
       {
         caseId: input.caseId ?? result.caseId ?? "CASE-001",
         segmentId:
           input.segmentId ??
           result.segmentId ??
-          sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)
-      }
+          sourceReferenceForMeaningUnit(input.segmentId, windowIndex),
+      },
+      window.turns,
     ),
     uncertainties: (result.uncertainties ?? [])
       .filter((item) => item.unit && item.note)
@@ -422,53 +442,217 @@ ${chunk}`
   };
 }
 
-async function generateMeaningUnitsForChunkWithFallback({
-  chunk,
-  chunkIndex,
+async function generateMeaningUnitsForWindowWithSafeguards({
   input,
-  startingNumber
+  startingNumber,
+  window,
+  windowIndex,
 }: {
-  chunk: string;
-  chunkIndex: number;
   input: MeaningUnitInput;
   startingNumber: number;
+  window: SemanticAnalysisWindow;
+  windowIndex: number;
 }) {
   try {
-    const result = await generateMeaningUnitsForChunk({
-      chunk,
-      chunkIndex,
+    const result = await generateMeaningUnitsForWindow({
       input,
-      startingNumber
+      startingNumber,
+      window,
+      windowIndex,
     });
     if (result.meaningUnits.length === 0) {
       throw new Error("Ollama returned no draft meaning units.");
     }
-    return result;
+    const initialBoundaryConcerns = semanticBoundaryConcerns(
+      result.meaningUnits,
+      window,
+    );
+    if (initialBoundaryConcerns.length > 0) {
+      addRunEvent(
+        input.runId,
+        `Semantic window ${windowIndex + 1} may still treat a long participant answer as one MU; requesting one focused semantic-boundary revision`,
+      );
+      try {
+        const revised = await generateMeaningUnitsForWindow({
+          input,
+          revisionDirective:
+            buildSemanticBoundaryRevisionDirective(initialBoundaryConcerns),
+          startingNumber,
+          window,
+          windowIndex,
+        });
+        if (revised.meaningUnits.length > 0) {
+          const revisedBoundaryConcerns = semanticBoundaryConcerns(
+            revised.meaningUnits,
+            window,
+          );
+          if (revisedBoundaryConcerns.length === 0) {
+            return { ...revised, fallbackUsed: false };
+          }
+          addRunEvent(
+            input.runId,
+            `Semantic window ${windowIndex + 1} still has ${revisedBoundaryConcerns.length} unresolved whole-turn boundary candidate${revisedBoundaryConcerns.length === 1 ? "" : "s"}; keeping them out of substantive analysis pending researcher review`,
+          );
+          return {
+            ...revised,
+            meaningUnits: markUnresolvedSemanticBoundaries(
+              revised.meaningUnits,
+              revisedBoundaryConcerns,
+            ),
+            fallbackUsed: false,
+          };
+        }
+      } catch (revisionError) {
+        console.warn("[gdiqr:mu] boundary revision failed", {
+          message:
+            revisionError instanceof Error
+              ? revisionError.message
+              : "Unknown revision error",
+            window: windowIndex + 1,
+          });
+      }
+      return {
+        ...result,
+        meaningUnits: markUnresolvedSemanticBoundaries(
+          result.meaningUnits,
+          initialBoundaryConcerns,
+        ),
+        fallbackUsed: false,
+      };
+    }
+    return { ...result, fallbackUsed: false };
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Meaning-unit chunk failed.";
+      error instanceof Error ? error.message : "Meaning-unit window failed.";
     addRunEvent(
       input.runId,
-      `MU chunk ${chunkIndex + 1} failed; using local fallback. ${message}`
+      `Semantic window ${windowIndex + 1} failed. No structural spans were substituted or saved. ${message}`,
     );
-
-    return {
-      meaningUnits: fallbackMeaningUnitsFromChunk(chunk, startingNumber, {
-        caseId: input.caseId ?? "CASE-001",
-        segmentId: sourceReferenceForMeaningUnit(input.segmentId, chunkIndex)
-      }),
-      uncertainties: [
-        {
-          note: `Local fallback used because Ollama failed for chunk ${chunkIndex + 1}: ${message}`,
-          unit: startingNumber
-        }
-      ]
-    };
+    throw new Error(
+      `Semantic meaning-unit delineation failed for window ${windowIndex + 1}. Existing meaning units were left unchanged; retry the AI generation instead of treating speaker- or length-based spans as MUs. ${message}`,
+    );
   }
 }
 
+interface SemanticBoundaryConcern {
+  message: string;
+  sourceTurnId: string;
+}
+
+function semanticBoundaryConcerns(
+  units: MeaningUnit[],
+  window: SemanticAnalysisWindow,
+) {
+  const concerns: SemanticBoundaryConcern[] = [];
+  for (const turn of window.participantTurns) {
+    const relatedUnits = units.filter(
+      (unit) =>
+        unit.classification === "substantive_participant" &&
+        (unit.sourceTurnIds ?? []).includes(turn.id),
+    );
+    if (relatedUnits.length !== 1) {
+      continue;
+    }
+    const unit = relatedUnits[0];
+    const sourceWords = countMeaningWords(turn.content);
+    const excerptWords = countMeaningWords(unit.excerpt);
+    const coverage = boundaryCoverage(unit.excerpt, turn.content);
+    const shiftMarkers = countSemanticShiftMarkerGroups(turn.content);
+    const summarySignalsMultipleMeanings =
+      excerptWords > 55 &&
+      /\b(?:and|also|but|however|while|whereas)\b|(?:并且|也|但是|不过|而|同时)/iu.test(
+        unit.aiSummary,
+      );
+    const likelyWholeTurnContainer =
+      coverage >= 0.72 &&
+      (sourceWords > 100 ||
+        (sourceWords > 55 && shiftMarkers >= 2) ||
+        (sourceWords > 70 && summarySignalsMultipleMeanings));
+    if (!likelyWholeTurnContainer) {
+      continue;
+    }
+    concerns.push({
+      message: `${turn.id} was returned as one MU covering most of a ${sourceWords}-word participant turn with ${shiftMarkers} distinct shift-marker group${shiftMarkers === 1 ? "" : "s"}.`,
+      sourceTurnId: turn.id,
+    });
+  }
+  return concerns;
+}
+
+function buildSemanticBoundaryRevisionDirective(
+  concerns: SemanticBoundaryConcern[],
+) {
+  return `The first draft may have used a whole participant turn as one MU. Re-read the participant material clause by clause and map distinct central meanings before choosing anchors. Reapply the one-concise-summary test; split substantial changes in experience, evaluation, concern, proposal, reason, time point, or perspective, while keeping a connected example/reason/consequence chain together. Do not split by punctuation. Boundary concerns: ${concerns
+    .map((concern) => concern.message)
+    .join(" ")}`;
+}
+
+function markUnresolvedSemanticBoundaries(
+  units: MeaningUnit[],
+  concerns: SemanticBoundaryConcern[],
+) {
+  const affectedTurnIds = new Set(
+    concerns.map((concern) => concern.sourceTurnId),
+  );
+  return units.map((unit) => {
+    const affected = (unit.sourceTurnIds ?? []).some((turnId) =>
+      affectedTurnIds.has(turnId),
+    );
+    if (!affected) {
+      return unit;
+    }
+    return {
+      ...unit,
+      analysisExcluded: false,
+      classification: "uncertain" as const,
+      exclusionReason: undefined,
+      humanStatus: "Needs review" as const,
+      reviewerStatus: "Warning" as const,
+      reviewerWarnings: [
+        ...new Set([
+          ...(unit.reviewerWarnings ?? []),
+          "Unresolved semantic boundary: AI retained most of a participant turn as one span after focused re-delineation. Split it or explicitly restore it only after confirming that one concise summary covers the whole span.",
+        ]),
+      ],
+      uncertainty: [
+        unit.uncertainty,
+        "Semantic boundary unresolved — researcher decision required.",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    };
+  });
+}
+
+function boundaryCoverage(excerpt: string, source: string) {
+  const normalizedExcerpt = normalizeBoundaryText(excerpt);
+  const normalizedSource = normalizeBoundaryText(source);
+  if (!normalizedSource) {
+    return 0;
+  }
+  return Math.min(1, normalizedExcerpt.length / normalizedSource.length);
+}
+
+function countSemanticShiftMarkerGroups(text: string) {
+  const groups = [
+    /\b(?:before|previously|used to|at first|initially)\b|(?:以前|起初|最初)/iu,
+    /\b(?:now|currently|these days|later|eventually|still)\b|(?:现在|目前|后来|最终|仍然)/iu,
+    /\b(?:but|however|although|whereas|on the other hand|in contrast)\b|(?:但是|不过|虽然|然而|另一方面|相比之下)/iu,
+    /\b(?:also|another thing|in addition|separately|secondly|finally)\b|(?:另外|还有|此外|其次|最后)/iu,
+    /\b(?:i (?:want|wish|hope|would like)|my concern|the problem is)\b|(?:我希望|我想|我的担忧|问题是)/iu,
+  ];
+  return groups.filter((pattern) => pattern.test(text)).length;
+}
+
+function normalizeBoundaryText(text: string) {
+  return text
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .trim();
+}
+
 export async function generateCategories(
-  input: CategoryInput
+  input: CategoryInput,
 ): Promise<CategoryResult> {
   assertOllamaConfigured();
   if (input.units.length === 0) {
@@ -485,16 +669,16 @@ export async function generateCategories(
       uncertainties?: string[];
     }>(
       [
-        systemMessage(),
+        systemMessage(input.mode === "C" ? "integration" : "categorisation"),
         {
           role: "user",
-          content: buildCategoryGenerationPrompt(input)
-        }
+          content: buildCategoryGenerationPrompt(input),
+        },
       ],
       {
         maxTokens: Number(process.env.OLLAMA_CATEGORY_MAX_TOKENS ?? 1800),
-        timeoutMs: getOllamaTimeoutMs()
-      }
+        timeoutMs: getOllamaTimeoutMs(),
+      },
     );
     const categories = normalizeCategories(result.categories ?? [], "ai");
     if (categories.length === 0) {
@@ -512,76 +696,25 @@ export async function generateCategories(
       structuralModel: result.structuralModel ?? "",
       integratedNarrative: result.integratedNarrative ?? "",
       isFallbackDraft: false,
-      uncertainties: stringArray(result.uncertainties)
+      uncertainties: stringArray(result.uncertainties),
     };
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Category generation failed.";
-    const categories = fallbackCategoriesFromUnits(input.units);
-
-    return {
-      provider: "ollama",
-      model,
-      caseId: input.units[0]?.caseId ?? "CASE-001",
-      researchQuestion: input.project.researchQuestion,
-      mode: input.mode,
-      categories,
-      categoryRevisions: [
-        `Local fallback category draft used because Ollama did not return a usable category result: ${message}`
-      ],
-      structuralModel: "",
-      integratedNarrative:
-        input.mode === "C"
-          ? buildFallbackIntegrationNarrative(categories, input.units)
-          : "",
-      isFallbackDraft: true,
-      uncertainties: [
-        "Local fallback categories are mechanical draft groupings from confirmed summaries. Review, rename, merge, or replace them before treating them as analysis."
-      ]
-    };
+    throw new Error(
+      `The local AI did not return a usable category result. No fallback categories were created or saved, so the accepted meaning units remain unchanged. ${message}`,
+    );
   }
 }
 
-function buildFallbackIntegrationNarrative(
-  categories: CategoryNode[],
-  units: MeaningUnit[]
-) {
-  const categoryLines = categories
-    .map((category) => {
-      const linkedUnits = units.filter((unit) =>
-        category.includedUnitIds.includes(unit.number)
-      );
-      const evidence = linkedUnits
-        .slice(0, 2)
-        .map((unit) => `MU #${unit.number}: ${unit.humanSummary || unit.aiSummary}`)
-        .join("; ");
-      return `- ${category.name}: ${category.definition}${evidence ? ` Evidence: ${evidence}` : ""}`;
-    })
-    .join("\n");
-
-  return [
-    "Brief overview:",
-    "This fallback integration draft is a placeholder created because the local AI did not return usable Mode C output. It should be treated only as an editable starting point for researcher review.",
-    "",
-    "Key categories to review:",
-    categoryLines || "- No reviewed categories are available yet.",
-    "",
-    "Provisional interpretation:",
-    "Within this transcript, the participant's account should be synthesised cautiously from the confirmed meaning units and reviewed categories only. Rewrite this section after checking the supporting evidence.",
-    "",
-    "Methodological cautions:",
-    "- This draft is based on one transcript workspace and should not be treated as generalisable evidence.",
-    "- Avoid clinical, causal, or broad claims unless directly supported by the participant's account.",
-    "- Check that no sensitive placeholders or identifiers appear in analytic claims."
-  ].join("\n");
-}
-
 export async function generateReviewer(
-  input: ReviewerInput
+  input: ReviewerInput,
 ): Promise<ReviewerResult> {
   assertOllamaConfigured();
   if (input.units.length === 0) {
-    throw new Error("Meaning units are required before running reviewer agents.");
+    throw new Error(
+      "Meaning units are required before running reviewer agents.",
+    );
   }
 
   const model = getOllamaModel();
@@ -590,55 +723,71 @@ export async function generateReviewer(
     comments?: Array<Partial<ReviewerComment>>;
   }>(
     [
-      systemMessage(),
+      systemMessage("reviewer"),
       {
         role: "user",
         content:
           input.reviewerWorkspace === "categories"
             ? buildCategoryReviewerPrompt(input)
-            : buildMeaningUnitReviewerPrompt(input)
-      }
+            : buildMeaningUnitReviewerPrompt(input),
+      },
     ],
     {
       maxTokens: Number(process.env.OLLAMA_REVIEWER_MAX_TOKENS ?? 1200),
-      timeoutMs: getOllamaTimeoutMs()
-    }
+      timeoutMs: getOllamaTimeoutMs(),
+    },
   );
+
+  const aiComments = normalizeReviewerComments(
+    result.issues ?? result.comments ?? [],
+    input.reviewerWorkspace,
+  );
+  const deterministicComments =
+    input.reviewerWorkspace === "meaning-units"
+      ? buildDeterministicMeaningUnitReviewerComments(input.units)
+      : [];
 
   return {
     provider: "ollama",
     model,
     status: "completed",
-    comments: normalizeReviewerComments(
-      result.issues ?? result.comments ?? [],
-      input.reviewerWorkspace
-    )
+    comments: [...deterministicComments, ...aiComments].filter(
+      (comment, index, comments) =>
+        comments.findIndex(
+          (candidate) =>
+            candidate.targetId === comment.targetId &&
+            candidate.issueType === comment.issueType,
+        ) === index,
+    ),
   };
 }
 
 export async function processTranscriptForPrivacyAndSpeakers(
-  input: TranscriptProcessingInput
+  input: TranscriptProcessingInput,
 ): Promise<TranscriptProcessingResult> {
   assertOllamaConfigured();
-  assertNonEmpty(input.transcript, "Transcript is required before privacy review.");
+  assertNonEmpty(
+    input.transcript,
+    "Transcript is required before privacy review.",
+  );
 
   const model = getOllamaModel();
   const chunks = chunkTranscript(
     input.transcript,
-    Number(process.env.TRANSCRIPT_PROCESS_CHUNK_CHARS ?? 6000)
+    Number(process.env.TRANSCRIPT_PROCESS_CHUNK_CHARS ?? 6000),
   );
   const results: TranscriptProcessingResult[] = [];
 
   addRunEvent(
     input.runId,
-    `Privacy/speaker processing split transcript into ${chunks.length} chunk${chunks.length === 1 ? "" : "s"}`
+    `Privacy/speaker processing split transcript into ${chunks.length} chunk${chunks.length === 1 ? "" : "s"}`,
   );
 
   for (const [index, chunk] of chunks.entries()) {
     const startedAt = Date.now();
     addRunEvent(
       input.runId,
-      `Processing transcript chunk ${index + 1}/${chunks.length} (${chunk.length} chars)`
+      `Processing transcript chunk ${index + 1}/${chunks.length} (${chunk.length} chars)`,
     );
     const result = await processTranscriptChunk({
       chunk,
@@ -647,11 +796,11 @@ export async function processTranscriptForPrivacyAndSpeakers(
       runId: input.runId,
       signal: input.abortSignal,
       transcriptionSegments:
-        chunks.length === 1 ? input.transcriptionSegments : undefined
+        chunks.length === 1 ? input.transcriptionSegments : undefined,
     });
     addRunEvent(
       input.runId,
-      `Finished transcript chunk ${index + 1}/${chunks.length} in ${formatDuration(Date.now() - startedAt)}`
+      `Finished transcript chunk ${index + 1}/${chunks.length} in ${formatDuration(Date.now() - startedAt)}`,
     );
     results.push(result);
   }
@@ -663,7 +812,7 @@ export async function processTranscriptForPrivacyAndSpeakers(
 
   assertNonEmpty(
     sanitizedTranscript,
-    "Privacy/speaker transcript processing returned an empty transcript."
+    "Privacy/speaker transcript processing returned an empty transcript.",
   );
 
   return {
@@ -671,40 +820,45 @@ export async function processTranscriptForPrivacyAndSpeakers(
     model,
     sanitizedTranscript,
     privacyFindings: results.flatMap((result) => result.privacyFindings),
-    speakerNotes: results.flatMap((result) => result.speakerNotes)
+    speakerNotes: results.flatMap((result) => result.speakerNotes),
   };
 }
 
 export function prepareTranscriptWithLocalRules(
   input: TranscriptProcessingInput,
-  reason = "Local rule-based transcript preparation used for demo responsiveness."
+  reason = "Local rule-based transcript preparation used for demo responsiveness.",
 ): TranscriptProcessingResult {
-  assertNonEmpty(input.transcript, "Transcript is required before privacy review.");
+  assertNonEmpty(
+    input.transcript,
+    "Transcript is required before privacy review.",
+  );
 
   const chunks = chunkTranscript(
     input.transcript,
-    Number(process.env.TRANSCRIPT_PROCESS_CHUNK_CHARS ?? 6000)
+    Number(process.env.TRANSCRIPT_PROCESS_CHUNK_CHARS ?? 6000),
   );
   console.info("[gdiqr:transcript-prepare] local fallback start", {
     chunkCount: chunks.length,
-    transcriptChars: input.transcript.length
+    transcriptChars: input.transcript.length,
   });
   addRunEvent(
     input.runId,
-    `Local rule-based transcript preparation started (${chunks.length} chunk${chunks.length === 1 ? "" : "s"})`
+    `Local rule-based transcript preparation started (${chunks.length} chunk${chunks.length === 1 ? "" : "s"})`,
   );
-  const sanitizedTranscript = chunks.map(fallbackPrepareTranscript).join("\n\n");
+  const sanitizedTranscript = chunks
+    .map(fallbackPrepareTranscript)
+    .join("\n\n");
 
   return {
     provider: "ollama",
     model: "local-rule-based-fallback",
     sanitizedTranscript,
     privacyFindings: [
-      `${reason} Please review names, places, institutions, contact details, and other sensitive information before saving or analysis.`
+      `${reason} Please review names, places, institutions, contact details, and other sensitive information before saving or analysis.`,
     ],
     speakerNotes: [
-      "Speaker labels were inferred by local rules for demo responsiveness. Please check Interviewer/Participant labels carefully."
-    ]
+      "Speaker labels were inferred by local rules for demo responsiveness. Please check Interviewer/Participant labels carefully.",
+    ],
   };
 }
 
@@ -742,10 +896,20 @@ function buildCategoryGenerationPrompt(input: CategoryInput) {
 - Do not make clinical, causal, or general claims about all students.
 - Mention limitations, tensions, exceptions, and methodological cautions.
 - Produce integratedNarrative that answers the research question, explains central patterns, identifies tensions/contradictions, and notes interpretative limits.
+- For every major relationship or higher-order claim, name the supporting category/category IDs where available and relevant MU numbers in the narrative or structuralModel.
+- Use relationship wording such as "may shape", "may support or hinder", "is described alongside", or "creates an opportunity for" when causality is not established.
 - Do not introduce new categories unless essential for coherence.`;
+
+  const stage = input.mode === "C" ? "integration" : "categorisation";
+  const stageKnowledge = buildGdiqrStageKnowledge(stage, {
+    maxExamples: input.mode === "C" ? 1 : 3,
+  });
 
   return `/no_think
 You are a qualitative research assistant providing draft support within a GDI-QR-informed generic descriptive-interpretive qualitative research workflow.
+
+Method knowledge for this stage:
+${stageKnowledge}
 
 Task: Draft, refine, or integrate category-level material using constant comparison across researcher-confirmed meaning-unit summaries.
 
@@ -760,8 +924,11 @@ Global rules:
 - Avoid categories that merely repeat interview questions or broad domains.
 - Avoid redundant, trivial, or overly numerous categories.
 - Subcategories must reflect conceptual distinctions, not minor wording differences.
-- Preserve tensions, contradictions, and uncertainty rather than smoothing them over.
-- Category includedUnitIds must refer to MU numbers only.
+- Preserve tensions, contradictions, qualifications, and uncertainty rather than smoothing them over.
+- Do not turn participant accounts into explanatory mechanisms at category stage; reserve explanations of why/how relationships operate for Integration.
+- Treat participant claims about external institutions, culture, credibility, effectiveness, or prevalence as participant perceptions unless independently verified outside this analysis.
+- In each category definition/rationale, state meaningful variations, tensions, contradictory cases, or uncertainties when they are present in the included MUs.
+- Category includedUnitIds must refer to MU numbers only so every category remains traceable to researcher-accepted/edited evidence.
 - Return strict JSON only, with no markdown or commentary.
 
 Return JSON in this shape:
@@ -802,7 +969,7 @@ Confirmed meaning-unit summaries:
 ${input.units
   .map(
     (unit) =>
-      `MU ${unit.number} (${unit.caseId}, ${unit.segmentId})\nSpeaker: ${unit.speaker}\nSummary: ${unit.humanSummary || unit.aiSummary}`
+      `MU ${unit.number} (${unit.caseId}, ${unit.segmentId})\nSpeaker: ${unit.speaker}\nSummary: ${unit.humanSummary || unit.aiSummary}`,
   )
   .join("\n\n")}`;
 }
@@ -810,6 +977,9 @@ ${input.units
 function buildMeaningUnitReviewerPrompt(input: ReviewerInput) {
   return `/no_think
 You are a reviewer-check assistant for a GDI-QR-informed workflow. Your task is to flag possible issues in the AI-drafted meaning units and summaries so the researcher can review them.
+
+Method knowledge for reviewer checks:
+${buildGdiqrStageKnowledge("reviewer", { maxExamples: 1 })}
 
 You are NOT generating new analysis.
 You are NOT creating categories or themes.
@@ -830,6 +1000,17 @@ Check:
 11. If Light Interpretation is OFF, no interpretation should appear.
 12. If Light Interpretation is ON, tentative interpretation must be clearly labelled, grounded in text, brief, and non-theoretical.
 13. Ambiguous meaning should be marked UNCERTAIN.
+14. Flag facilitator/interviewer framing that replaces a participant correction or clarification.
+15. Flag participant belief/perception presented as an objective external fact.
+16. Flag false consensus where disagreement, contradiction, or qualifying cases are present.
+17. Do not assign numerical scores, quality grades, probabilities, or pass/fail judgements to the analysis.
+18. Speaker-role error: flag any substantive MU containing only facilitator/moderator/interviewer speech.
+19. Mixed-role contamination: flag facilitator wording combined with participant evidence.
+20. Summary too extractive: flag summaries that mostly copy or shorten the excerpt.
+21. Summary too interpretive: flag concepts not clearly supported by participant material.
+22. Possible multiple meanings: flag clear distinguishable meanings that may need splitting.
+23. Possible fragmentation: flag narrow fragments that may need merging with adjacent participant material.
+24. Missing context: flag responses that require a preceding question or probe to interpret.
 
 Return only structured review issues. Do not rewrite the full analysis unless a suggested revision is necessary.
 If no issue is found, return an empty issues array.
@@ -858,7 +1039,7 @@ Meaning units:
 ${input.units
   .map(
     (unit) =>
-      `MU${unit.number} (${unit.caseId}, ${unit.segmentId})\nSpeaker: ${unit.speaker}\nExcerpt: ${unit.excerpt}\nAI summary: ${unit.aiSummary}\nHuman summary: ${unit.humanSummary}\nTentative interpretation: ${unit.tentativeInterpretation ?? ""}\nUncertainty: ${unit.uncertainty ?? ""}`
+      `MU${unit.number} (${unit.caseId}, ${unit.segmentId})\nClassification: ${unit.classification ?? "legacy/unclassified"}\nSpeaker role: ${unit.speakerRole ?? "unknown"}\nSpeaker label: ${unit.speaker}\nContext (not evidence): ${unit.contextExcerpt ?? ""}\nExcerpt: ${unit.excerpt}\nAI summary: ${unit.aiSummary}\nHuman summary: ${unit.humanSummary}\nTentative interpretation: ${unit.tentativeInterpretation ?? ""}\nExisting deterministic warnings: ${(unit.reviewerWarnings ?? []).join(" | ")}\nUncertainty: ${unit.uncertainty ?? ""}`,
   )
   .join("\n\n")}`;
 }
@@ -866,6 +1047,9 @@ ${input.units
 function buildCategoryReviewerPrompt(input: ReviewerInput) {
   return `/no_think
 You are a reviewer-check assistant for GDI-QR-informed category-level drafting. Your task is to flag possible issues in category construction, refinement, or integration drafts so the researcher can review them.
+
+Method knowledge for reviewer checks:
+${buildGdiqrStageKnowledge("reviewer", { maxExamples: 1 })}
 
 You are NOT generating a new category system unless asked.
 You are NOT creating new findings.
@@ -908,7 +1092,11 @@ Mode C:
 - Sensitive placeholders or identifiable details are not repeated in analytic claims.
 - No external theory is introduced.
 - No raw transcript is used.
+- Major integration claims remain traceable to categories/MU IDs.
 - New categories are not introduced unless essential.
+
+Across all modes also flag domain/category confusion, premature explanatory mechanisms, participant perceptions stated as facts, false consensus, lost qualifications, unsupported causal language, and missing evidence traceability.
+Do not assign numerical scores, quality grades, probabilities, or pass/fail judgements to the analysis.
 
 Return only structured review issues. If no issue is found, return an empty issues array.
 
@@ -948,7 +1136,7 @@ async function processTranscriptChunk({
   language,
   runId,
   signal,
-  transcriptionSegments
+  transcriptionSegments,
 }: {
   chunk: string;
   chunkIndex: number;
@@ -969,7 +1157,7 @@ async function processTranscriptChunk({
         {
           role: "system",
           content:
-            "You are a careful research transcript preparation assistant. Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought."
+            "You are a careful research transcript preparation assistant. Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought.",
         },
         {
           role: "user",
@@ -995,16 +1183,16 @@ Raw transcript chunk ${chunkIndex + 1}:
 ${chunk}
 
 Timestamped transcription segments for reference:
-${JSON.stringify(transcriptionSegments?.slice(0, 60) ?? [], null, 2)}`
-        }
+${JSON.stringify(transcriptionSegments?.slice(0, 60) ?? [], null, 2)}`,
+        },
       ],
       {
         maxTokens: Number(
-          process.env.OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS ?? 4096
+          process.env.OLLAMA_TRANSCRIPT_PROCESS_MAX_TOKENS ?? 4096,
         ),
         signal,
-        timeoutMs: getTranscriptProcessTimeoutMs()
-      }
+        timeoutMs: getTranscriptProcessTimeoutMs(),
+      },
     );
 
     const sanitizedTranscript = cleanText(result.sanitizedTranscript);
@@ -1017,14 +1205,16 @@ ${JSON.stringify(transcriptionSegments?.slice(0, 60) ?? [], null, 2)}`
       model,
       sanitizedTranscript,
       privacyFindings: stringArray(result.privacyFindings),
-      speakerNotes: stringArray(result.speakerNotes)
+      speakerNotes: stringArray(result.speakerNotes),
     };
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "Transcript chunk processing failed.";
+      error instanceof Error
+        ? error.message
+        : "Transcript chunk processing failed.";
     addRunEvent(
       runId,
-      `Chunk ${chunkIndex + 1}: AI transcript preparation did not return usable text, so a conservative local cleanup was used. Please review this transcript carefully before confirming. ${message}`
+      `Chunk ${chunkIndex + 1}: AI transcript preparation did not return usable text, so a conservative local cleanup was used. Please review this transcript carefully before confirming. ${message}`,
     );
 
     return {
@@ -1032,26 +1222,30 @@ ${JSON.stringify(transcriptionSegments?.slice(0, 60) ?? [], null, 2)}`
       model,
       sanitizedTranscript: fallbackPrepareTranscript(chunk),
       privacyFindings: [
-        `Chunk ${chunkIndex + 1}: local fallback masked contact/identifier patterns only`
+        `Chunk ${chunkIndex + 1}: local fallback masked contact/identifier patterns only`,
       ],
       speakerNotes: [
-        `Chunk ${chunkIndex + 1}: speaker labels were inferred by local fallback because Ollama returned an unusable chunk`
-      ]
+        `Chunk ${chunkIndex + 1}: speaker labels were inferred by local fallback because Ollama returned an unusable chunk`,
+      ],
     };
   }
 }
 
-function systemMessage(): OllamaMessage {
+function systemMessage(stage: GdiqrAiStage = "summary"): OllamaMessage {
   return {
     role: "system",
-    content:
-      "You are a careful qualitative research assistant providing draft support within a GDI-QR-informed generic descriptive-interpretive workflow. Return strict JSON only. Do not wrap JSON in markdown. Do not output chain-of-thought."
+    content: `${buildGdiqrSystemMessage(stage)}\nReturn strict JSON only. Do not wrap JSON in markdown.`,
   };
 }
 
 async function callOllamaJson<T>(
   messages: OllamaMessage[],
-  options: { maxTokens?: number; signal?: AbortSignal; timeoutMs?: number } = {}
+  options: {
+    maxTokens?: number;
+    signal?: AbortSignal;
+    temperature?: number;
+    timeoutMs?: number;
+  } = {},
 ): Promise<T> {
   const maxTokens = options.maxTokens ?? 1600;
   const timeoutMs = options.timeoutMs ?? getOllamaTimeoutMs();
@@ -1059,7 +1253,8 @@ async function callOllamaJson<T>(
     messages,
     timeoutMs,
     maxTokens,
-    options.signal
+    options.signal,
+    options.temperature,
   );
 
   try {
@@ -1073,12 +1268,13 @@ async function callOllamaJson<T>(
           content: `Repair this into valid JSON only. Do not add commentary, markdown, or explanation. Preserve the original fields and values as much as possible.
 
 Invalid JSON-like content:
-${content}`
-        }
+${content}`,
+        },
       ],
       Math.min(timeoutMs, 120000),
       Math.min(maxTokens, 1600),
-      options.signal
+      options.signal,
+      options.temperature,
     );
 
     return parseJsonObject<T>(repaired);
@@ -1089,27 +1285,31 @@ async function callOllamaContent(
   messages: OllamaMessage[],
   timeoutMs: number,
   maxTokens: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  temperature = 0.2,
 ) {
+  const requestStartedAt = Date.now();
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  const requestSignal = combineAbortSignals([timeoutSignal, signal].filter(Boolean) as AbortSignal[]);
+  const requestSignal = combineAbortSignals(
+    [timeoutSignal, signal].filter(Boolean) as AbortSignal[],
+  );
   let response: Response;
   try {
-    response = await fetch(getOllamaChatCompletionsUrl(), {
+    response = await fetch(getOllamaNativeChatUrl(), {
       body: JSON.stringify({
-        messages,
-        max_tokens: maxTokens,
         model: getOllamaModel(),
-        options: {
-          num_predict: maxTokens
-        },
-        response_format: { type: "json_object" },
+        messages,
         stream: false,
-        temperature: 0.2
+        think: false,
+        format: "json",
+        options: {
+          temperature,
+          num_predict: maxTokens,
+        },
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
-      signal: requestSignal
+      signal: requestSignal,
     });
   } catch (error) {
     if (signal?.aborted) {
@@ -1117,7 +1317,7 @@ async function callOllamaContent(
     }
     if (timeoutSignal.aborted) {
       throw new Error(
-        "Local AI request timed out before Ollama returned a response. Try a shorter transcript, a smaller model, or increase OLLAMA_API_TIMEOUT_MS."
+        "Local AI request timed out before Ollama returned a response. Try a shorter transcript, a smaller model, or increase OLLAMA_API_TIMEOUT_MS.",
       );
     }
     throw new Error(getOllamaConnectionErrorMessage());
@@ -1125,22 +1325,50 @@ async function callOllamaContent(
 
   if (!response.ok) {
     throw new Error(
-      `Ollama request failed with ${response.status}. Check that model "${getOllamaModel()}" is installed and that OLLAMA_BASE_URL points to your local Ollama server.`
+      `Ollama request failed with ${response.status}. Check that model "${getOllamaModel()}" is installed and that OLLAMA_BASE_URL points to your local Ollama server.`,
     );
   }
 
-  const body = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+  const remainingMs = Math.max(1, timeoutMs - (Date.now() - requestStartedAt));
+  const body = (await readOllamaJsonResponse(response, remainingMs)) as {
+    message?: {
+      role?: string;
+      content?: string;
+    };
   };
-  const content = body.choices?.[0]?.message?.content;
+
+  const content = body.message?.content;
 
   if (!content) {
     throw new Error(
-      "Local AI did not return usable text. Try again, use a smaller/faster model, or reduce the amount of text in this step."
+      "Local AI did not return usable text. Try again, use a smaller/faster model, or reduce the amount of text in this step.",
     );
   }
 
   return content;
+}
+
+async function readOllamaJsonResponse(response: Response, timeoutMs: number) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      response.json(),
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          void response.body?.cancel().catch(() => undefined);
+          reject(
+            new Error(
+              "Local AI request timed out before Ollama returned a complete response.",
+            ),
+          );
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 function combineAbortSignals(signals: AbortSignal[]) {
@@ -1253,131 +1481,11 @@ function chunkTranscript(transcript: string, maxChars: number) {
   return chunks.length > 0 ? chunks : [transcript.trim()];
 }
 
-function chunkMeaningUnitCandidates(transcript: string, maxChars: number) {
-  const normalized = transcript.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  if (!normalized) {
-    return [];
-  }
-
-  const turnChunks = chunkBySpeakerTurns(normalized, maxChars);
-  const baseChunks =
-    turnChunks.length > 1
-      ? turnChunks
-      : chunkTranscriptByMeaningBoundaries(normalized, maxChars);
-
-  const chunks = baseChunks
-    .flatMap((chunk) =>
-      chunk.length > maxChars ? chunkTranscriptByMeaningBoundaries(chunk, maxChars) : [chunk]
-    )
-    .map((chunk) => chunk.trim())
-    .filter(Boolean);
-
-  return chunks.length > 0 ? chunks : chunkTranscript(normalized, maxChars);
-}
-
 function sourceReferenceForMeaningUnit(segmentId: string | undefined, chunkIndex: number) {
   if (segmentId?.trim()) {
     return segmentId.trim();
   }
   return `Transcript excerpt ${String(chunkIndex + 1).padStart(2, "0")}`;
-}
-
-function chunkBySpeakerTurns(transcript: string, maxChars: number) {
-  const turns = splitTranscriptIntoSpeakerTurns(transcript);
-  if (!turns.some((turn) => turn.role !== "unclear")) {
-    return [];
-  }
-
-  const chunks: string[] = [];
-  for (const turn of turns) {
-    if (turn.role === "interviewer") {
-      chunks.push(turn.raw);
-      continue;
-    }
-
-    if (turn.role === "participant") {
-      chunks.push(...splitParticipantTurnConservatively(turn.raw, maxChars));
-      continue;
-    }
-
-    chunks.push(...chunkTranscriptByMeaningBoundaries(turn.raw, maxChars));
-  }
-
-  return combineTinyCandidateChunks(chunks);
-}
-
-
-function chunkTranscriptByMeaningBoundaries(transcript: string, maxChars: number) {
-  const paragraphs = transcript
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
-  const source = paragraphs.length > 1 ? paragraphs : splitIntoSentences(transcript);
-  const targetWords = 90;
-  const maxWords = 160;
-  const chunks: string[] = [];
-  let current: string[] = [];
-  let currentWords = 0;
-
-  for (const item of source) {
-    const parts =
-      countApproxWords(item) > maxWords ? splitIntoSentences(item) : [item];
-    for (const part of parts) {
-      const partWords = countApproxWords(part);
-      const candidateWords = currentWords + partWords;
-      const candidateText = [...current, part].join(" ");
-      if (
-        current.length > 0 &&
-        (candidateWords > targetWords || candidateText.length > maxChars)
-      ) {
-        chunks.push(current.join(" ").trim());
-        current = [];
-        currentWords = 0;
-      }
-      current.push(part);
-      currentWords += partWords;
-    }
-  }
-
-  if (current.length > 0) {
-    chunks.push(current.join(" ").trim());
-  }
-
-  return chunks;
-}
-
-function combineTinyCandidateChunks(chunks: string[]) {
-  const combined: string[] = [];
-  for (const chunk of chunks) {
-    const trimmed = chunk.trim();
-    if (!trimmed) {
-      continue;
-    }
-    const last = combined[combined.length - 1];
-    if (
-      last &&
-      countApproxWords(trimmed) < 12 &&
-      !isInterviewerCandidate(trimmed) &&
-      !isInterviewerCandidate(last)
-    ) {
-      combined[combined.length - 1] = `${last}\n${trimmed}`.trim();
-    } else {
-      combined.push(trimmed);
-    }
-  }
-  return combined;
-}
-
-function splitIntoSentences(text: string) {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return [];
-  }
-  const sentences = normalized
-    .split(/(?<=[.!?。！？])\s+/)
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
-  return sentences.length > 1 ? sentences : [normalized];
 }
 
 function countApproxWords(text: string) {
@@ -1390,19 +1498,6 @@ function countApproxWords(text: string) {
     return Math.ceil(cjkCharacters.length / 2);
   }
   return text.trim() ? 1 : 0;
-}
-
-function normalizeSpeakerLabel(label: string) {
-  const role = normalizeTranscriptSpeakerRole(label);
-  return role === "unclear" ? "other" : role;
-}
-
-function isInterviewerCandidate(text: string) {
-  const parsed = parseSpeakerLine(text.split("\n")[0] ?? text);
-  if (parsed && normalizeSpeakerLabel(parsed.label) === "interviewer") {
-    return true;
-  }
-  return /[?？]\s*$/.test(text.trim());
 }
 
 function splitLongText(text: string, maxChars: number) {
@@ -1445,148 +1540,313 @@ function fallbackPrepareTranscript(transcript: string) {
     .join("\n");
 }
 
-function fallbackMeaningUnitsFromChunk(
-  chunk: string,
-  startingNumber: number,
-  defaults: { caseId: string; segmentId: string }
+function fallbackMeaningUnitsFromTurns(
+  turns: ClassifiedTranscriptTurn[],
+  defaults: { caseId: string; segmentId: string },
 ) {
-  const candidates = chunkTranscriptByMeaningBoundaries(chunk, 900)
-    .map(finalizeFallbackMeaningUnitExcerpt)
-    .filter((candidate) => candidate.excerpt);
-
-  return candidates
-    .map((candidate, index) => {
-      const number = startingNumber + index;
-      const rawText = candidate.excerpt;
-      const contextCandidate =
-        candidate.speaker === "interviewer" || isInterviewerCandidate(rawText);
-      const excerpt = stripSpeakerPrefix(rawText);
-      const nonTranscriptMaterial = containsNonTranscriptMaterial(excerpt);
-      const aiSummary = buildFallbackMeaningUnitSummary(
-        excerpt,
-        contextCandidate ? "Interviewer" : "Participant",
-        candidate.incomplete
-      );
-      const summaryNeedsReview = !aiSummary || summaryIsTooGeneric(aiSummary);
-
-      return {
-        id: `mu_ai_${String(number).padStart(3, "0")}`,
-        segmentId: defaults.segmentId,
-        caseId: defaults.caseId,
-        speaker: contextCandidate ? "Interviewer" : "Participant",
-        number,
+  return turns
+    .filter((turn) => turn.role === "participant" && Boolean(turn.content.trim()))
+    .flatMap((turn) =>
+      splitParticipantTurnConservatively(turn.raw, 1800).map((candidate) => ({
+        candidate,
+        turn,
+      })),
+    )
+    .map(({ candidate, turn }, index) => {
+      const excerpt = stripSpeakerPrefix(candidate);
+      const openingBackgroundCandidate = isOpeningBackgroundTurn(turn);
+      const base: MeaningUnit = {
         aiExcerpt: excerpt,
+        aiSummary: "",
+        analysisExcluded: true,
+        caseId: defaults.caseId,
+        classification: "uncertain",
+        contextExcerpt: "",
         excerpt,
+        exclusionReason:
+          "Structural source span only; semantic delineation and summary are required before it can become a substantive MU.",
+        generationMethod: "rule_based_fallback",
+        humanStatus: "Excluded",
+        humanSummary: "",
+        id: `structural_${turn.id.toLowerCase()}_${index + 1}`,
+        number: index + 1,
+        reviewerStatus: "Warning",
+        reviewerWarnings: [
+          "Provisional structural span: structural boundary only; semantic researcher review is required.",
+          ...(openingBackgroundCandidate
+            ? [OPENING_BACKGROUND_REVIEW_WARNING]
+            : []),
+        ],
+        segmentId: defaults.segmentId,
+        sourceEndLine: turn.endLine,
+        sourceStartLine: turn.startLine,
+        sourceTurnIds: [turn.id],
+        speaker: turn.label,
+        speakerRole: "participant",
+        uncertainty:
+          `Provisional structural span — boundary and summary require researcher review.${openingBackgroundCandidate ? " Possible opening/background material — researcher inclusion decision required." : ""}`,
+      };
+      return base;
+    });
+}
+
+function normalizeSemanticMeaningUnits(
+  items: SemanticMeaningUnitCandidate[],
+  startingNumber: number,
+  defaults: { caseId: string; segmentId: string },
+  turns: ClassifiedTranscriptTurn[],
+) {
+  const participantTurns = turns.filter((turn) => turn.role === "participant");
+  return items
+    .map((item, index): MeaningUnit | null => {
+      const candidateTurnIds = item.sourceTurnIds ?? item.source_turn_ids;
+      const requestedTurnIds = Array.isArray(candidateTurnIds)
+        ? candidateTurnIds.map(cleanText).filter(Boolean)
+        : [];
+      let sourceTurns = requestedTurnIds
+        .map((id) => resolveRequestedSourceTurn(id, participantTurns))
+        .filter((turn): turn is ClassifiedTranscriptTurn => Boolean(turn));
+      const rawExcerpt = stripSpeakerPrefix(cleanText(item.excerpt));
+      const startQuote = stripSpeakerPrefix(
+        cleanText(item.startQuote ?? item.start_quote),
+      );
+      const endQuote = stripSpeakerPrefix(
+        cleanText(item.endQuote ?? item.end_quote),
+      );
+      if (sourceTurns.length === 0 && rawExcerpt) {
+        sourceTurns = participantTurns.filter(
+          (turn) =>
+            turn.content.includes(rawExcerpt) || rawExcerpt.includes(turn.content),
+        );
+      }
+      if (sourceTurns.length === 0 && startQuote) {
+        sourceTurns = participantTurns.filter((turn) =>
+          containsQuote(turn.content, startQuote),
+        );
+      }
+      if (sourceTurns.length === 0) {
+        return null;
+      }
+      const sourceTurnIds = [...new Set(sourceTurns.map((turn) => turn.id))];
+      const anchoredExcerpt = reconstructAnchoredParticipantExcerpt(
+        startQuote,
+        endQuote,
+        sourceTurns,
+      );
+      const candidateExcerpt = anchoredExcerpt || rawExcerpt;
+      if (!candidateExcerpt) {
+        return null;
+      }
+      const excerpt = sanitizeSemanticExcerpt(candidateExcerpt, sourceTurns);
+      if (!excerpt) {
+        return null;
+      }
+      const classification =
+        item.classification === "non_analytic" ||
+        item.classification === "uncertain"
+          ? item.classification
+          : "substantive_participant";
+      const contextExcerpt = contextForSourceTurns(sourceTurnIds, turns);
+      const openingBackgroundCandidate = sourceTurns.some(
+        isOpeningBackgroundTurn,
+      );
+      const aiSummary = sanitizeSemanticSummary(
+        cleanText(item.summary ?? item.aiSummary),
+        excerpt,
+      );
+      const number = startingNumber + index;
+      const base: MeaningUnit = {
+        aiExcerpt: excerpt,
         aiSummary,
-        humanSummary: summaryNeedsReview ? "" : aiSummary,
+        analysisExcluded: false,
+        caseId: cleanText(item.caseId) || defaults.caseId,
+        classification,
+        contextExcerpt,
+        excerpt,
+        exclusionReason: undefined,
+        generationMethod: "ai_semantic",
+        humanStatus:
+          classification === "substantive_participant" ? "Draft" : "Needs review",
+        humanSummary: aiSummary,
+        id: `mu_ai_${String(number).padStart(3, "0")}`,
+        number,
+        reviewerStatus:
+          classification === "uncertain" || !aiSummary ? "Warning" : "Not run",
+        segmentId: cleanText(item.segmentId) || defaults.segmentId,
+        sourceEndLine: Math.max(...sourceTurns.map((turn) => turn.endLine)),
+        sourceStartLine: Math.min(...sourceTurns.map((turn) => turn.startLine)),
+        sourceTurnIds,
+        speaker: sourceTurns[0]?.label || cleanText(item.speaker) || "Participant",
+        speakerRole: "participant",
+        tentativeInterpretation:
+          cleanText(item.tentativeInterpretation) || undefined,
         uncertainty:
           [
-            nonTranscriptMaterial
-              ? "Possible non-transcript material included; review before accepting."
+            cleanText(item.uncertainty),
+            openingBackgroundCandidate
+              ? "Possible opening/background material — researcher inclusion decision required."
               : "",
-            candidate.incomplete
-              ? "Meaning unit may be incomplete; review the transcript boundary before accepting."
+            classification === "uncertain"
+              ? "Uncertain — researcher review required."
               : "",
-            summaryNeedsReview
-              ? "Summary needs researcher review."
-              : "",
-            contextCandidate
-              ? "Context candidate; review for exclusion."
-              : "",
-            "Generated by local fallback because the Ollama meaning-unit chunk failed."
+            !aiSummary ? "Summary needs researcher review." : "",
           ]
             .filter(Boolean)
-            .join(" "),
-        humanStatus: contextCandidate ? "Excluded" : "Draft",
-        reviewerStatus: "Warning",
-        analysisExcluded: contextCandidate,
-        exclusionReason: contextCandidate
-          ? "Interviewer prompt/context candidate"
-          : undefined
-      } satisfies MeaningUnit;
+            .join(" ") || undefined,
+      };
+      base.reviewerWarnings = openingBackgroundCandidate
+        ? [OPENING_BACKGROUND_REVIEW_WARNING]
+        : [];
+      base.reviewerWarnings = reviewerWarningsForMeaningUnit(base);
+      if (base.reviewerWarnings.length > 0) {
+        base.reviewerStatus = "Warning";
+      }
+      return base;
     })
-    .filter((unit) => unit.excerpt);
+    .filter((unit): unit is MeaningUnit => Boolean(unit));
 }
 
-function finalizeFallbackMeaningUnitExcerpt(rawText: string) {
-  const cleaned = cleanText(rawText);
-  const parsed = parseSpeakerLine(cleaned.split("\n")[0] ?? cleaned);
-  const speaker = parsed ? normalizeSpeakerLabel(parsed.label) : "other";
-  const text = stripSpeakerPrefix(cleaned);
-  if (!text) {
-    return { excerpt: "", incomplete: false, speaker };
-  }
-
-  const sentences = splitIntoSentences(text);
-  const lastSentence = sentences[sentences.length - 1] ?? text;
-  const incomplete = meaningUnitEndsMidSentence(lastSentence);
-
-  if (incomplete && sentences.length > 1) {
-    const completeText = sentences.slice(0, -1).join(" ").trim();
-    return {
-      excerpt: completeText || text,
-      incomplete: !completeText,
-      speaker
-    };
-  }
-
-  return {
-    excerpt: text,
-    incomplete,
-    speaker
-  };
+function containsQuote(source: string, quote: string) {
+  return source.toLocaleLowerCase().includes(quote.toLocaleLowerCase());
 }
 
-function buildFallbackMeaningUnitSummary(
-  excerpt: string,
-  speaker: string,
-  incomplete = false
+function reconstructAnchoredParticipantExcerpt(
+  startQuote: string,
+  endQuote: string,
+  sourceTurns: ClassifiedTranscriptTurn[],
 ) {
-  const text = stripSpeakerPrefix(cleanText(excerpt));
-  if (!text || incomplete || countApproxWords(text) < 6) {
+  if (!startQuote || !endQuote || sourceTurns.length === 0) {
     return "";
   }
-  if (/interviewer|researcher/i.test(speaker)) {
-    return "Interviewer prompt or contextual material.";
+  const orderedTurns = [...sourceTurns].sort(
+    (left, right) => left.turnIndex - right.turnIndex,
+  );
+  const participantText = orderedTurns.map((turn) => turn.content).join("\n");
+  const lowerText = participantText.toLocaleLowerCase();
+  const startIndex = lowerText.indexOf(startQuote.toLocaleLowerCase());
+  if (startIndex < 0) {
+    return "";
   }
-  if (/therapist/i.test(text) && /(pace|rush|overwhelm|pause)/i.test(text)) {
-    return "Participant felt safer when the therapist respected their pace and responded to overwhelm.";
+  const endIndex = lowerText.indexOf(
+    endQuote.toLocaleLowerCase(),
+    startIndex,
+  );
+  if (endIndex < startIndex) {
+    return "";
+  }
+  return participantText
+    .slice(startIndex, endIndex + endQuote.length)
+    .trim();
+}
+
+function resolveRequestedSourceTurn(
+  requestedId: string,
+  participantTurns: ClassifiedTranscriptTurn[],
+) {
+  const normalized = requestedId.trim().toUpperCase();
+  const direct = participantTurns.find(
+    (turn) => turn.id.toUpperCase() === normalized,
+  );
+  if (direct) {
+    return direct;
+  }
+  const numericSuffix = normalized.match(/(?:TURN[-_ ]*)?(\d+)$/)?.[1];
+  if (!numericSuffix) {
+    return undefined;
+  }
+  const canonicalId = `TURN-${numericSuffix.padStart(4, "0")}`;
+  return participantTurns.find((turn) => turn.id === canonicalId);
+}
+
+function sanitizeSemanticExcerpt(
+  excerpt: string,
+  sourceTurns: ClassifiedTranscriptTurn[],
+) {
+  const withoutRoleLines = excerpt
+    .split("\n")
+    .filter(
+      (line) =>
+        !/^\s*(?:facilitator|moderator|interviewer|researcher)(?:\s+[a-z]?\d+)?\s*[:：]/iu.test(
+          line,
+        ),
+    )
+    .join("\n")
+    .trim();
+  if (withoutRoleLines) {
+    return stripSpeakerPrefix(withoutRoleLines);
+  }
+  return sourceTurns.map((turn) => turn.content).join("\n").trim();
+}
+
+function sanitizeSemanticSummary(summary: string, excerpt: string) {
+  if (!summary) {
+    return "";
   }
   if (
-    /\b(beginning|initially|started|start)\b/i.test(text) &&
-    /\b(organised|organized|prepared|list|problems|reasons|fix|controlled)\b/i.test(text)
+    /participant\s+(?:expressed|said|described)\s+(?:facilitator|moderator|interviewer|researcher)\b/iu.test(
+      summary,
+    )
   ) {
-    return "Participant initially tried to present their difficulties in a controlled and organised way.";
-  }
-  if (/[\u3400-\u9fff]/.test(text)) {
-    const summary = buildConciseMeaningUnitSummary(excerpt, speaker);
-    return summaryIsTooGeneric(summary) ? "" : summary;
-  }
-
-  const firstSentence = splitIntoSentences(text)[0] ?? text;
-  const transformed = firstSentence
-    .replace(/^(at the beginning|in the beginning|initially|first|firstly),?\s*/i, "")
-    .replace(/^(i\s+think\s+it\s+was|i\s+think|i\s+guess|i\s+felt|i\s+feel|i\s+was|i\s+am|i\s+had|i\s+tried|i\s+started)\b/i, "")
-    .replace(/\bI\b/g, "they")
-    .replace(/\bmy\b/gi, "their")
-    .replace(/\bme\b/gi, "them")
-    .replace(/\bmyself\b/gi, "themself")
-    .replace(/\s+/g, " ")
-    .trim();
-  const gist = transformed
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 18)
-    .join(" ")
-    .replace(/[.!?。！？,，;；:：]+$/g, "")
-    .trim();
-
-  if (!gist || countApproxWords(gist) < 5 || summaryIsTooGeneric(gist)) {
     return "";
   }
+  if (summaryIsTooCloseToExcerpt(summary, excerpt)) {
+    return summary;
+  }
+  return summary;
+}
 
-  const summary = `Participant expressed ${lowercaseInitial(gist)}.`;
-  return summaryIsTooGeneric(summary) ? "" : summary;
+function orderAndNumberAnalysisRecords(
+  records: MeaningUnit[],
+  turns: ClassifiedTranscriptTurn[],
+  startingNumber: number,
+) {
+  const turnOrder = new Map(turns.map((turn, index) => [turn.id, index]));
+  const ordered = records
+    .map((record, originalIndex) => ({ record, originalIndex }))
+    .sort((left, right) => {
+      const firstTurn = (item: MeaningUnit) =>
+        Math.min(
+          ...(item.sourceTurnIds ?? []).map(
+            (id) => turnOrder.get(id) ?? Number.MAX_SAFE_INTEGER,
+          ),
+        );
+      return (
+        firstTurn(left.record) - firstTurn(right.record) ||
+        left.originalIndex - right.originalIndex
+      );
+    });
+  return ordered.map(({ record }, index) => ({
+      ...record,
+      id: `mu_${String(startingNumber + index).padStart(4, "0")}`,
+      number: startingNumber + index,
+    }));
+}
+
+function countGenerationRecords(
+  turns: ClassifiedTranscriptTurn[],
+  records: MeaningUnit[],
+) {
+  return {
+    participantTurns: turns.filter((turn) => turn.role === "participant").length,
+    substantiveMeaningUnits: records.filter(
+      (unit) => unit.classification === "substantive_participant",
+    ).length,
+    contextOnlySegments: turns.filter(
+      (turn) =>
+        turn.role !== "participant" && turn.classification === "context_only",
+    ).length,
+    nonAnalyticSegments:
+      records.filter((unit) => unit.classification === "non_analytic").length +
+      turns.filter(
+        (turn) =>
+          turn.role !== "participant" && turn.classification === "non_analytic",
+      ).length,
+    uncertainSegments:
+      records.filter((unit) => unit.classification === "uncertain").length +
+      turns.filter((turn) => turn.role === "unclear").length,
+    openingBackgroundCandidates: records.filter(isOpeningBackgroundCandidate)
+      .length,
+  };
 }
 
 function formatDuration(ms: number) {
@@ -1600,136 +1860,6 @@ function formatDuration(ms: number) {
   }
 
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
-function normalizeMeaningUnits(
-  items: Array<Partial<MeaningUnit>>,
-  startingNumber = 1,
-  defaults: { caseId: string; segmentId: string } = {
-    caseId: "CASE-001",
-    segmentId: "SEG-001"
-  }
-) {
-  return items
-    .map((item, index) => {
-      const number = startingNumber + index;
-      const excerpt = cleanText(item.excerpt);
-      const speaker = cleanText(item.speaker) || "Participant";
-      const aiSummary = ensureConciseMeaningUnitSummary(
-        cleanText(item.aiSummary),
-        excerpt,
-        speaker
-      );
-      const rawHumanSummary = cleanText(item.humanSummary);
-      const humanSummary = ensureConciseMeaningUnitSummary(
-        rawHumanSummary.toLowerCase() === "same as aisummary"
-          ? aiSummary
-          : rawHumanSummary || aiSummary,
-        excerpt,
-        speaker
-      );
-      const normalizedSpeaker = speaker.toLowerCase();
-      const nonTranscriptMaterial = containsNonTranscriptMaterial(excerpt);
-      const contextCandidate =
-        normalizedSpeaker.includes("interviewer") ||
-        (!normalizedSpeaker.includes("participant") &&
-          isInterviewerCandidate(excerpt));
-
-      return {
-        id: `mu_ai_${String(number).padStart(3, "0")}`,
-        segmentId: cleanText(item.segmentId) || defaults.segmentId,
-        caseId: cleanText(item.caseId) || defaults.caseId,
-        speaker: contextCandidate ? "Interviewer" : speaker,
-        number,
-        aiExcerpt: excerpt,
-        excerpt,
-        aiSummary,
-        humanSummary,
-        tentativeInterpretation:
-          cleanText(item.tentativeInterpretation) || undefined,
-        uncertainty:
-          nonTranscriptMaterial
-            ? [
-                cleanText(item.uncertainty),
-                "Possible non-transcript material included; review before accepting."
-              ]
-                .filter(Boolean)
-                .join(" ")
-            : cleanText(item.uncertainty) || undefined,
-        humanStatus: contextCandidate ? "Excluded" : "Draft",
-        reviewerStatus:
-          nonTranscriptMaterial ||
-          contextCandidate ||
-          item.reviewerStatus === "Warning" ||
-          item.reviewerStatus === "Major issue"
-            ? item.reviewerStatus
-              ? item.reviewerStatus
-              : "Warning"
-            : "Not run",
-        analysisExcluded: contextCandidate,
-        exclusionReason: contextCandidate
-          ? "Interviewer prompt/context candidate"
-          : undefined
-      } satisfies MeaningUnit;
-    })
-    .filter((item) => item.excerpt && item.aiSummary);
-}
-
-function ensureConciseMeaningUnitSummary(
-  summary: string,
-  excerpt: string,
-  speaker: string
-) {
-  const cleanedSummary = cleanText(summary);
-  if (
-    !cleanedSummary ||
-    summaryIsTooCloseToExcerpt(cleanedSummary, excerpt) ||
-    countApproxWords(cleanedSummary) > 28
-  ) {
-    return buildConciseMeaningUnitSummary(excerpt, speaker);
-  }
-  return cleanedSummary;
-}
-
-function buildConciseMeaningUnitSummary(excerpt: string, speaker: string) {
-  const text = stripSpeakerPrefix(cleanText(excerpt));
-  if (!text) {
-    return "Meaning requires researcher review.";
-  }
-  if (/interviewer|researcher/i.test(speaker)) {
-    return "Interviewer prompt or contextual material.";
-  }
-  if (/therapist/i.test(text) && /(pace|rush|overwhelm|pause)/i.test(text)) {
-    return "Participant felt safer when the therapist respected their pace and responded to overwhelm.";
-  }
-  const firstSentence = splitIntoSentences(text)[0] ?? text;
-  if (/[\u3400-\u9fff]/.test(firstSentence)) {
-    const gist = firstSentence
-      .replace(/^(我觉得|我认为|我想|然后|就是|其实|嗯|啊|那个|这个)/, "")
-      .replace(/[。！？,，;；:：]+$/g, "")
-      .trim()
-      .slice(0, 42);
-    return gist
-      ? `参与者表达了${gist}。`
-      : "参与者的主要含义需要研究者复核。";
-  }
-  const transformed = firstSentence
-    .replace(/^(i\s+think\s+it\s+was|i\s+think|i\s+guess|i\s+felt|i\s+feel|i\s+was|i\s+am)\b/i, "")
-    .replace(/\bI\b/g, "they")
-    .replace(/\bmy\b/gi, "their")
-    .replace(/\bme\b/gi, "them")
-    .replace(/\bmyself\b/gi, "themself")
-    .replace(/\s+/g, " ")
-    .trim();
-  const words = transformed.split(/\s+/).filter(Boolean).slice(0, 18);
-  const gist = words.join(" ").replace(/[.!?。！？,，;；:：]+$/g, "").trim();
-  if (!gist) {
-    return "Participant meaning requires researcher review.";
-  }
-  const prefix = /[\u3400-\u9fff]/.test(gist)
-    ? "参与者表达了"
-    : "Participant described";
-  return `${prefix} ${lowercaseInitial(gist)}.`;
 }
 
 function summaryIsTooCloseToExcerpt(summary: string, excerpt: string) {
@@ -1766,36 +1896,6 @@ function summaryIsTooCloseToExcerpt(summary: string, excerpt: string) {
   return overlap / summaryTokens.size > 0.86 && summaryTokens.size > 10;
 }
 
-function meaningUnitEndsMidSentence(text: string) {
-  const trimmed = cleanText(text);
-  if (!trimmed) {
-    return false;
-  }
-  if (/[.!?。！？)”'’」』]$/.test(trimmed)) {
-    return false;
-  }
-  return /\b(and|but|because|because of|when|while|where|which|that|so|so that|then|with|without|to|for|from|into|about|if|although|though|as)\s*$/i.test(
-    trimmed
-  );
-}
-
-function summaryIsTooGeneric(summary: string) {
-  const normalized = normalizeForSimilarity(summary);
-  if (!normalized) {
-    return true;
-  }
-  return (
-    /^participant (described|expressed|talked about|shared|said|mentioned)( at the beginning| in the beginning| initially)?\.?$/i.test(
-      summary.trim()
-    ) ||
-    /^participant (described|expressed|talked about|shared|said|mentioned) (at the beginning|in the beginning|initially)\b/i.test(
-      summary.trim()
-    ) ||
-    normalized === "participant described" ||
-    normalized === "participant expressed"
-  );
-}
-
 function normalizeForSimilarity(text: string) {
   return stripSpeakerPrefix(text)
     .toLowerCase()
@@ -1806,12 +1906,11 @@ function normalizeForSimilarity(text: string) {
 
 function stripSpeakerPrefix(text: string) {
   return text
-    .replace(/^(interviewer|researcher|moderator|facilitator|participant|interviewee|student|[IQPA])\s*[:：]\s*/i, "")
+    .replace(
+      /^(interviewer|researcher|moderator|facilitator|participant|interviewee|respondent|student|[IQPA])(?:\s+[a-z]?\d+)?\s*[:：]\s*/i,
+      "",
+    )
     .trim();
-}
-
-function lowercaseInitial(text: string) {
-  return text ? `${text.charAt(0).toLowerCase()}${text.slice(1)}` : text;
 }
 
 function normalizeCategories(
@@ -1843,65 +1942,6 @@ function normalizeCategories(
     );
 }
 
-function fallbackCategoriesFromUnits(units: MeaningUnit[]): CategoryNode[] {
-  const themes = inferFallbackThemeGroups(units);
-  const categories: CategoryNode[] = [];
-
-  themes.forEach((group) => {
-    categories.push({
-      id: `cat_fallback_${String(categories.length + 1).padStart(3, "0")}`,
-      name: `Draft category ${categories.length + 1}: ${group.title}`,
-      definition:
-        "This category was created by fallback grouping because the AI returned empty output. Please review and rename before using it.",
-      confidence: "low",
-      includedUnitIds: group.units.map((unit) => unit.number),
-      rationale:
-        "Fallback grouping based on broad wording patterns in confirmed meaning-unit summaries.",
-      source: "fallback",
-      status: "fallback_draft"
-    });
-  });
-
-  return categories;
-}
-
-function inferFallbackThemeGroups(units: MeaningUnit[]) {
-  const buckets: Array<{ keywords: RegExp; title: string; units: MeaningUnit[] }> = [
-    { keywords: /stress|anxiety|worry|pause|react|calm|压力|焦虑|紧张/i, title: "Stress and anxiety management", units: [] },
-    { keywords: /concentration|focus|study|reading|task|distraction|attention|学习|专注|阅读/i, title: "Concentration and study habits", units: [] },
-    { keywords: /self-awareness|self awareness|self-compassion|self compassion|self-critic|ask for help|自我觉察|自我关怀|自责/i, title: "Self-awareness and self-compassion", units: [] },
-    { keywords: /limit|challenge|difficult|recommend|magic solution|uncomfortable|impatient|限制|挑战|困难|建议/i, title: "Limits and challenges of mindfulness", units: [] }
-  ];
-  const reviewBucket = { title: "Needs researcher review", units: [] as MeaningUnit[] };
-
-  units.forEach((unit) => {
-    const summary = `${unit.humanSummary || unit.aiSummary} ${unit.excerpt}`;
-    const bucket = buckets.find((item) => item.keywords.test(summary));
-    if (bucket) {
-      bucket.units.push(unit);
-    } else {
-      reviewBucket.units.push(unit);
-    }
-  });
-
-  const used = buckets
-    .filter((bucket) => bucket.units.length > 0)
-    .map(({ title, units }) => ({ title, units }));
-  if (reviewBucket.units.length > 0) {
-    used.push(reviewBucket);
-  }
-  if (used.length > 0) {
-    return used;
-  }
-
-  const topLevelCount = Math.min(4, Math.max(2, Math.ceil(units.length / 4)));
-  const groupSize = Math.ceil(units.length / topLevelCount);
-  return Array.from({ length: topLevelCount }, (_item, index) => ({
-    title: "Needs researcher review",
-    units: units.slice(index * groupSize, (index + 1) * groupSize)
-  })).filter((group) => group.units.length > 0);
-}
-
 function safeCategoryTitle(title: string, index: number) {
   const cleaned = title.replace(/\s+/g, " ").trim();
   if (
@@ -1918,6 +1958,33 @@ function normalizeConfidence(value: unknown): CategoryNode["confidence"] {
   return value === "low" || value === "medium" || value === "high"
     ? value
     : undefined;
+}
+
+function buildDeterministicMeaningUnitReviewerComments(units: MeaningUnit[]) {
+  return units.flatMap((unit) =>
+    reviewerWarningsForMeaningUnit(unit).map((warning, index) => {
+      const [issueType] = warning.split(":", 1);
+      return {
+        agent: "Automated Step 2 safeguard",
+        comment: warning,
+        id: `review_auto_${unit.id}_${index + 1}`,
+        issueType: issueType || "Meaning-unit review warning",
+        resolved: false,
+        severity:
+          warning.startsWith("Speaker-role error") ||
+          warning.startsWith("Mixed-role contamination")
+            ? ("major" as const)
+            : ("warning" as const),
+        status: "unresolved" as const,
+        suggestedAction:
+          "Review the source, context, boundary, classification, and summary; then revise, split, merge, exclude, or resolve this warning with a memo.",
+        target: `MU ${unit.number}`,
+        targetId: `MU${unit.number}`,
+        targetType: "meaning_unit" as const,
+        workspace: "meaning-units" as const,
+      } satisfies ReviewerComment;
+    }),
+  );
 }
 
 function normalizeReviewerComments(

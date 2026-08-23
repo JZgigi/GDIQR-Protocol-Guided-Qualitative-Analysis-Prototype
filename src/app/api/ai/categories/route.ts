@@ -86,7 +86,11 @@ export async function POST(request: NextRequest) {
     const confirmedUnits = sourceUnits.filter(
       (unit) =>
         !unit.analysisExcluded &&
-        (unit.humanStatus === "Accepted" || unit.humanStatus === "Edited")
+        unit.humanStatus === "Accepted" &&
+        (unit.classification ?? "substantive_participant") ===
+          "substantive_participant" &&
+        ((unit.speakerRole ?? "participant") === "participant" ||
+          unit.generationMethod === "researcher")
     );
     if (confirmedUnits.length === 0) {
       throw new Error(

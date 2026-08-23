@@ -5,6 +5,7 @@ import {
 } from "@/lib/gdiqr-repository";
 import { getStorageMode } from "@/lib/storage-mode";
 import type { SegmentSpeakerRole, TranscriptSegment } from "@/lib/types";
+import { splitTranscriptIntoSpeakerTurns } from "@/lib/transcript-speakers";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           notice:
-            "Speaker-labelled segments created locally. Interviewer-only segments are kept for context and ignored by default when generating meaning-unit drafts.",
+            "Speaker-labelled segments created locally. Facilitator/interviewer segments are retained as context and excluded from substantive meaning-unit analysis by default.",
           persisted: false,
           saved: true,
           segments,
@@ -70,44 +71,20 @@ function buildLocalSpeakerSegments(
     startingMuNumber: index * 100 + 1,
     startTimestamp: "00:00",
     status:
-      turn.role === "interviewer" ? "Needs Review" : "Ready for MU Analysis",
+      turn.role === "interviewer" || turn.role === "facilitator"
+        ? "Needs Review"
+        : "Ready for MU Analysis",
     text: turn.text,
     topicLabel: turn.label,
   }));
 }
 
 function splitTranscriptBySpeakerLabels(transcript: string) {
-  const lines = transcript
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const turns: Array<{
-    label: string;
-    role: SegmentSpeakerRole;
-    text: string;
-  }> = [];
-
-  for (const line of lines) {
-    const match = line.match(/^([^:\uFF1A\n]{1,48})[:\uFF1A]\s*(.*)$/u);
-    if (match) {
-      const label = match[1].trim();
-      const content = match[2].trim();
-      turns.push({
-        label,
-        role: inferRole(label),
-        text: content ? `${label}: ${content}` : `${label}:`,
-      });
-      continue;
-    }
-
-    if (turns.length > 0) {
-      turns[turns.length - 1].text =
-        `${turns[turns.length - 1].text}\n${line}`.trim();
-    } else {
-      turns.push({ label: "Unclear speaker", role: "unclear", text: line });
-    }
-  }
+  const turns = splitTranscriptIntoSpeakerTurns(transcript).map((turn) => ({
+    label: turn.label,
+    role: turn.role satisfies SegmentSpeakerRole,
+    text: turn.raw,
+  }));
 
   if (turns.length < 2 || turns.every((turn) => turn.role === "unclear")) {
     return [
@@ -120,19 +97,4 @@ function splitTranscriptBySpeakerLabels(transcript: string) {
   }
 
   return turns.filter((turn) => turn.text.trim());
-}
-
-function inferRole(label: string): SegmentSpeakerRole {
-  const value = label.trim().toLowerCase();
-  if (
-    /^(interviewer|interview|researcher|moderator|facilitator|q|i|\u4E3B\u6301\u4EBA|\u8BBF\u8C08\u8005|\u7814\u7A76\u8005|\u91C7\u8BBF\u8005)$/.test(
-      value,
-    )
-  ) {
-    return "interviewer";
-  }
-  if (/^(participant|interviewee|student|p|a|\u53D7\u8BBF\u8005|\u53C2\u4E0E\u8005|\u5B66\u751F)$/.test(value)) {
-    return "participant";
-  }
-  return "unclear";
 }

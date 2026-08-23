@@ -1,14 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   createManualMeaningUnit,
+  deleteMeaningUnit,
   mergeMeaningUnits,
-  splitMeaningUnit
+  splitMeaningUnit,
+  updateMeaningUnit,
 } from "@/lib/gdiqr-repository";
+import type { MeaningUnit } from "@/lib/types";
 import { isLocalStorageMode } from "@/lib/storage-mode";
 
 export const runtime = "nodejs";
 
 type MeaningUnitAction = "manual_create" | "split" | "merge";
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ unitId: string }> },
+) {
+  const { unitId } = await params;
+  const body = (await request.json().catch(() => ({}))) as {
+    analysisExcluded?: boolean;
+    classification?: MeaningUnit["classification"];
+    excerpt?: string;
+    exclusionReason?: string | null;
+    generationMethod?: MeaningUnit["generationMethod"];
+    humanStatus?: MeaningUnit["humanStatus"];
+    humanSummary?: string;
+    speaker?: string;
+  };
+  try {
+    return NextResponse.json(await updateMeaningUnit({ ...body, unitId }));
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Meaning-unit update failed." },
+      { status: 500 },
+    );
+  }
+}
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ unitId: string }> },
+) {
+  const { unitId } = await params;
+  try {
+    return NextResponse.json(await deleteMeaningUnit({ unitId }));
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Meaning-unit deletion failed." },
+      { status: 500 },
+    );
+  }
+}
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {

@@ -42,6 +42,20 @@ select
   is_nullable
 from information_schema.columns
 where table_schema = 'public'
+  and table_name = 'meaning_units'
+  and column_name in (
+    'ai_excerpt', 'classification', 'context_excerpt', 'generation_method',
+    'reviewer_warnings', 'source_start_line', 'source_end_line',
+    'source_turn_ids', 'speaker_role'
+  )
+order by ordinal_position;
+
+select
+  column_name,
+  data_type,
+  is_nullable
+from information_schema.columns
+where table_schema = 'public'
   and table_name = 'audit_events'
   and column_name in (
     'project_id', 'event_timestamp', 'actor', 'action', 'target',

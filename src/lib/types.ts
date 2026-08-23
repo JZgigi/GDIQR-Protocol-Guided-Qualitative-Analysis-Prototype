@@ -21,7 +21,31 @@ export type SegmentStatus =
   | "Needs Revision"
   | "Completed";
 
-export type SegmentSpeakerRole = "interviewer" | "participant" | "unclear";
+export type SegmentSpeakerRole =
+  | "facilitator"
+  | "interviewer"
+  | "participant"
+  | "unclear";
+
+export type MeaningUnitClassification =
+  | "substantive_participant"
+  | "context_only"
+  | "non_analytic"
+  | "uncertain";
+
+export type MeaningUnitGenerationMethod =
+  | "ai_semantic"
+  | "rule_based_fallback"
+  | "researcher";
+
+export interface MeaningUnitGenerationCounts {
+  participantTurns: number;
+  substantiveMeaningUnits: number;
+  contextOnlySegments: number;
+  nonAnalyticSegments: number;
+  uncertainSegments: number;
+  openingBackgroundCandidates: number;
+}
 
 export type DatasetType = "open" | "anonymised" | "identifiable_sensitive";
 export type ProjectDataSource =
@@ -40,8 +64,10 @@ export type AuditActionType =
   | "transcript_confirmed"
   | "pre_analysis_updated"
   | "meaning_units_generated"
+  | "meaning_units_redelineated"
   | "meaning_unit_created"
   | "meaning_unit_edited"
+  | "meaning_unit_restored"
   | "meaning_unit_accepted"
   | "meaning_unit_excluded"
   | "meaning_unit_split"
@@ -252,6 +278,15 @@ export interface MeaningUnit {
   reviewerStatus: ReviewerStatus;
   analysisExcluded: boolean;
   exclusionReason?: string;
+  classification?: MeaningUnitClassification;
+  contextExcerpt?: string;
+  generationMethod?: MeaningUnitGenerationMethod;
+  reviewerWarnings?: string[];
+  sourceEndLine?: number;
+  sourceStartLine?: number;
+  sourceTranscriptId?: string;
+  sourceTurnIds?: string[];
+  speakerRole?: SegmentSpeakerRole;
 }
 
 export interface CategoryNode {

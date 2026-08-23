@@ -567,7 +567,12 @@ function parseTurns(transcript: string): TranscriptTurn[] {
     content: turn.content,
     index,
     raw: turn.raw,
-    speaker: turn.role === "unclear" ? "other" : turn.role
+    speaker:
+      turn.role === "unclear"
+        ? "other"
+        : turn.role === "facilitator"
+          ? "interviewer"
+          : turn.role
   }));
 }
 
@@ -595,7 +600,11 @@ function turnsToText(turns: TranscriptTurn[]) {
 
 function normalizeSpeaker(label: string): TranscriptTurn["speaker"] {
   const role = normalizeTranscriptSpeakerRole(label);
-  return role === "unclear" ? "other" : role;
+  return role === "unclear"
+    ? "other"
+    : role === "facilitator"
+      ? "interviewer"
+      : role;
 }
 
 function isParticipantTopicShift(turn: TranscriptTurn) {

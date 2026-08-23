@@ -50,10 +50,12 @@ type IntegrationRelationshipRow =
 type PreAnalysisNotesRow =
   Database["public"]["Tables"]["pre_analysis_notes"]["Row"];
 
-const segmentRolePrefixPattern = /^\[(interviewer|participant|unclear)\]\s*/i;
+const segmentRolePrefixPattern =
+  /^\[(facilitator|interviewer|participant|unclear)\]\s*/i;
 
 function normalizeSegmentSpeakerRole(value: unknown): SegmentSpeakerRole {
-  return value === "interviewer" ||
+  return value === "facilitator" ||
+    value === "interviewer" ||
     value === "participant" ||
     value === "unclear"
     ? value
@@ -85,6 +87,7 @@ function stripSegmentSpeakerRolePrefix(value: string) {
 function speakerRoleFromStoredInfo(value: string): SegmentSpeakerRole {
   const explicit = value.match(segmentRolePrefixPattern)?.[1]?.toLowerCase();
   if (
+    explicit === "facilitator" ||
     explicit === "interviewer" ||
     explicit === "participant" ||
     explicit === "unclear"
@@ -1661,16 +1664,20 @@ export async function createAudioPreviewUrl({
 
 export async function updateMeaningUnit({
   analysisExcluded,
+  classification,
   excerpt,
   exclusionReason,
+  generationMethod,
   humanStatus,
   humanSummary,
   speaker,
   unitId,
 }: {
   analysisExcluded?: boolean;
+  classification?: MeaningUnit["classification"];
   excerpt?: string;
   exclusionReason?: string | null;
+  generationMethod?: MeaningUnit["generationMethod"];
   humanStatus?: MeaningUnit["humanStatus"];
   humanSummary?: string;
   speaker?: string;
@@ -1705,6 +1712,12 @@ export async function updateMeaningUnit({
   if (speaker !== undefined) {
     updates.speaker = speaker;
   }
+  if (classification !== undefined) {
+    updates.classification = classification;
+  }
+  if (generationMethod !== undefined) {
+    updates.generation_method = generationMethod;
+  }
   if (analysisExcluded !== undefined) {
     updates.analysis_excluded = analysisExcluded;
     updates.human_status = analysisExcluded ? "Excluded" : "Needs review";
@@ -1731,6 +1744,8 @@ export async function updateMeaningUnit({
   const actionType: AuditActionType =
     analysisExcluded === true
       ? "meaning_unit_excluded"
+      : analysisExcluded === false
+        ? "meaning_unit_restored"
       : humanStatus === "Accepted"
         ? "meaning_unit_accepted"
         : "meaning_unit_edited";
@@ -1767,6 +1782,8 @@ export async function updateMeaningUnit({
     analysisExcluded !== undefined ||
     (humanStatus !== "Accepted" &&
       (excerpt !== undefined ||
+        classification !== undefined ||
+        generationMethod !== undefined ||
         humanSummary !== undefined ||
         speaker !== undefined));
 
@@ -1818,6 +1835,11 @@ export async function createManualMeaningUnit({
     reviewer_status: "Not run",
     analysis_excluded: false,
     exclusion_reason: null,
+    classification: "substantive_participant",
+    generation_method: "researcher",
+    reviewer_warnings: [],
+    source_turn_ids: [],
+    speaker_role: "participant",
   };
 
   const { data, error } = await supabase
@@ -1915,6 +1937,17 @@ export async function splitMeaningUnit({
     reviewer_status: "Not run",
     analysis_excluded: false,
     exclusion_reason: null,
+    classification: before.classification ?? "substantive_participant",
+    context_excerpt: before.context_excerpt ?? null,
+    generation_method: "researcher",
+    reviewer_warnings: [
+      ...((before.reviewer_warnings as string[] | undefined) ?? []),
+      "Researcher split: review both new semantic boundaries.",
+    ],
+    source_end_line: before.source_end_line ?? null,
+    source_start_line: before.source_start_line ?? null,
+    source_turn_ids: before.source_turn_ids ?? [],
+    speaker_role: before.speaker_role ?? "participant",
     updated_at: now,
   };
 
@@ -1926,6 +1959,8 @@ export async function splitMeaningUnit({
       human_status: "Needs review",
       analysis_excluded: false,
       exclusion_reason: null,
+      generation_method: "researcher",
+      reviewer_warnings: ["Researcher split: review this revised semantic boundary."],
       updated_at: now,
     })
     .eq("id", unitId)
@@ -2019,6 +2054,26 @@ export async function mergeMeaningUnits({
       human_status: "Needs review",
       analysis_excluded: false,
       exclusion_reason: null,
+      generation_method: "researcher",
+      reviewer_warnings: ["Researcher merge: review the combined semantic boundary."],
+      source_end_line:
+        Math.max(first.source_end_line ?? 0, second.source_end_line ?? 0) || null,
+      source_start_line:
+        Math.min(
+          first.source_start_line ?? Number.MAX_SAFE_INTEGER,
+          second.source_start_line ?? Number.MAX_SAFE_INTEGER,
+        ) === Number.MAX_SAFE_INTEGER
+          ? null
+          : Math.min(
+              first.source_start_line ?? Number.MAX_SAFE_INTEGER,
+              second.source_start_line ?? Number.MAX_SAFE_INTEGER,
+            ),
+      source_turn_ids: [
+        ...new Set([
+          ...(first.source_turn_ids ?? []),
+          ...(second.source_turn_ids ?? []),
+        ]),
+      ],
       updated_at: new Date().toISOString(),
     })
     .eq("id", first.id)
@@ -2527,7 +2582,7 @@ export async function speakerSplitSegmentsFromTranscript({
       end_timestamp: "00:00",
       starting_mu_number: index * 100 + 1,
       status:
-        turn.role === "interviewer"
+        turn.role === "interviewer" || turn.role === "facilitator"
           ? ("Needs review" as const)
           : ("Ready" as const),
       text: turn.text,
@@ -2555,7 +2610,7 @@ export async function speakerSplitSegmentsFromTranscript({
 
   return {
     notice:
-      "Speaker-labelled segments created. Interviewer-only segments are kept for context and ignored by default when generating meaning-unit drafts.",
+      "Speaker-labelled segments created. Facilitator/interviewer segments are retained as context and excluded from substantive meaning-unit analysis by default.",
     saved: true,
     segments: await loadSegments(projectId),
   };
@@ -2629,11 +2684,19 @@ export async function replaceMeaningUnitsForSegment({
     return { saved: false, reason: "Supabase is not configured.", units };
   }
 
-  const { data: previousUnits } = await supabase
-    .from("meaning_units")
-    .select("*")
-    .eq("project_id", projectId)
-    .eq("segment_id", segmentId);
+  const [{ data: previousUnits }, { data: sourceSegment }] = await Promise.all([
+    supabase
+      .from("meaning_units")
+      .select("*")
+      .eq("project_id", projectId)
+      .eq("segment_id", segmentId),
+    supabase
+      .from("segments")
+      .select("transcript_id")
+      .eq("project_id", projectId)
+      .eq("segment_id", segmentId)
+      .maybeSingle(),
+  ]);
 
   await supabase
     .from("meaning_units")
@@ -2649,6 +2712,7 @@ export async function replaceMeaningUnitsForSegment({
       case_id: unit.caseId,
       speaker: unit.speaker,
       unit_number: unit.number,
+      ai_excerpt: unit.aiExcerpt ?? unit.excerpt,
       excerpt: unit.excerpt,
       ai_summary: unit.aiSummary,
       human_summary: unit.humanSummary,
@@ -2658,6 +2722,15 @@ export async function replaceMeaningUnitsForSegment({
       reviewer_status: unit.reviewerStatus,
       analysis_excluded: unit.analysisExcluded,
       exclusion_reason: unit.exclusionReason ?? null,
+      classification: unit.classification ?? "substantive_participant",
+      context_excerpt: unit.contextExcerpt ?? null,
+      generation_method: unit.generationMethod ?? "ai_semantic",
+      reviewer_warnings: unit.reviewerWarnings ?? [],
+      source_end_line: unit.sourceEndLine ?? null,
+      source_start_line: unit.sourceStartLine ?? null,
+      source_turn_ids: unit.sourceTurnIds ?? [],
+      speaker_role: unit.speakerRole ?? "unclear",
+      transcript_id: sourceSegment?.transcript_id ?? null,
     }));
 
   const { data, error } = await supabase
@@ -2677,7 +2750,10 @@ export async function replaceMeaningUnitsForSegment({
 
   await recordEditLog({
     action: `Generated ${units.length} draft meaning units for ${segmentId}`,
-    actionType: "meaning_units_generated",
+    actionType:
+      (previousUnits ?? []).length > 0
+        ? "meaning_units_redelineated"
+        : "meaning_units_generated",
     actor: "AI",
     newValue: (data ?? []).map(mapMeaningUnit),
     previousValue: (previousUnits ?? []).map(mapMeaningUnit),
@@ -2705,10 +2781,20 @@ export async function replaceMeaningUnitsFromAi({
     return { saved: false, reason: "Supabase is not configured.", units };
   }
 
-  const { data: previousUnits } = await supabase
-    .from("meaning_units")
-    .select("*")
-    .eq("project_id", projectId);
+  const [{ data: previousUnits }, { data: sourceTranscript }] =
+    await Promise.all([
+      supabase
+        .from("meaning_units")
+        .select("*")
+        .eq("project_id", projectId),
+      supabase
+        .from("transcripts")
+        .select("id")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
 
   await Promise.all([
     supabase.from("meaning_units").delete().eq("project_id", projectId),
@@ -2718,7 +2804,10 @@ export async function replaceMeaningUnitsFromAi({
   if (units.length === 0) {
     await recordEditLog({
       action: "Cleared draft meaning units",
-      actionType: "meaning_units_generated",
+      actionType:
+        (previousUnits ?? []).length > 0
+          ? "meaning_units_redelineated"
+          : "meaning_units_generated",
       actor: "AI",
       newValue: [],
       previousValue: (previousUnits ?? []).map(mapMeaningUnit),
@@ -2738,6 +2827,7 @@ export async function replaceMeaningUnitsFromAi({
       case_id: unit.caseId,
       speaker: unit.speaker,
       unit_number: unit.number,
+      ai_excerpt: unit.aiExcerpt ?? unit.excerpt,
       excerpt: unit.excerpt,
       ai_summary: unit.aiSummary,
       human_summary: unit.humanSummary,
@@ -2747,6 +2837,15 @@ export async function replaceMeaningUnitsFromAi({
       reviewer_status: unit.reviewerStatus,
       analysis_excluded: unit.analysisExcluded,
       exclusion_reason: unit.exclusionReason ?? null,
+      classification: unit.classification ?? "substantive_participant",
+      context_excerpt: unit.contextExcerpt ?? null,
+      generation_method: unit.generationMethod ?? "ai_semantic",
+      reviewer_warnings: unit.reviewerWarnings ?? [],
+      source_end_line: unit.sourceEndLine ?? null,
+      source_start_line: unit.sourceStartLine ?? null,
+      source_turn_ids: unit.sourceTurnIds ?? [],
+      speaker_role: unit.speakerRole ?? "unclear",
+      transcript_id: sourceTranscript?.id ?? null,
     }));
 
   const { data, error } = await supabase
@@ -2761,7 +2860,10 @@ export async function replaceMeaningUnitsFromAi({
 
   await recordEditLog({
     action: `Generated ${units.length} draft meaning units from confirmed transcript`,
-    actionType: "meaning_units_generated",
+    actionType:
+      (previousUnits ?? []).length > 0
+        ? "meaning_units_redelineated"
+        : "meaning_units_generated",
     actor: "AI",
     newValue: (data ?? []).map(mapMeaningUnit),
     previousValue: (previousUnits ?? []).map(mapMeaningUnit),
@@ -3653,7 +3755,7 @@ function mapMeaningUnit(
     caseId: row.case_id,
     speaker: row.speaker,
     number: row.unit_number,
-    aiExcerpt: row.excerpt,
+    aiExcerpt: row.ai_excerpt ?? row.excerpt,
     excerpt: row.excerpt,
     aiSummary: row.ai_summary,
     humanSummary: row.human_summary,
@@ -3663,6 +3765,15 @@ function mapMeaningUnit(
     reviewerStatus: row.reviewer_status,
     analysisExcluded: row.analysis_excluded ?? false,
     exclusionReason: row.exclusion_reason ?? undefined,
+    classification: row.classification ?? "substantive_participant",
+    contextExcerpt: row.context_excerpt ?? undefined,
+    generationMethod: row.generation_method ?? undefined,
+    reviewerWarnings: row.reviewer_warnings ?? [],
+    sourceEndLine: row.source_end_line ?? undefined,
+    sourceStartLine: row.source_start_line ?? undefined,
+    sourceTranscriptId: row.transcript_id ?? undefined,
+    sourceTurnIds: row.source_turn_ids ?? [],
+    speakerRole: row.speaker_role ?? undefined,
   } satisfies MeaningUnit;
 }
 
@@ -3903,8 +4014,10 @@ function toAuditActionType(
     "transcript_confirmed",
     "pre_analysis_updated",
     "meaning_units_generated",
+    "meaning_units_redelineated",
     "meaning_unit_created",
     "meaning_unit_edited",
+    "meaning_unit_restored",
     "meaning_unit_accepted",
     "meaning_unit_excluded",
     "meaning_unit_split",

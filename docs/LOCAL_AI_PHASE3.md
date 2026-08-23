@@ -30,16 +30,10 @@ http://localhost:11434
 
 ## 2. Pull the first local draft-support model
 
-Start with the smaller model first:
+Use the 8B model as the local draft-support baseline:
 
 ```bash
 ollama pull qwen3:8b
-```
-
-If your machine has enough memory and you want stronger draft-support output later:
-
-```bash
-ollama pull qwen3:14b
 ```
 
 ## 3. Set local environment variables
@@ -48,7 +42,7 @@ In `.env.local`, use:
 
 ```text
 AI_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3:8b
 ```
 

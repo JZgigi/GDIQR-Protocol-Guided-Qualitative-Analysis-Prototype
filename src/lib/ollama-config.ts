@@ -2,7 +2,10 @@ const defaultOllamaBaseUrl = "http://localhost:11434";
 const defaultOllamaModel = "qwen3:8b";
 
 export function getOllamaBaseUrl() {
-  return (process.env.OLLAMA_BASE_URL || defaultOllamaBaseUrl).replace(/\/$/, "");
+  return (process.env.OLLAMA_BASE_URL || defaultOllamaBaseUrl).replace(
+    /\/$/,
+    "",
+  );
 }
 
 export function getOllamaOpenAiBaseUrl() {
@@ -12,6 +15,10 @@ export function getOllamaOpenAiBaseUrl() {
 
 export function getOllamaChatCompletionsUrl() {
   return `${getOllamaOpenAiBaseUrl()}/chat/completions`;
+}
+
+export function getOllamaNativeChatUrl() {
+  return `${getOllamaBaseUrl()}/api/chat`;
 }
 
 export function getOllamaModelsUrl() {

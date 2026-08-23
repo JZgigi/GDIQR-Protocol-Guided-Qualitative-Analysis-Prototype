@@ -16,6 +16,7 @@ export async function POST(request: NextRequest) {
     background?: boolean;
     caseId?: string;
     lightInterpretation?: boolean;
+    project?: Project;
     projectId?: string;
     forceRuleBased?: boolean;
     segmentId?: string;
@@ -38,6 +39,7 @@ export async function POST(request: NextRequest) {
         abortSignal: request.signal,
         caseId: body.caseId,
         lightInterpretation: body.lightInterpretation,
+        project: body.project,
         projectId,
         forceRuleBased: body.forceRuleBased,
         runId,
@@ -70,6 +72,7 @@ export async function POST(request: NextRequest) {
     void runMeaningUnitGeneration({
       caseId: body.caseId,
       lightInterpretation: body.lightInterpretation,
+      project: body.project,
       projectId,
       forceRuleBased: body.forceRuleBased,
       runId,
@@ -88,7 +91,6 @@ export async function POST(request: NextRequest) {
     { status: 202 }
   );
 }
-
 function formatDuration(ms: number) {
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) {
@@ -100,6 +102,7 @@ function formatDuration(ms: number) {
 async function runMeaningUnitGeneration({
   abortSignal,
   lightInterpretation,
+  project: requestProject,
   projectId,
   forceRuleBased,
   runId,
@@ -113,6 +116,7 @@ async function runMeaningUnitGeneration({
   caseId?: string;
   forceRuleBased?: boolean;
   lightInterpretation?: boolean;
+  project?: Project;
   projectId: string;
   runId: string;
   segmentId?: string;
@@ -134,7 +138,7 @@ async function runMeaningUnitGeneration({
       throw new Error("No transcript text was provided for meaning-unit generation.");
     }
     const project: Project =
-      workspace?.project ?? {
+      workspace?.project ?? requestProject ?? {
         id: projectId,
         language: "English",
         lightInterpretation: Boolean(lightInterpretation),
@@ -205,49 +209,41 @@ async function runMeaningUnitGeneration({
         )
       : null;
     if (!result) {
-      const demoTimeoutMs = getMeaningUnitDemoTimeoutMs(timeoutMs);
-      const controller = new AbortController();
-      const onAbort = () => controller.abort();
-      abortSignal?.addEventListener("abort", onAbort, { once: true });
       try {
-        result = await withTimeout(
-          generateMeaningUnits({
-            ...generationInput,
-            abortSignal: controller.signal
-          }),
-          demoTimeoutMs,
-          () => {
-            controller.abort();
-          }
-        );
+        result = await generateMeaningUnits({
+          ...generationInput,
+          abortSignal,
+        });
       } catch (error) {
         if (abortSignal?.aborted) {
           throw error;
         }
-        fallbackUsed = true;
         const message =
           error instanceof Error ? error.message : "AI generation did not finish.";
         addRunEvent(
           runId,
-          `AI generation did not finish quickly enough; using rule-based fallback. ${message}`
+          `AI semantic generation could not complete. Existing meaning units were preserved; no structural fallback was saved. ${message}`
         );
-        console.warn("[gdiqr:mu-api] fallback triggered", {
+        console.warn("[gdiqr:mu-api] semantic generation failed", {
           message,
-          timeoutMs: demoTimeoutMs,
           transcriptChars: cleanedSource.transcript.length
         });
-        result = generateRuleBasedMeaningUnits(
-          generationInput,
-          `Rule-based draft — for researcher review. Fallback used because AI generation did not finish within ${formatDuration(demoTimeoutMs)} or returned unusable output.`
+        throw new Error(
+          `Semantic meaning-unit generation did not complete. No speaker- or length-based fallback was saved, and existing meaning units remain unchanged. ${message}`
         );
-      } finally {
-        abortSignal?.removeEventListener("abort", onAbort);
       }
     }
+    const runLabel =
+      result.generationMethod === "ai_semantic"
+        ? "AI-assisted semantic delineation"
+        : result.generationMethod === "mixed"
+          ? "AI-assisted semantic delineation with provisional structural spans"
+          : "Provisional structural spans";
     addRunEvent(
       runId,
-      `${fallbackUsed ? "Rule-based fallback" : "Ollama meaning-unit generation"} finished in ${formatDuration(Date.now() - startedAt)} with ${result.meaningUnits.length} MU${result.meaningUnits.length === 1 ? "" : "s"}`
+      `${runLabel} finished in ${formatDuration(Date.now() - startedAt)} with ${result.counts.substantiveMeaningUnits} substantive MU${result.counts.substantiveMeaningUnits === 1 ? "" : "s"}, ${result.counts.contextOnlySegments} context-only, ${result.counts.nonAnalyticSegments} non-analytic, and ${result.counts.uncertainSegments} uncertain/provisional span${result.counts.uncertainSegments === 1 ? "" : "s"} (${result.counts.openingBackgroundCandidates} opening/background candidate${result.counts.openingBackgroundCandidates === 1 ? "" : "s"})`
     );
+    fallbackUsed ||= result.generationMethod !== "ai_semantic";
     console.info("[gdiqr:mu-api] generation finished", {
       fallbackUsed,
       meaningUnits: result.meaningUnits.length,
@@ -259,7 +255,9 @@ async function runMeaningUnitGeneration({
       finishRunLog(runId);
       return {
         meaningUnits: result.meaningUnits,
+        counts: result.counts,
         fallbackUsed,
+        generationMethod: result.generationMethod,
         model: result.model,
         persisted: false,
         provider: result.provider
@@ -286,7 +284,9 @@ async function runMeaningUnitGeneration({
     finishRunLog(runId);
     return {
       meaningUnits: saveResult.units ?? result.meaningUnits,
+      counts: result.counts,
       fallbackUsed,
+      generationMethod: result.generationMethod,
       model: result.model,
       persisted: saveResult.saved,
       provider: result.provider
@@ -298,45 +298,5 @@ async function runMeaningUnitGeneration({
         : "Meaning-unit generation failed.";
     failRunLog(runId, message);
     throw error;
-  }
-}
-
-function getMeaningUnitDemoTimeoutMs(requestedTimeoutMs?: number) {
-  const configured = Number(
-    requestedTimeoutMs ??
-      process.env.MU_DEMO_AI_TIMEOUT_MS ??
-      process.env.OLLAMA_MU_CHUNK_TIMEOUT_MS ??
-      120000
-  );
-  if (!Number.isFinite(configured)) {
-    return 120000;
-  }
-  return Math.max(15000, Math.min(configured, 600000));
-}
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  onTimeout: () => void
-) {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timeoutId = setTimeout(() => {
-          onTimeout();
-          reject(
-            new Error(
-              `Meaning-unit AI generation exceeded ${formatDuration(timeoutMs)}.`
-            )
-          );
-        }, timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
   }
 }

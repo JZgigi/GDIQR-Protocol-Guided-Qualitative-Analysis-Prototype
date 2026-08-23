@@ -17,7 +17,7 @@ GDIQR_DEFAULT_PROJECT_ID=proj_student_wellbeing
 Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. Do not prefix it with `NEXT_PUBLIC_`.
 
 
-## Current Batch 0–6 SQL Assessment
+## Earlier Batch 0–6 SQL Assessment
 
 Batch 0–6 do **not** require a new schema migration. Voice Guide saved notes reuse the existing `guidance_memos` table, and `voice_guidance_note_saved` is stored in the existing text-based audit/edit-log fields. No new column, enum, constraint, bucket, or policy is required.
 
@@ -26,6 +26,13 @@ Therefore:
 - If all five migrations below have already run successfully, do **not** run a new migration before Batch 7 acceptance.
 - If `guidance_memos` or the extended audit columns are missing, re-run `v1_0_foundation_schema.sql`; it is written with `if not exists` / `add column if not exists` for the relevant objects.
 - Run `supabase/verify_v1_0_schema.sql` to perform a read-only schema check.
+
+## Step 2 semantic meaning-unit migration
+
+The meaning-focused Step 2 workflow adds traceability fields to `meaning_units`.
+Existing installations must run `supabase/step2_meaning_unit_semantics.sql`
+after the five v1.0 migrations below. The migration is additive and idempotent;
+it does not rewrite existing meaning-unit text or researcher decisions.
 
 ## 2. SQL Migration Order
 
@@ -36,6 +43,7 @@ Run these files in Supabase SQL Editor in this exact order:
 3. `supabase/audio_upload_transcription.sql`
 4. `supabase/v1_0_foundation_schema.sql`
 5. `supabase/v1_0_transcript_audio_review_schema.sql`
+6. `supabase/step2_meaning_unit_semantics.sql`
 
 Why all five are required:
 
@@ -44,6 +52,7 @@ Why all five are required:
 - `audio_upload_transcription.sql` adds audio file and transcription job records plus storage buckets.
 - `v1_0_foundation_schema.sql` adds v1.0 project metadata, pre-analysis notes, integration relationships, integrity review, edit logs, export format support, and guidance memos.
 - `v1_0_transcript_audio_review_schema.sql` adds transcript/audio review fields required by the v1.0 workflow.
+- `step2_meaning_unit_semantics.sql` records the immutable AI-proposed excerpt, participant speaker role, analytic classification, source transcript/lines/turns, linked facilitator or moderator context, generation method, and reviewer warnings for each Step 2 MU. Facilitator, moderator, and interviewer turns remain context and are not inserted as meaning units.
 
 ## 3. Read-only Schema Verification
 
@@ -58,6 +67,7 @@ Expected results:
 - every required table reports `OK`;
 - `guidance_memos` contains `id`, `project_id`, `step`, `question`, `answer`, and `created_at`;
 - `audit_events` contains the v1.0 extended audit columns.
+- `meaning_units` contains the Step 2 semantic traceability columns.
 
 This script does not modify schema or data.
 
