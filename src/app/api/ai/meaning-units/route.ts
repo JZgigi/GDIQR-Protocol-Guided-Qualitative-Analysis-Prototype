@@ -7,9 +7,43 @@ import {
 } from "@/lib/run-logs";
 import { getStorageMode } from "@/lib/storage-mode";
 import { cleanTranscriptSourceForAnalysis } from "@/lib/transcript-source-cleaner";
+import {
+  cancelMeaningUnitJob,
+  completeMeaningUnitJob,
+  failMeaningUnitJob,
+  getMeaningUnitJob,
+  startMeaningUnitJob,
+} from "@/lib/meaning-unit-jobs";
 import type { Project } from "@/lib/types";
 
 export const runtime = "nodejs";
+
+export async function GET(request: NextRequest) {
+  const runId = request.nextUrl.searchParams.get("runId")?.trim();
+  if (!runId) {
+    return NextResponse.json({ error: "runId is required." }, { status: 400 });
+  }
+  const job = getMeaningUnitJob(runId);
+  if (!job) {
+    return NextResponse.json(
+      { error: "Meaning-unit job was not found." },
+      { status: 404 },
+    );
+  }
+  return NextResponse.json(job);
+}
+
+export async function DELETE(request: NextRequest) {
+  const runId = request.nextUrl.searchParams.get("runId")?.trim();
+  if (!runId) {
+    return NextResponse.json({ error: "runId is required." }, { status: 400 });
+  }
+  const stopped = cancelMeaningUnitJob(runId);
+  if (stopped) {
+    addRunEvent(runId, "Stop requested by researcher");
+  }
+  return NextResponse.json({ runId, stopped });
+}
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
@@ -67,9 +101,12 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  const backgroundController = new AbortController();
+  startMeaningUnitJob(runId, backgroundController);
   addRunEvent(runId, "Queued background meaning-unit job");
   setTimeout(() => {
     void runMeaningUnitGeneration({
+      abortSignal: backgroundController.signal,
       caseId: body.caseId,
       lightInterpretation: body.lightInterpretation,
       project: body.project,
@@ -80,7 +117,16 @@ export async function POST(request: NextRequest) {
       startingNumber: body.startingNumber,
       timeoutMs: body.timeoutMs,
       transcript: body.transcript
-    }).catch(() => undefined);
+    })
+      .then((result) => completeMeaningUnitJob(runId, result))
+      .catch((error) =>
+        failMeaningUnitJob(
+          runId,
+          error instanceof Error
+            ? error.message
+            : "Meaning-unit generation failed.",
+        ),
+      );
   }, 0);
 
   return NextResponse.json(

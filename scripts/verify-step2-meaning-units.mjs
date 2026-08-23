@@ -8,6 +8,7 @@ const preprocessing = read("../src/lib/meaning-unit-preprocessing.ts");
 const reviewFlags = read("../src/lib/meaning-unit-review-flags.ts");
 const support = read("../src/components/gdiqr-workspace-support.tsx");
 const workspace = read("../src/components/gdiqr-workspace.tsx");
+const meaningUnitJobs = read("../src/lib/meaning-unit-jobs.ts");
 
 assert.match(ai, /think: false/);
 assert.match(ai, /body\.message\?\.content/);
@@ -58,10 +59,19 @@ assert.match(support, /const reviewableMeaningUnits = ordered\.filter/);
 assert.match(workspace, /Generate provisional structural spans/);
 assert.match(workspace, /Opening\/icebreaker background suggestions/);
 assert.match(workspace, /all\s+participant MU candidates remain visible/i);
-assert.match(workspace, /semantic MU delineation and summaries have not been completed/i);
+assert.match(workspace, /semantic MU delineation and summaries have not been generated/i);
 assert.match(workspace, /splitMeaningUnit|handleSplitMeaningUnit/);
 assert.match(workspace, /Valid no-substantive windows will be recorded and skipped/);
 assert.match(workspace, /mergeMeaningUnit|handleMergeMeaningUnit/);
 assert.match(workspace, /deleteMeaningUnit|handleDeleteMeaningUnit/);
+assert.match(workspace, /background: true/);
+assert.doesNotMatch(workspace, /background: false/);
+assert.match(workspace, /LOCAL_DRAFT_SESSION_KEY/);
+assert.match(workspace, /LOCAL_MU_JOB_SESSION_KEY/);
+assert.match(workspace, /Recovered the local transcript draft/);
+assert.match(workspace, /pollMeaningUnitJob/);
+assert.match(meaningUnitJobs, /startMeaningUnitJob/);
+assert.match(meaningUnitJobs, /completeMeaningUnitJob/);
+assert.match(meaningUnitJobs, /cancelMeaningUnitJob/);
 
 console.log("Step 2 semantic MU pipeline checks passed.");

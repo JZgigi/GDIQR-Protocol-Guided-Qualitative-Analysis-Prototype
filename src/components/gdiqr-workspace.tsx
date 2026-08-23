@@ -124,7 +124,6 @@ import {
   formatMs,
   formatRunStatus,
   guidanceMemoToMessage,
-  getMeaningUnitRequestTimeoutMs,
   getTranscriptPrepareRequestTimeoutMs,
   getClientConfiguredTimeoutMs,
   confirmWorkspaceAction,
@@ -190,6 +189,8 @@ const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
 const PRODUCT_SHORT_TITLE = "GDI-QR x AI Prototype";
 const METHODOLOGICAL_FRAME = "GDI-QR-informed";
+const LOCAL_DRAFT_SESSION_KEY = "gdiqr.local-workspace-draft.v1";
+const LOCAL_MU_JOB_SESSION_KEY = "gdiqr.active-meaning-unit-job.v1";
 
 type AnalysisExportFormat = "json" | "csv" | "txt" | "docx" | "pdf";
 
@@ -245,6 +246,23 @@ interface GuidanceMessage {
   saved?: boolean;
   source?: "legacy-guidance" | "voice-guide";
   step: WorkflowStep;
+}
+
+interface MeaningUnitGenerationApiResult {
+  counts?: MeaningUnitGenerationCounts;
+  fallbackUsed?: boolean;
+  generationMethod?: "ai_semantic" | "mixed" | "rule_based_fallback";
+  meaningUnits?: MeaningUnit[];
+  model?: string;
+  persisted?: boolean;
+  provider?: string;
+}
+
+interface MeaningUnitJobResponse {
+  error?: string;
+  result?: MeaningUnitGenerationApiResult;
+  runId: string;
+  status: "running" | "completed" | "failed";
 }
 
 const steps: Array<{
@@ -496,6 +514,7 @@ export function GdiqrWorkspace({
     useState("");
   const [isConfirmingTranscript, setIsConfirmingTranscript] = useState(false);
   const [activeMeaningUnitRunId, setActiveMeaningUnitRunId] = useState("");
+  const [localDraftHydrated, setLocalDraftHydrated] = useState(false);
   const [runLogs, setRunLogs] = useState<RunLog[]>([]);
   const [isExportingFormat, setIsExportingFormat] =
     useState<AnalysisExportFormat | null>(null);
@@ -538,6 +557,80 @@ export function GdiqrWorkspace({
   useEffect(() => {
     setLastMeaningUnitGenerationCounts(null);
   }, [editableTranscript]);
+
+  useEffect(() => {
+    try {
+      if (isLocalOnlyMode) {
+        const savedDraft = JSON.parse(
+          window.sessionStorage.getItem(LOCAL_DRAFT_SESSION_KEY) ?? "null",
+        ) as {
+          projectId?: string;
+          transcript?: string;
+          transcriptConfirmed?: boolean;
+        } | null;
+        if (
+          savedDraft?.projectId === project.id &&
+          !transcript.trim() &&
+          savedDraft.transcript?.trim()
+        ) {
+          setEditableTranscript(savedDraft.transcript);
+          setTranscriptConfirmed(Boolean(savedDraft.transcriptConfirmed));
+          setActiveStep(
+            savedDraft.transcriptConfirmed ? "understanding" : "pre-analysis",
+          );
+          setApiStatus(
+            "Recovered the local transcript draft after the page reloaded.",
+          );
+        }
+      }
+
+      const savedJob = JSON.parse(
+        window.sessionStorage.getItem(LOCAL_MU_JOB_SESSION_KEY) ?? "null",
+      ) as { projectId?: string; runId?: string } | null;
+      if (savedJob?.projectId === project.id && savedJob.runId) {
+        setActiveMeaningUnitRunId(savedJob.runId);
+        setIsGeneratingMeaningUnits(true);
+        setActiveStep("understanding");
+        setGenerationProgress({
+          current: 1,
+          label: "Recovered background job",
+          total: 1,
+        });
+        setMeaningUnitGenerationStage(
+          "Reconnected to the background semantic meaning-unit job after page reload.",
+        );
+      }
+    } catch {
+      window.sessionStorage.removeItem(LOCAL_DRAFT_SESSION_KEY);
+      window.sessionStorage.removeItem(LOCAL_MU_JOB_SESSION_KEY);
+    } finally {
+      setLocalDraftHydrated(true);
+    }
+  }, [isLocalOnlyMode, project.id, transcript]);
+
+  useEffect(() => {
+    if (!isLocalOnlyMode || !localDraftHydrated) {
+      return;
+    }
+    if (!editableTranscript.trim() && !transcriptConfirmed) {
+      window.sessionStorage.removeItem(LOCAL_DRAFT_SESSION_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(
+      LOCAL_DRAFT_SESSION_KEY,
+      JSON.stringify({
+        projectId: currentProject.id,
+        transcript: editableTranscript,
+        transcriptConfirmed,
+      }),
+    );
+  }, [
+    currentProject.id,
+    editableTranscript,
+    isLocalOnlyMode,
+    localDraftHydrated,
+    transcriptConfirmed,
+  ]);
 
   function setRecoverableWorkflowError(message: string, retry?: () => void) {
     retryActionRef.current = retry ?? null;
@@ -606,27 +699,68 @@ export function GdiqrWorkspace({
       return;
     }
 
-    const activeLog = runLogs.find((log) => log.id === activeMeaningUnitRunId);
-    if (!activeLog) {
-      return;
+    let cancelled = false;
+    let pollTimer: number | undefined;
+    const clearRecoveredJob = () => {
+      setActiveMeaningUnitRunId("");
+      window.sessionStorage.removeItem(LOCAL_MU_JOB_SESSION_KEY);
+    };
+
+    async function pollMeaningUnitJob() {
+      try {
+        const response = await fetch(
+          `/api/ai/meaning-units?runId=${encodeURIComponent(activeMeaningUnitRunId)}`,
+          { cache: "no-store" },
+        );
+        const job = (await response.json().catch(() => ({}))) as
+          | MeaningUnitJobResponse
+          | { error?: string };
+        if (cancelled) {
+          return;
+        }
+        if (!response.ok || !("status" in job)) {
+          throw new Error(job.error ?? "Could not recover the background job.");
+        }
+        if (job.status === "running") {
+          setIsGeneratingMeaningUnits(true);
+          pollTimer = window.setTimeout(pollMeaningUnitJob, 2000);
+          return;
+        }
+        if (job.status === "completed" && job.result) {
+          applyMeaningUnitGenerationResult(job.result, false);
+          setApiStatus(
+            "AI-assisted semantic draft generated. Review every boundary and summary before accepting.",
+          );
+          setIsGeneratingMeaningUnits(false);
+          setGenerationProgress(null);
+          clearRecoveredJob();
+          return;
+        }
+        throw new Error(job.error ?? "Meaning-unit background job failed.");
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Meaning-unit background job failed.";
+        setRecoverableWorkflowError(message);
+        setMeaningUnitGenerationStage(message);
+        setIsGeneratingMeaningUnits(false);
+        setGenerationProgress(null);
+        clearRecoveredJob();
+      }
     }
 
-    if (activeLog.status === "completed") {
-      setIsGeneratingMeaningUnits(false);
-      setActiveMeaningUnitRunId("");
-      setApiStatus(
-        "Meaning-unit job completed; refreshing Supabase workspace...",
-      );
-      void refreshWorkspace();
-      return;
-    }
-
-    if (activeLog.status === "failed") {
-      setIsGeneratingMeaningUnits(false);
-      setActiveMeaningUnitRunId("");
-      setApiStatus(activeLog.error ?? "Meaning-unit job failed");
-    }
-  }, [activeMeaningUnitRunId, runLogs]);
+    void pollMeaningUnitJob();
+    return () => {
+      cancelled = true;
+      if (pollTimer) {
+        window.clearTimeout(pollTimer);
+      }
+    };
+  }, [activeMeaningUnitRunId]);
 
   useEffect(() => {
     setSensitiveReviewItems((current) =>
@@ -2508,23 +2642,21 @@ export function GdiqrWorkspace({
         "Only project setup or metadata was detected. Add the interview transcript / participant account before generating meaning units.",
       );
     }
-    const meaningUnitTimeoutMs = getMeaningUnitRequestTimeoutMs();
     const response = await fetchWithTimeout("/api/ai/meaning-units", {
       body: JSON.stringify({
-        background: false,
+        background: true,
         caseId: displaySegments[0]?.caseId ?? "CASE-001",
         forceRuleBased,
         lightInterpretation,
         project: currentProject,
         projectId: currentProject.id,
         startingNumber: 1,
-        timeoutMs: meaningUnitTimeoutMs,
         transcript: cleanedSource.transcript,
       }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
       signal,
-      timeoutMs: meaningUnitTimeoutMs + 30000,
+      timeoutMs: 30000,
     });
 
     if (!response.ok) {
@@ -2535,22 +2667,19 @@ export function GdiqrWorkspace({
     }
 
     const result = (await response.json()) as {
-      counts?: {
-        participantTurns: number;
-        substantiveMeaningUnits: number;
-        contextOnlySegments: number;
-        nonAnalyticSegments: number;
-        uncertainSegments: number;
-        openingBackgroundCandidates: number;
-      };
-      generationMethod?: "ai_semantic" | "mixed" | "rule_based_fallback";
-      meaningUnits?: MeaningUnit[];
-      fallbackUsed?: boolean;
-      model?: string;
-      persisted?: boolean;
-      provider?: string;
+      runId?: string;
+      started?: boolean;
     };
+    if (!result.started || !result.runId) {
+      throw new Error("Meaning-unit background job did not start.");
+    }
+    return { runId: result.runId };
+  }
 
+  function applyMeaningUnitGenerationResult(
+    result: MeaningUnitGenerationApiResult,
+    forceRuleBased: boolean,
+  ) {
     const newUnits = result.meaningUnits;
     if (newUnits) {
       const draftUnits: MeaningUnit[] = newUnits.map(
@@ -2604,8 +2733,6 @@ export function GdiqrWorkspace({
             : "Provisional structural spans generated. Semantic MU delineation and summaries have not been generated and require researcher review.",
       );
     }
-
-    return result;
   }
 
   async function generateMeaningUnits(
@@ -2643,11 +2770,6 @@ export function GdiqrWorkspace({
     }
 
     const controller = new AbortController();
-    const slowNoticeTimer = window.setTimeout(() => {
-      setMeaningUnitGenerationStage(
-        "Still working through semantic windows. A window with no substantive meaning must be explicitly identified and justified; invalid output will be retried once without creating structural fallback MUs.",
-      );
-    }, 30000);
     meaningUnitAbortControllerRef.current = controller;
     setIsGeneratingMeaningUnits(true);
     setGenerationProgress({
@@ -2667,19 +2789,28 @@ export function GdiqrWorkspace({
           ? "Generating provisional structural spans..."
           : "Delineating draft meaning units from the confirmed transcript...",
       );
-      const result = await generateMeaningUnitsFromTranscript(
+      const startedJob = await generateMeaningUnitsFromTranscript(
         forceRuleBased,
         controller.signal,
       );
       if (!controller.signal.aborted) {
+        setActiveMeaningUnitRunId(startedJob.runId);
+        try {
+          window.sessionStorage.setItem(
+            LOCAL_MU_JOB_SESSION_KEY,
+            JSON.stringify({
+              projectId: currentProject.id,
+              runId: startedJob.runId,
+            }),
+          );
+        } catch {
+          // The active page can still poll the server-owned job when browser storage is unavailable.
+        }
+        setMeaningUnitGenerationStage(
+          "Background semantic delineation is running. You may remain on this page; if it reloads, the app will reconnect to this job automatically.",
+        );
         setApiStatus(
-          result.generationMethod === "ai_semantic"
-            ? (result.counts?.substantiveMeaningUnits ?? 0) === 0
-              ? "AI completed semantic review and provisionally identified no substantive meaning units. The researcher can review the transcript and add a manual MU."
-              : "AI-assisted semantic draft generated. Facilitator questions are retained as context, while participant meanings remain provisional until researcher acceptance."
-            : result.generationMethod === "mixed"
-              ? "AI semantic MUs were generated where Ollama succeeded. Provisional structural spans are segregated and require researcher delineation before categorisation."
-              : "Provisional structural spans generated. Context is retained separately; semantic MU delineation and summaries have not been completed.",
+          "Meaning-unit analysis is running as a recoverable background job.",
         );
       }
     } catch (error) {
@@ -2687,21 +2818,28 @@ export function GdiqrWorkspace({
         setApiStatus("Generation stopped by user.");
         return;
       }
+      setIsGeneratingMeaningUnits(false);
+      setGenerationProgress(null);
       setRecoverableWorkflowError(
         error instanceof Error ? error.message : "Meaning-unit API failed",
         () => void generateMeaningUnits(segmentOverride, forceRuleBased),
       );
     } finally {
-      window.clearTimeout(slowNoticeTimer);
       meaningUnitAbortControllerRef.current = null;
-      setIsGeneratingMeaningUnits(false);
-      setGenerationProgress(null);
     }
   }
 
-  function stopMeaningUnitGeneration() {
+  async function stopMeaningUnitGeneration() {
     meaningUnitAbortControllerRef.current?.abort();
     meaningUnitAbortControllerRef.current = null;
+    if (activeMeaningUnitRunId) {
+      await fetch(
+        `/api/ai/meaning-units?runId=${encodeURIComponent(activeMeaningUnitRunId)}`,
+        { method: "DELETE" },
+      ).catch(() => undefined);
+      window.sessionStorage.removeItem(LOCAL_MU_JOB_SESSION_KEY);
+      setActiveMeaningUnitRunId("");
+    }
     setIsGeneratingMeaningUnits(false);
     setGenerationProgress(null);
     setMeaningUnitGenerationStage("Generation stopped by user.");

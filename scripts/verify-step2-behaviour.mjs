@@ -208,6 +208,20 @@ const providerSource = fs.readFileSync(
   path.join(root, "src", "lib", "ai-provider.ts"),
   "utf8",
 );
+const meaningUnitRouteSource = fs.readFileSync(
+  path.join(root, "src", "app", "api", "ai", "meaning-units", "route.ts"),
+  "utf8",
+);
+assert.match(
+  meaningUnitRouteSource,
+  /backgroundController\.signal/,
+  "A background MU job must use a server-owned abort signal rather than the page request signal.",
+);
+assert.match(
+  meaningUnitRouteSource,
+  /completeMeaningUnitJob\(runId, result\)/,
+  "Completed local-only MU results must remain retrievable after a page reload.",
+);
 assert.doesNotMatch(
   providerSource,
   /fallbackCategoriesFromUnits|inferFallbackThemeGroups|Stress and anxiety management/,
