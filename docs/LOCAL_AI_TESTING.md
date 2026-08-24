@@ -15,7 +15,7 @@ OLLAMA_MU_BOUNDARY_MAX_TOKENS=1200
 OLLAMA_MU_CHUNK_TIMEOUT_MS=120000
 NEXT_PUBLIC_MU_JOB_TIMEOUT_MS=5400000
 OLLAMA_CATEGORY_MAX_TOKENS=3600
-OLLAMA_CATEGORY_BATCH_SIZE=30
+OLLAMA_CATEGORY_BATCH_SIZE=18
 OLLAMA_REVIEWER_MAX_TOKENS=1200
 OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS=300000
 NEXT_PUBLIC_TRANSCRIPT_PREPARE_TIMEOUT_MS=300000
@@ -67,7 +67,7 @@ Expected:
 | `NEXT_PUBLIC_MU_JOB_TIMEOUT_MS` | Browser timeout for the complete multi-window Step 2 job. | Keep long enough for the full transcript; a failed window stops the job without replacing existing MUs. |
 | `OLLAMA_MU_BOUNDARY_MAX_TOKENS` | Compact boundary-anchor and summary response budget per window. | Increase only if JSON is truncated. |
 | `OLLAMA_CATEGORY_MAX_TOKENS` | Maximum tokens for each category output. | Increase only if category JSON is truncated. |
-| `OLLAMA_CATEGORY_BATCH_SIZE` | Accepted MUs compared per semantic grouping batch before cross-batch consolidation. | Keep near 30 for 8B/14B local models; lower it if category JSON becomes unreliable. |
+| `OLLAMA_CATEGORY_BATCH_SIZE` | Accepted MUs compared per semantic grouping batch before cross-batch consolidation. | Keep near 18 for 8B local models; a stronger 14B model may use a larger batch after evaluation. |
 | `OLLAMA_REVIEWER_MAX_TOKENS` | Maximum tokens for reviewer output. | Increase only if reviewer output is incomplete. |
 
 ## 3. RTX 5090-Class Lab Machine Plan

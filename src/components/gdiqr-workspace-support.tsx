@@ -3516,7 +3516,7 @@ export function CategoryBlock({
   const isConfirmedCategory = category.status === "confirmed";
   const clusterStatusLabel = isConfirmedCategory
     ? "Provisional category"
-    : "Unconfirmed evidence cluster";
+    : "AI-proposed category — researcher review required";
   const titleValue = getCategoryTitleInputValue(category);
   const descriptionValue = getCategoryDescriptionValue(category);
   const memoValue = getCategoryMemoValue(category);
@@ -3541,10 +3541,12 @@ export function CategoryBlock({
         <div>
           <span className="label">Evidence Cluster</span>
           <h3 className="category-title">
-            {isConfirmedCategory && titleValue
-              ? titleValue
-              : "Accepted meaning units in this cluster"}
+            {titleValue || "Untitled provisional category"}
           </h3>
+          <p className="small">
+            {descriptionValue ||
+              "No shared-meaning definition was returned. Review this grouping before using it."}
+          </p>
         </div>
         <div className="button-row">
           <span className="badge blue">{clusterStatusLabel}</span>

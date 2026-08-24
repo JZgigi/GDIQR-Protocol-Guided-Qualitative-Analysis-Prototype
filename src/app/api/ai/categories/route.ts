@@ -133,6 +133,7 @@ export async function POST(request: NextRequest) {
       existingCategories,
       mode,
       project,
+      runId,
       units: confirmedUnits
     });
     if (result.uncertainties.length > 0) {

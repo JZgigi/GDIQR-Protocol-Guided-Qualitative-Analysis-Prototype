@@ -94,6 +94,7 @@ interface CategoryInput {
   allBatchesProcessed?: boolean;
   mode: CategoryMode;
   project: Project;
+  runId?: string;
   units: MeaningUnit[];
 }
 
@@ -921,10 +922,12 @@ export async function generateCategories(
 
   const model = getOllamaModel();
   try {
-    const batchSize = Math.max(
-      10,
-      Number(process.env.OLLAMA_CATEGORY_BATCH_SIZE ?? 30),
+    const configuredBatchSize = Number(
+      process.env.OLLAMA_CATEGORY_BATCH_SIZE ?? 18,
     );
+    const batchSize = Number.isFinite(configuredBatchSize)
+      ? Math.max(10, configuredBatchSize)
+      : 18;
     const batches =
       input.mode === "C" ? [input.units] : chunkArray(input.units, batchSize);
     const drafts = [] as Awaited<ReturnType<typeof generateCategoryBatch>>[];
@@ -938,6 +941,10 @@ export async function generateCategories(
     }
 
     let categoryDraft = combineCategoryBatchDrafts(drafts, input.units);
+    addRunEvent(
+      input.runId,
+      `Combined ${drafts.length} semantic category batches into ${categoryDraft.categories.length} provisional categories before cross-batch comparison`,
+    );
     const uncertainties = drafts.flatMap((draft) => draft.uncertainties);
     if (drafts.length > 1 && input.mode !== "C") {
       try {
@@ -945,8 +952,20 @@ export async function generateCategories(
           categories: categoryDraft.categories,
           input,
         });
-        if (consolidated.valid) {
+        const compressionConcern = categoryConsolidationCompressionConcern({
+          consolidatedCategories: consolidated.categories,
+          preliminaryCategories: categoryDraft.categories,
+          units: input.units,
+        });
+        if (consolidated.valid && !compressionConcern) {
           categoryDraft = consolidated;
+          addRunEvent(
+            input.runId,
+            `Cross-batch semantic comparison produced ${consolidated.categories.length} provisional categories with complete MU coverage`,
+          );
+        } else if (compressionConcern) {
+          uncertainties.push(compressionConcern);
+          addRunEvent(input.runId, compressionConcern);
         } else {
           uncertainties.push(
             "Cross-batch consolidation returned conflicting MU assignments, so the complete batch-level groupings were retained for researcher comparison.",
@@ -1211,9 +1230,12 @@ Global rules:
 - Do not return to raw transcript text.
 - Do not introduce external theory or general world knowledge.
 - Categories must address the research question and say something substantive.
+- A category represents one shared central substantive meaning, not merely a shared topic, intervention, interview question, domain, sentiment, or nearby transcript position.
 - Category titles must be concise analytic labels. Do not use raw transcript greetings, names, identifiers, privacy placeholders, or interviewer wording as titles.
 - Avoid categories that merely repeat interview questions or broad domains.
 - Avoid redundant, trivial, or overly numerous categories.
+- Do not over-compress distinct meanings for parsimony. If a category definition requires several unrelated "and" clauses, reconsider whether it contains multiple categories.
+- Keep different experiences, processes, conditions, consequences, evaluations, contradictions, or negative cases separate when they do not share the same central meaning.
 - Keep this Stage 3 output flat and researcher-editable. Record relationships and higher-order structure later during Integration rather than creating read-only nested outputs here.
 - Preserve tensions, contradictions, qualifications, and uncertainty rather than smoothing them over.
 - Do not turn participant accounts into explanatory mechanisms at category stage; reserve explanations of why/how relationships operate for Integration.
@@ -1679,6 +1701,32 @@ async function generateCategoryBatch({
       units: input.units,
     });
   }
+  if (integrity.valid && categoryBatchNeedsCoherenceReview(integrity, input.units)) {
+    const refinedRaw = await callCategoryModel(
+      buildCategoryGenerationPrompt(
+        input,
+        categoryCoherenceCorrection(integrity.categories),
+      ),
+      input.mode,
+    );
+    const refinedIntegrity = validateCategoryGrouping({
+      categories: normalizeCategories(
+        refinedRaw.categories ?? [],
+        "ai",
+        `cat_ai_b${batchIndex + 1}_refined`,
+      ),
+      proposedUnassigned: refinedRaw.unassignedUnits,
+      units: input.units,
+    });
+    if (refinedIntegrity.valid) {
+      raw = refinedRaw;
+      integrity = refinedIntegrity;
+    }
+  }
+  addRunEvent(
+    input.runId,
+    `Category batch ${batchIndex + 1} produced ${integrity.categories.length} provisional categories; ${integrity.coverage.assigned} MUs assigned once and ${integrity.coverage.needsReview} requiring researcher comparison`,
+  );
   return {
     ...integrity,
     categoryRevisions: stringArray(raw.categoryRevisions),
@@ -1696,13 +1744,18 @@ async function generateCategoryBatch({
 }
 
 async function callCategoryModel(prompt: string, mode: CategoryMode = "A") {
+  const configuredMaxTokens = Number(
+    process.env.OLLAMA_CATEGORY_MAX_TOKENS ?? 3600,
+  );
   return callOllamaJson<RawCategoryGenerationResult>(
     [
       systemMessage(mode === "C" ? "integration" : "categorisation"),
       { role: "user", content: prompt },
     ],
     {
-      maxTokens: Number(process.env.OLLAMA_CATEGORY_MAX_TOKENS ?? 3600),
+      maxTokens: Number.isFinite(configuredMaxTokens)
+        ? Math.max(3600, configuredMaxTokens)
+        : 3600,
       timeoutMs: getOllamaTimeoutMs(),
     },
   );
@@ -1757,6 +1810,57 @@ function categoryCoverageCorrection(coverage: CategoryGroupingCoverage) {
   return `\nCORRECTION REQUIRED: Replace the entire previous JSON result. Every input MU must appear exactly once: either in one category includedUnitIds array or in unassignedUnits. Duplicate assignments: ${coverage.duplicateAssignments.join(", ") || "none"}. Omitted MUs: ${coverage.unaccountedUnits.join(", ") || "none"}. Invalid references: ${coverage.invalidReferences.join(", ") || "none"}.`;
 }
 
+function categoryCoherenceCorrection(categories: CategoryNode[]) {
+  return `
+SEMANTIC COHERENCE AUDIT REQUIRED: Replace the entire previous JSON result. The previous output concentrated many MUs into very broad groupings (${categories
+    .map((category) => `${category.name}: MU ${category.includedUnitIds.join(", ")}`)
+    .join("; ")}). Recompare the actual MU summaries by their central substantive meaning. A shared topic is not sufficient for one category. Split a grouping when its definition would need unrelated "and" clauses, when MUs express different experiences/processes/consequences, or when positive, negative, conditional, and contradictory positions do not share the same central meaning. Preserve meaningful within-category variation, but do not use a variation note to hide analytically distinct claims. Do not split by sentence, speaker, order, or length.`;
+}
+
+function categoryBatchNeedsCoherenceReview(
+  result: { categories: CategoryNode[] },
+  units: MeaningUnit[],
+) {
+  if (units.length < 12 || result.categories.length === 0) {
+    return false;
+  }
+  const largestCategory = Math.max(
+    ...result.categories.map((category) => category.includedUnitIds.length),
+  );
+  return (
+    result.categories.length <= 2 || largestCategory / units.length >= 0.6
+  );
+}
+
+export function categoryConsolidationCompressionConcern({
+  consolidatedCategories,
+  preliminaryCategories,
+  units,
+}: {
+  consolidatedCategories: CategoryNode[];
+  preliminaryCategories: CategoryNode[];
+  units: MeaningUnit[];
+}) {
+  if (
+    preliminaryCategories.length < 4 ||
+    consolidatedCategories.length === 0
+  ) {
+    return "";
+  }
+  const largestCategory = Math.max(
+    ...consolidatedCategories.map(
+      (category) => category.includedUnitIds.length,
+    ),
+  );
+  const collapsedTooFar =
+    consolidatedCategories.length <=
+      Math.floor(preliminaryCategories.length / 2) &&
+    largestCategory / Math.max(units.length, 1) >= 0.45;
+  return collapsedTooFar
+    ? `Cross-batch consolidation appeared to over-compress ${preliminaryCategories.length} semantic proposals into ${consolidatedCategories.length} broad groups. The more specific batch-level categories were retained for researcher-led merging.`
+    : "";
+}
+
 function buildCategoryConsolidationPrompt(
   input: CategoryInput,
   categories: CategoryNode[],
@@ -1768,12 +1872,25 @@ Rules:
 - Return a complete replacement flat category system, not subcategories.
 - Each MU number from the input set must occur exactly once in one includedUnitIds array, or once in unassignedUnits with a reason.
 - One MU has one primary category only. Do not duplicate MU numbers across categories.
-- Do not force a weak fit merely to reduce the number of categories. A coherent one-MU provisional category is allowed.
+- Do not aim for the smallest possible number of categories. Parsimony means avoiding redundant categories, not compressing distinct meanings into broad topic buckets.
+- Merge batch categories only when the actual MU summaries share one specific central substantive meaning. A shared topic, intervention, question, or domain is not sufficient.
+- If a proposed definition needs several unrelated "and" clauses, keep those meanings in separate categories.
+- Preserve distinct experiences, processes, conditions, consequences, evaluations, contradictions, and negative cases as separate categories when their central meanings differ.
+- Do not use comparisonDifferenceNote as a reason to hide analytically distinct central meanings inside one broad category.
+- A coherent one-MU provisional category is allowed.
 - Keep wording descriptive and data-near. Do not copy a manual category framework or introduce theory.
 - Return strict JSON only in the same shape as the supplied category drafts plus unassignedUnits.
 
 Research question: ${input.project.researchQuestion}
 Valid MU numbers: ${input.units.map((unit) => unit.number).join(", ")}
+
+Confirmed MU summaries for semantic comparison:
+${input.units
+  .map(
+    (unit) =>
+      `MU ${unit.number}: ${unit.humanSummary || unit.aiSummary || unit.excerpt}`,
+  )
+  .join("\n")}
 
 Batch-level provisional categories:
 ${JSON.stringify(categories, null, 2)}`;

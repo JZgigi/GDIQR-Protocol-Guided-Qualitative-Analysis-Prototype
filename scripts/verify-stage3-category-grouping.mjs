@@ -4,6 +4,7 @@ import {
   reconcileCategoryGrouping,
   validateCategoryGrouping,
 } from "../src/lib/category-grouping.ts";
+import { readFileSync } from "node:fs";
 
 const units = [1, 2, 3, 4].map((number) => ({
   id: `mu-${number}`,
@@ -91,5 +92,31 @@ const reconciled = reconcileCategoryGrouping({
 });
 assert.equal(reconciled[1].decision, "intentionally_unassigned");
 assert.equal(reconciled[1].source, "researcher");
+
+const providerSource = readFileSync("src/lib/ai-provider.ts", "utf8");
+const categoryUiSource = readFileSync(
+  "src/components/gdiqr-workspace-support.tsx",
+  "utf8",
+);
+assert.match(
+  providerSource,
+  /Confirmed MU summaries for semantic comparison:/,
+  "Cross-batch consolidation must re-read MU summaries rather than merge category labels alone.",
+);
+assert.match(
+  providerSource,
+  /Cross-batch consolidation appeared to over-compress/,
+  "Over-compressed consolidation output must be rejected in favour of reviewable specific proposals.",
+);
+assert.match(
+  providerSource,
+  /Math\.max\(3600, configuredMaxTokens\)/,
+  "A stale 1800-token local setting must not truncate Stage 3 category JSON.",
+);
+assert.match(
+  categoryUiSource,
+  /\{titleValue \|\| "Untitled provisional category"\}/,
+  "AI-proposed category names must remain visible before researcher confirmation.",
+);
 
 console.log("Stage 3 category grouping integrity checks passed.");
