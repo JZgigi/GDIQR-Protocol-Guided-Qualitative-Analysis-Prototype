@@ -25,6 +25,7 @@ import type {
   AuditEvent,
   CategoryMode,
   CategoryNode,
+  CategoryUnitDecision,
   DatasetType,
   ExportRecord,
   GuidanceMemo,
@@ -184,6 +185,10 @@ import { LongTaskStatus } from "./gdiqr-workspace/shared/long-task-status";
 import { VoiceGuideAvatar, type VoiceGuidanceNoteDraft } from "./gdiqr-workspace/voice-guide/voice-guide-avatar";
 import { formatDateTime, formatTime } from "@/lib/date-format";
 import { isOpeningBackgroundCandidate } from "@/lib/meaning-unit-review-flags";
+import {
+  flattenInitialCategoryHierarchy,
+  reconcileCategoryGrouping,
+} from "@/lib/category-grouping";
 
 const PRODUCT_TITLE =
   "GDI-QR-informed AI-Assisted Qualitative Analysis Prototype";
@@ -300,6 +305,7 @@ interface GdiqrWorkspaceProps {
   preAnalysisNotes?: PreAnalysisNotes;
   meaningUnits: MeaningUnit[];
   categories: CategoryNode[];
+  categoryUnitDecisions?: CategoryUnitDecision[];
   reviewerComments: ReviewerComment[];
   auditEvents: AuditEvent[];
   integratedNarrative: string;
@@ -325,6 +331,7 @@ export function GdiqrWorkspace({
   preAnalysisNotes,
   meaningUnits,
   categories,
+  categoryUnitDecisions = [],
   reviewerComments,
   auditEvents,
   integratedNarrative,
@@ -438,7 +445,11 @@ export function GdiqrWorkspace({
   const [displayTranscriptRecords, setDisplayTranscriptRecords] =
     useState(transcriptRecords);
   const [units, setUnits] = useState(meaningUnits);
-  const [displayCategories, setDisplayCategories] = useState(categories);
+  const [displayCategories, setDisplayCategories] = useState<CategoryNode[]>(() =>
+    flattenInitialCategoryHierarchy(categories),
+  );
+  const [displayCategoryUnitDecisions, setDisplayCategoryUnitDecisions] =
+    useState<CategoryUnitDecision[]>(categoryUnitDecisions);
   const [reviewerOutputs, setReviewerOutputs] = useState(reviewerComments);
   const [displayAuditEvents, setDisplayAuditEvents] = useState(auditEvents);
   const [displayExportRecords, setDisplayExportRecords] =
@@ -957,14 +968,27 @@ export function GdiqrWorkspace({
   );
   const hasFallbackCategoryLabels = displayCategories.some(isFallbackCategory);
   const hasTemporaryFallbackCategories = categoryDraftIsFallback;
+  const categoryUnitDecisionsForDisplay = useMemo(
+    () =>
+      reconcileCategoryGrouping({
+        categories: displayCategories,
+        priorDecisions: displayCategoryUnitDecisions,
+        units: confirmedMeaningUnits,
+      }),
+    [
+      confirmedMeaningUnits,
+      displayCategories,
+      displayCategoryUnitDecisions,
+    ],
+  );
   const assignedMeaningUnitNumbers = useMemo(
     () =>
       new Set(
-        displayCategories
-          .filter((category) => category.status !== "rejected")
-          .flatMap((category) => category.includedUnitIds),
+        categoryUnitDecisionsForDisplay
+          .filter((decision) => decision.decision === "assigned")
+          .map((decision) => decision.unitNumber),
       ),
-    [displayCategories],
+    [categoryUnitDecisionsForDisplay],
   );
   const unassignedMeaningUnits = useMemo(
     () =>
@@ -976,6 +1000,21 @@ export function GdiqrWorkspace({
   const confirmedCategoryCount = displayCategories.filter(
     (category) => category.status === "confirmed",
   ).length;
+  const categoryGroupingCoverage = useMemo(
+    () => ({
+      assigned: categoryUnitDecisionsForDisplay.filter(
+        (decision) => decision.decision === "assigned",
+      ).length,
+      intentionallyUnassigned: categoryUnitDecisionsForDisplay.filter(
+        (decision) => decision.decision === "intentionally_unassigned",
+      ).length,
+      needsReview: categoryUnitDecisionsForDisplay.filter(
+        (decision) => decision.decision === "needs_review",
+      ).length,
+      total: confirmedMeaningUnits.length,
+    }),
+    [categoryUnitDecisionsForDisplay, confirmedMeaningUnits.length],
+  );
   const acceptedMeaningUnitNumbers = useMemo(
     () => new Set(confirmedMeaningUnits.map((unit) => unit.number)),
     [confirmedMeaningUnits],
@@ -1136,6 +1175,9 @@ export function GdiqrWorkspace({
       });
       return changed ? next : current;
     });
+    setDisplayCategoryUnitDecisions((current) =>
+      current.filter((decision) => acceptedNumbers.has(decision.unitNumber)),
+    );
   }, [acceptedMeaningUnitNumberKey]);
 
   function applyWorkspace(workspace: WorkspaceData) {
@@ -1186,7 +1228,8 @@ export function GdiqrWorkspace({
     setDisplayTranscriptionJobs(workspace.transcriptionJobs);
     setDisplayTranscriptRecords(workspace.transcriptRecords ?? []);
     setUnits(workspace.meaningUnits);
-    setDisplayCategories(workspace.categories);
+    setDisplayCategories(flattenInitialCategoryHierarchy(workspace.categories));
+    setDisplayCategoryUnitDecisions(workspace.categoryUnitDecisions ?? []);
     setReviewerOutputs(workspace.reviewerComments);
     setDisplayAuditEvents(workspace.auditEvents);
     setDisplayExportRecords(workspace.exportRecords ?? []);
@@ -2952,6 +2995,7 @@ export function GdiqrWorkspace({
       }
       const result = (await response.json()) as {
         categories?: CategoryNode[];
+        categoryUnitDecisions?: CategoryUnitDecision[];
         categoryRevisions?: string[];
         integratedNarrative?: string;
         isFallbackDraft?: boolean;
@@ -2961,6 +3005,9 @@ export function GdiqrWorkspace({
       };
       if (result.categories) {
         setDisplayCategories(result.categories);
+      }
+      if (result.categoryUnitDecisions) {
+        setDisplayCategoryUnitDecisions(result.categoryUnitDecisions);
       }
       setNarrative(result.integratedNarrative ?? "");
       setCategoryDraftIsFallback(Boolean(result.isFallbackDraft));
@@ -3024,6 +3071,7 @@ export function GdiqrWorkspace({
         body: JSON.stringify({
           acceptFallbackDraft: true,
           categories: displayCategories,
+          categoryUnitDecisions: categoryUnitDecisionsForDisplay,
           integratedNarrative: narrative,
           mode,
           projectId: currentProject.id,
@@ -3034,6 +3082,7 @@ export function GdiqrWorkspace({
       });
       const result = (await response.json().catch(() => ({}))) as {
         categories?: CategoryNode[];
+        categoryUnitDecisions?: CategoryUnitDecision[];
         error?: string;
         integratedNarrative?: string;
         persisted?: boolean;
@@ -3045,6 +3094,9 @@ export function GdiqrWorkspace({
         return;
       }
       setDisplayCategories(result.categories ?? displayCategories);
+      setDisplayCategoryUnitDecisions(
+        result.categoryUnitDecisions ?? categoryUnitDecisionsForDisplay,
+      );
       setNarrative(result.integratedNarrative ?? narrative);
       setCategoryDraftIsFallback(false);
       setCategoryDraftNotice(
@@ -3551,6 +3603,58 @@ export function GdiqrWorkspace({
     });
   }
 
+  async function recordUnassignedCategoryDecision(
+    unit: MeaningUnit,
+    decision: "intentionally_unassigned" | "needs_review",
+  ) {
+    const reason = promptWorkspaceText(
+      decision === "intentionally_unassigned"
+        ? `Document why MU #${unit.number} should remain outside the current category system:`
+        : `Document what still needs comparison for MU #${unit.number}:`,
+      decision === "intentionally_unassigned"
+        ? "Distinct or unique case that does not yet share a coherent meaning with another accepted MU."
+        : "Further constant comparison is required before assigning one primary category.",
+    )?.trim();
+    if (!reason) {
+      setApiStatus("Record a reason before saving an unassigned MU decision.");
+      return;
+    }
+    const previousCategories = displayCategories;
+    const nextCategories = previousCategories.map((category) => ({
+      ...category,
+      includedUnitIds: category.includedUnitIds.filter(
+        (unitNumber) => unitNumber !== unit.number,
+      ),
+    }));
+    const baseDecisions = reconcileCategoryGrouping({
+      categories: nextCategories,
+      priorDecisions: displayCategoryUnitDecisions,
+      units: confirmedMeaningUnits,
+    });
+    const nextCategoryUnitDecisions = baseDecisions.map((item) =>
+      item.unitNumber === unit.number
+        ? {
+            decision,
+            evidenceRole: "unique_case" as const,
+            reason,
+            source: "researcher" as const,
+            unitNumber: unit.number,
+          }
+        : item,
+    );
+    await persistCategorySystem({
+      action:
+        decision === "intentionally_unassigned"
+          ? `Documented MU #${unit.number} as intentionally unassigned`
+          : `Marked MU #${unit.number} for further category comparison`,
+      actionType: "meaning_unit_moved",
+      nextCategories,
+      nextCategoryUnitDecisions,
+      previousCategories,
+      researcherNote: reason,
+    });
+  }
+
   async function deleteCategoryDraft(category: CategoryNode) {
     if (
       category.includedUnitIds.length > 0 &&
@@ -3619,16 +3723,28 @@ export function GdiqrWorkspace({
     });
   }
 
-  async function splitCategoryDraft(category: CategoryNode) {
+  async function splitCategoryDraft(
+    category: CategoryNode,
+    selectedUnitIds: number[],
+  ) {
     if (category.includedUnitIds.length < 2) {
       setApiStatus(
         "Add at least two meaning units before splitting this category.",
       );
       return;
     }
-    const splitIndex = Math.ceil(category.includedUnitIds.length / 2);
-    const remainingUnitIds = category.includedUnitIds.slice(0, splitIndex);
-    const splitUnitIds = category.includedUnitIds.slice(splitIndex);
+    const splitUnitIds = category.includedUnitIds.filter((unitNumber) =>
+      selectedUnitIds.includes(unitNumber),
+    );
+    const remainingUnitIds = category.includedUnitIds.filter(
+      (unitNumber) => !splitUnitIds.includes(unitNumber),
+    );
+    if (splitUnitIds.length === 0 || remainingUnitIds.length === 0) {
+      setApiStatus(
+        "Select at least one—but not all—meaning units whose meaning should form the new cluster.",
+      );
+      return;
+    }
     const splitName =
       window
         .prompt(
@@ -3687,6 +3803,12 @@ export function GdiqrWorkspace({
     if (!categoryDefinition) {
       setApiStatus(
         "Add a shared-meaning definition before confirming this evidence cluster as a provisional category.",
+      );
+      return;
+    }
+    if (category.groupingDecision !== "yes") {
+      setApiStatus(
+        "Record that these MUs belong together before confirming the evidence cluster as a provisional category.",
       );
       return;
     }
@@ -3959,6 +4081,7 @@ export function GdiqrWorkspace({
 
   function clearDerivedAnalysisAfterMeaningUnitChange() {
     setDisplayCategories([]);
+    setDisplayCategoryUnitDecisions([]);
     setNarrative("");
     setCategoryDraftNotice("");
     setCategoryDraftIsFallback(false);
@@ -3974,16 +4097,26 @@ export function GdiqrWorkspace({
     action,
     actionType = "category_updated",
     nextCategories,
+    nextCategoryUnitDecisions,
     previousCategories = displayCategories,
     researcherNote,
   }: {
     action: string;
     actionType?: AuditActionType;
     nextCategories: CategoryNode[];
+    nextCategoryUnitDecisions?: CategoryUnitDecision[];
     previousCategories?: CategoryNode[];
     researcherNote?: string;
   }) {
+    const reconciledDecisions =
+      nextCategoryUnitDecisions ??
+      reconcileCategoryGrouping({
+        categories: nextCategories,
+        priorDecisions: displayCategoryUnitDecisions,
+        units: confirmedMeaningUnits,
+      });
     setDisplayCategories(nextCategories);
+    setDisplayCategoryUnitDecisions(reconciledDecisions);
     setNarrative("");
     setReviewerOutputs((current) =>
       current.filter((comment) => comment.workspace !== "categories"),
@@ -4007,6 +4140,7 @@ export function GdiqrWorkspace({
           action,
           actionType,
           categories: nextCategories,
+          categoryUnitDecisions: reconciledDecisions,
           integratedNarrative: "",
           mode,
           previousCategories,
@@ -4018,6 +4152,7 @@ export function GdiqrWorkspace({
       });
       const result = (await response.json().catch(() => ({}))) as {
         categories?: CategoryNode[];
+        categoryUnitDecisions?: CategoryUnitDecision[];
         error?: string;
         reason?: string;
         saved?: boolean;
@@ -4030,10 +4165,14 @@ export function GdiqrWorkspace({
             "Category change could not be saved.",
         );
         setDisplayCategories(previousCategories);
+        setDisplayCategoryUnitDecisions(displayCategoryUnitDecisions);
         return false;
       }
 
       setDisplayCategories(result.categories ?? nextCategories);
+      setDisplayCategoryUnitDecisions(
+        result.categoryUnitDecisions ?? reconciledDecisions,
+      );
       setApiStatus(`${action} and saved to Supabase.`);
       return true;
     } catch (error) {
@@ -4043,6 +4182,7 @@ export function GdiqrWorkspace({
           : "Category change could not be saved.",
       );
       setDisplayCategories(previousCategories);
+      setDisplayCategoryUnitDecisions(displayCategoryUnitDecisions);
       return false;
     }
   }
@@ -7471,8 +7611,10 @@ export function GdiqrWorkspace({
                     )}
                     <UnassignedMeaningUnits
                       categories={displayCategories}
+                      decisions={categoryUnitDecisionsForDisplay}
                       onAssign={assignMeaningUnitToCategory}
                       onCreateCategory={addCategoryDraft}
+                      onDecision={recordUnassignedCategoryDecision}
                       units={unassignedMeaningUnits}
                     />
                   </section>
@@ -7484,6 +7626,27 @@ export function GdiqrWorkspace({
                       meaning units, and reject weak categories as the analysis
                       becomes clearer.
                     </p>
+                    <div className="button-row">
+                      <span className="badge">
+                        Accounted MUs: {categoryGroupingCoverage.total}
+                      </span>
+                      <span className="badge blue">
+                        Assigned once: {categoryGroupingCoverage.assigned}
+                      </span>
+                      <span className="badge">
+                        Documented distinct cases:{" "}
+                        {categoryGroupingCoverage.intentionallyUnassigned}
+                      </span>
+                      <span
+                        className={`badge ${
+                          categoryGroupingCoverage.needsReview > 0
+                            ? "warning"
+                            : ""
+                        }`}
+                      >
+                        Needs comparison: {categoryGroupingCoverage.needsReview}
+                      </span>
+                    </div>
                     <div className="button-row">
                       <button
                         className="button"

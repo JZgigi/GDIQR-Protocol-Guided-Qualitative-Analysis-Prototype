@@ -21,6 +21,7 @@
     "test:batch13": "node scripts/verify-batch13.mjs",
     "test:batch14": "node scripts/verify-batch14.mjs",
     "test:step2": "node scripts/verify-step2-meaning-units.mjs && node scripts/verify-step2-behaviour.mjs",
+    "test:stage3": "node --experimental-strip-types scripts/verify-stage3-category-grouping.mjs",
     "test:gdiqr-ai": "node scripts/verify-gdiqr-ai-knowledge.mjs",
     "test:gdiqr-ai:ollama": "node scripts/eval-gdiqr-ollama.mjs"
   },

@@ -291,10 +291,15 @@ export interface MeaningUnit {
 
 export interface CategoryNode {
   confidence?: "low" | "medium" | "high";
+  comparisonDifferenceNote?: string;
+  comparisonSimilarityNote?: string;
   id: string;
   name: string;
   definition: string;
+  exclusionCriteria?: string;
+  groupingDecision?: "yes" | "partly" | "no";
   includedUnitIds: number[];
+  inclusionCriteria?: string;
   rationale?: string;
   source?: "ai" | "fallback" | "researcher_confirmed";
   status?:
@@ -307,6 +312,36 @@ export interface CategoryNode {
   memo?: string;
   intentionallyUncategorisedUnitIds?: number[];
   subcategories?: CategoryNode[];
+}
+
+export type CategoryUnitDecisionStatus =
+  | "assigned"
+  | "intentionally_unassigned"
+  | "needs_review";
+
+export type CategoryEvidenceRole =
+  | "core"
+  | "qualifying"
+  | "contradictory"
+  | "unique_case";
+
+export interface CategoryUnitDecision {
+  categoryId?: string;
+  decision: CategoryUnitDecisionStatus;
+  evidenceRole: CategoryEvidenceRole;
+  reason: string;
+  source: "ai" | "researcher";
+  unitNumber: number;
+}
+
+export interface CategoryGroupingCoverage {
+  assigned: number;
+  duplicateAssignments: number[];
+  inputUnits: number;
+  intentionallyUnassigned: number;
+  invalidReferences: number[];
+  needsReview: number;
+  unaccountedUnits: number[];
 }
 
 export interface ReviewerComment {

@@ -101,6 +101,8 @@ For a fresh or rebuilt v1.0 test database, run these SQL files in Supabase SQL E
 3. `supabase/audio_upload_transcription.sql`
 4. `supabase/v1_0_foundation_schema.sql`
 5. `supabase/v1_0_transcript_audio_review_schema.sql`
+6. `supabase/step2_meaning_unit_semantics.sql`
+7. `supabase/stage3_category_grouping_integrity.sql`
 
 To reset only the default v1.0 test project after migrations:
 
@@ -121,6 +123,8 @@ OLLAMA_MODEL=qwen3:8b
 OLLAMA_API_TIMEOUT_MS=300000
 OLLAMA_MU_BOUNDARY_MAX_TOKENS=1200
 OLLAMA_MU_CHUNK_TIMEOUT_MS=120000
+OLLAMA_CATEGORY_MAX_TOKENS=3600
+OLLAMA_CATEGORY_BATCH_SIZE=30
 NEXT_PUBLIC_MU_JOB_TIMEOUT_MS=5400000
 OLLAMA_TRANSCRIPT_PROCESS_TIMEOUT_MS=300000
 NEXT_PUBLIC_TRANSCRIPT_PREPARE_TIMEOUT_MS=300000

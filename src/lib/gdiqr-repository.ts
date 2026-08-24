@@ -6,6 +6,7 @@ import type {
   AuditTargetType,
   CategoryMode,
   CategoryNode,
+  CategoryUnitDecision,
   DatasetType,
   EditLog,
   ExportRecord,
@@ -37,6 +38,8 @@ import {
 
 type AudioFileRow = Database["public"]["Tables"]["audio_files"]["Row"];
 type CategoryRow = Database["public"]["Tables"]["categories"]["Row"];
+type CategoryUnitDecisionRow =
+  Database["public"]["Tables"]["category_unit_decisions"]["Row"];
 type TranscriptionJobRow =
   Database["public"]["Tables"]["transcription_jobs"]["Row"];
 type TranscriptRow = Database["public"]["Tables"]["transcripts"]["Row"];
@@ -128,6 +131,7 @@ export interface WorkspaceData {
   transcriptionJobs: TranscriptionJobRecord[];
   meaningUnits: MeaningUnit[];
   categories: CategoryNode[];
+  categoryUnitDecisions: CategoryUnitDecision[];
   reviewerComments: ReviewerComment[];
   auditEvents: AuditEvent[];
   editLogs: EditLog[];
@@ -203,6 +207,7 @@ export function getEmptyWorkspace(
     transcriptionJobs: [],
     meaningUnits: [],
     categories: [],
+    categoryUnitDecisions: [],
     reviewerComments: [],
     auditEvents: [],
     editLogs: [],
@@ -375,17 +380,33 @@ export async function getWorkspace(
   }
 
   let categoryRows: CategoryRow[] = [];
+  let categoryUnitDecisionRows: CategoryUnitDecisionRow[] = [];
   if (categorySystemResult.data) {
-    const categoryResult = await supabase
-      .from("categories")
-      .select("*")
-      .eq("category_system_id", categorySystemResult.data.id)
-      .order("sort_order", { ascending: true });
+    const [categoryResult, decisionResult] = await Promise.all([
+      supabase
+        .from("categories")
+        .select("*")
+        .eq("category_system_id", categorySystemResult.data.id)
+        .order("sort_order", { ascending: true }),
+      supabase
+        .from("category_unit_decisions")
+        .select("*")
+        .eq("category_system_id", categorySystemResult.data.id)
+        .order("unit_number", { ascending: true }),
+    ]);
 
     if (categoryResult.error) {
       console.warn("Could not load categories:", categoryResult.error.message);
     } else {
       categoryRows = categoryResult.data ?? [];
+    }
+    if (decisionResult.error) {
+      console.warn(
+        "Could not load category-unit decisions. Apply supabase/stage3_category_grouping_integrity.sql before using Supabase-backed Stage 3 decisions:",
+        decisionResult.error.message,
+      );
+    } else {
+      categoryUnitDecisionRows = decisionResult.data ?? [];
     }
   }
 
@@ -404,6 +425,9 @@ export async function getWorkspace(
     ),
     meaningUnits: (meaningUnitsResult.data ?? []).map(mapMeaningUnit),
     categories: buildCategoryTree(categoryRows),
+    categoryUnitDecisions: categoryUnitDecisionRows.map(
+      mapCategoryUnitDecision,
+    ),
     reviewerComments: (reviewerCommentsResult.data ?? []).map(
       mapReviewerComment,
     ),
@@ -2881,11 +2905,13 @@ export async function replaceMeaningUnitsFromAi({
 
 export async function saveCategorySystemFromAi({
   categories,
+  categoryUnitDecisions = [],
   integratedNarrative,
   mode,
   projectId = defaultProjectId,
 }: {
   categories: CategoryNode[];
+  categoryUnitDecisions?: CategoryUnitDecision[];
   integratedNarrative: string;
   mode: CategoryMode;
   projectId?: string;
@@ -2918,8 +2944,24 @@ export async function saveCategorySystemFromAi({
   if (rows.length > 0) {
     const { error } = await supabase.from("categories").insert(rows);
     if (error) {
-      throw new Error(error.message);
+      await supabase.from("category_systems").delete().eq("id", system.id);
+      throw new Error(
+        `${error.message} Apply supabase/stage3_category_grouping_integrity.sql before saving Stage 3 category comparisons.`,
+      );
     }
+  }
+
+  try {
+    await saveCategoryUnitDecisionRows({
+      categories,
+      categorySystemId: system.id,
+      decisions: categoryUnitDecisions,
+      projectId,
+      supabase,
+    });
+  } catch (error) {
+    await supabase.from("category_systems").delete().eq("id", system.id);
+    throw error;
   }
 
   await supabase.from("audit_events").insert({
@@ -2932,6 +2974,7 @@ export async function saveCategorySystemFromAi({
   return {
     saved: true,
     categories,
+    categoryUnitDecisions,
     integratedNarrative,
   };
 }
@@ -2940,6 +2983,7 @@ export async function saveCategorySystemFromResearcher({
   action = "Updated researcher category system",
   actionType = "category_updated",
   categories,
+  categoryUnitDecisions = [],
   integratedNarrative = "",
   mode = "A",
   previousCategories,
@@ -2949,6 +2993,7 @@ export async function saveCategorySystemFromResearcher({
   action?: string;
   actionType?: AuditActionType;
   categories: CategoryNode[];
+  categoryUnitDecisions?: CategoryUnitDecision[];
   integratedNarrative?: string;
   mode?: CategoryMode;
   previousCategories?: CategoryNode[];
@@ -2983,8 +3028,24 @@ export async function saveCategorySystemFromResearcher({
   if (rows.length > 0) {
     const { error } = await supabase.from("categories").insert(rows);
     if (error) {
-      throw new Error(error.message);
+      await supabase.from("category_systems").delete().eq("id", system.id);
+      throw new Error(
+        `${error.message} Apply supabase/stage3_category_grouping_integrity.sql before saving Stage 3 category comparisons.`,
+      );
     }
+  }
+
+  try {
+    await saveCategoryUnitDecisionRows({
+      categories,
+      categorySystemId: system.id,
+      decisions: categoryUnitDecisions,
+      projectId,
+      supabase,
+    });
+  } catch (error) {
+    await supabase.from("category_systems").delete().eq("id", system.id);
+    throw error;
   }
 
   await recordEditLog({
@@ -3003,6 +3064,7 @@ export async function saveCategorySystemFromResearcher({
   return {
     saved: true,
     categories,
+    categoryUnitDecisions,
     integratedNarrative,
   };
 }
@@ -3473,6 +3535,11 @@ function flattenCategoryRows(
       parent_category_id: parentId,
       name: category.name,
       definition: category.definition,
+      inclusion_criteria: category.inclusionCriteria ?? "",
+      exclusion_criteria: category.exclusionCriteria ?? "",
+      comparison_similarity_note: category.comparisonSimilarityNote ?? "",
+      comparison_difference_note: category.comparisonDifferenceNote ?? "",
+      grouping_decision: category.groupingDecision ?? null,
       included_unit_numbers: category.includedUnitIds,
       sort_order: sortOrder,
       memo: category.memo ?? category.rationale ?? "",
@@ -3492,6 +3559,94 @@ function flattenCategoryRows(
       ),
     ];
   });
+}
+
+async function saveCategoryUnitDecisionRows({
+  categories,
+  categorySystemId,
+  decisions,
+  projectId,
+  supabase,
+}: {
+  categories: CategoryNode[];
+  categorySystemId: string;
+  decisions: CategoryUnitDecision[];
+  projectId: string;
+  supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>;
+}) {
+  if (decisions.length === 0) {
+    return;
+  }
+  const { data: unitRows, error: unitError } = await supabase
+    .from("meaning_units")
+    .select("id, unit_number")
+    .eq("project_id", projectId);
+  if (unitError) {
+    throw new Error(unitError.message);
+  }
+  const meaningUnitIdByNumber = new Map(
+    (unitRows ?? []).map((row) => [row.unit_number, row.id]),
+  );
+  const categoryIdMap = buildPersistedCategoryIdMap(
+    categories,
+    categorySystemId,
+  );
+  const rows = decisions.flatMap((decision) => {
+    const meaningUnitId = meaningUnitIdByNumber.get(decision.unitNumber);
+    const categoryId = decision.categoryId
+      ? categoryIdMap.get(decision.categoryId)
+      : undefined;
+    if (
+      !meaningUnitId ||
+      (decision.decision === "assigned" && !categoryId)
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: stableId("cud", categorySystemId, decision.unitNumber),
+        category_system_id: categorySystemId,
+        category_id: decision.decision === "assigned" ? categoryId : null,
+        meaning_unit_id: meaningUnitId,
+        unit_number: decision.unitNumber,
+        decision: decision.decision,
+        evidence_role: decision.evidenceRole,
+        reason: decision.reason,
+        source: decision.source,
+      } satisfies Database["public"]["Tables"]["category_unit_decisions"]["Insert"],
+    ];
+  });
+  if (rows.length !== decisions.length) {
+    throw new Error(
+      "Category decisions could not be matched to every accepted meaning unit and persisted category.",
+    );
+  }
+  const { error } = await supabase.from("category_unit_decisions").insert(rows);
+  if (error) {
+    throw new Error(
+      `${error.message} Apply supabase/stage3_category_grouping_integrity.sql before saving Stage 3 decisions.`,
+    );
+  }
+}
+
+function buildPersistedCategoryIdMap(
+  categories: CategoryNode[],
+  categorySystemId: string,
+  offset = 0,
+  result = new Map<string, string>(),
+) {
+  categories.forEach((category, index) => {
+    const sortOrder = offset + index + 1;
+    const persistedId = stableId("cat", categorySystemId, sortOrder);
+    result.set(category.id, persistedId);
+    buildPersistedCategoryIdMap(
+      category.subcategories ?? [],
+      categorySystemId,
+      sortOrder * 100,
+      result,
+    );
+  });
+  return result;
 }
 
 function stableId(prefix: string, scope: string, number: number) {
@@ -4111,6 +4266,11 @@ function buildCategoryTree(rows: CategoryRow[]) {
       id: row.id,
       name: row.name,
       definition: row.definition,
+      inclusionCriteria: row.inclusion_criteria,
+      exclusionCriteria: row.exclusion_criteria,
+      comparisonSimilarityNote: row.comparison_similarity_note,
+      comparisonDifferenceNote: row.comparison_difference_note,
+      groupingDecision: row.grouping_decision ?? undefined,
       includedUnitIds: row.included_unit_numbers,
       intentionallyUncategorisedUnitIds:
         row.intentionally_uncategorised_unit_numbers,
@@ -4138,4 +4298,17 @@ function buildCategoryTree(rows: CategoryRow[]) {
   return roots.map((node) =>
     node.subcategories?.length ? node : { ...node, subcategories: undefined },
   );
+}
+
+function mapCategoryUnitDecision(
+  row: CategoryUnitDecisionRow,
+): CategoryUnitDecision {
+  return {
+    categoryId: row.category_id ?? undefined,
+    decision: row.decision,
+    evidenceRole: row.evidence_role,
+    reason: row.reason,
+    source: row.source,
+    unitNumber: row.unit_number,
+  };
 }

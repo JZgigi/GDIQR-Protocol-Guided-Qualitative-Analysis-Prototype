@@ -9,6 +9,7 @@ with required_tables(table_name) as (
     ('meaning_units'),
     ('category_systems'),
     ('categories'),
+    ('category_unit_decisions'),
     ('audit_events'),
     ('edit_logs'),
     ('pre_analysis_notes'),
@@ -34,6 +35,19 @@ from information_schema.columns
 where table_schema = 'public'
   and table_name = 'guidance_memos'
   and column_name in ('id', 'project_id', 'step', 'question', 'answer', 'created_at')
+order by ordinal_position;
+
+select
+  column_name,
+  data_type,
+  is_nullable
+from information_schema.columns
+where table_schema = 'public'
+  and table_name = 'category_unit_decisions'
+  and column_name in (
+    'category_system_id', 'category_id', 'meaning_unit_id', 'unit_number',
+    'decision', 'evidence_role', 'reason', 'source'
+  )
 order by ordinal_position;
 
 select

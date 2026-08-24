@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import type { AuditActionType, CategoryMode, CategoryNode } from "@/lib/types";
+import type {
+  AuditActionType,
+  CategoryMode,
+  CategoryNode,
+  CategoryUnitDecision,
+} from "@/lib/types";
 import { saveCategorySystemFromResearcher } from "@/lib/gdiqr-repository";
 
 const allowedActionTypes: AuditActionType[] = [
@@ -16,6 +21,7 @@ export async function POST(request: Request) {
       action?: string;
       actionType?: AuditActionType;
       categories?: CategoryNode[];
+      categoryUnitDecisions?: CategoryUnitDecision[];
       integratedNarrative?: string;
       mode?: CategoryMode;
       previousCategories?: CategoryNode[];
@@ -47,6 +53,7 @@ export async function POST(request: Request) {
       action: body.action ?? "Updated researcher category system",
       actionType,
       categories: body.categories,
+      categoryUnitDecisions: body.categoryUnitDecisions,
       integratedNarrative: body.integratedNarrative ?? "",
       mode: body.mode ?? "A",
       previousCategories: body.previousCategories,

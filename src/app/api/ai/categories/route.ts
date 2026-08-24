@@ -12,13 +12,20 @@ import {
   startRunLog
 } from "@/lib/run-logs";
 import { getStorageMode } from "@/lib/storage-mode";
-import type { CategoryMode, CategoryNode, MeaningUnit, Project } from "@/lib/types";
+import type {
+  CategoryMode,
+  CategoryNode,
+  CategoryUnitDecision,
+  MeaningUnit,
+  Project,
+} from "@/lib/types";
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
     acceptFallbackDraft?: boolean;
     allBatchesProcessed?: boolean;
     categories?: CategoryNode[];
+    categoryUnitDecisions?: CategoryUnitDecision[];
     integratedNarrative?: string;
     mode?: CategoryMode;
     projectId?: string;
@@ -53,6 +60,7 @@ export async function POST(request: NextRequest) {
         finishRunLog(runId);
         return NextResponse.json({
           categories: markResearcherConfirmed(body.categories),
+          categoryUnitDecisions: body.categoryUnitDecisions ?? [],
           integratedNarrative: body.integratedNarrative ?? "",
           isFallbackDraft: false,
           persisted: false,
@@ -65,6 +73,7 @@ export async function POST(request: NextRequest) {
       addRunEvent(runId, "Saving researcher-confirmed temporary category draft");
       const saveResult = await saveCategorySystemFromAi({
         categories: markResearcherConfirmed(body.categories),
+        categoryUnitDecisions: body.categoryUnitDecisions,
         integratedNarrative: body.integratedNarrative ?? "",
         mode,
         projectId
@@ -72,6 +81,7 @@ export async function POST(request: NextRequest) {
       finishRunLog(runId);
       return NextResponse.json({
         categories: saveResult.categories,
+        categoryUnitDecisions: saveResult.categoryUnitDecisions,
         integratedNarrative: saveResult.integratedNarrative,
         isFallbackDraft: false,
         persisted: saveResult.saved,
@@ -116,7 +126,8 @@ export async function POST(request: NextRequest) {
         researcherNotes: "",
         metadata: {},
       };
-    const existingCategories = workspace?.categories ?? body.categories ?? [];
+    const existingCategories =
+      mode === "A" ? [] : (workspace?.categories ?? body.categories ?? []);
     const result = await generateCategories({
       allBatchesProcessed: body.allBatchesProcessed,
       existingCategories,
@@ -156,6 +167,7 @@ export async function POST(request: NextRequest) {
     addRunEvent(runId, `Saving ${result.categories.length} top-level categories`);
     const saveResult = await saveCategorySystemFromAi({
       categories: result.categories,
+      categoryUnitDecisions: result.categoryUnitDecisions,
       integratedNarrative: result.integratedNarrative,
       mode,
       projectId

@@ -30,6 +30,7 @@ export default async function Home(props: {
       audioFiles={workspace.audioFiles}
       auditEvents={workspace.auditEvents}
       categories={workspace.categories}
+      categoryUnitDecisions={workspace.categoryUnitDecisions}
       dataSource={workspace.dataSource}
       exportRecords={workspace.exportRecords}
       guidanceMemos={workspace.guidanceMemos}

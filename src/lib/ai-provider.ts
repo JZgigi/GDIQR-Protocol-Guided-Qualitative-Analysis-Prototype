@@ -1,12 +1,18 @@
 import type {
+  CategoryGroupingCoverage,
   CategoryMode,
   CategoryNode,
+  CategoryUnitDecision,
   MeaningUnit,
   MeaningUnitGenerationCounts,
   Project,
   ReviewerComment,
   ReviewerWorkspace
 } from "@/lib/types";
+import {
+  validateCategoryGrouping,
+  type ProposedUnassignedUnit,
+} from "@/lib/category-grouping";
 import { addRunEvent } from "@/lib/run-logs";
 import {
   getOllamaChatCompletionsUrl,
@@ -132,6 +138,8 @@ export interface CategoryResult {
   researchQuestion: string;
   mode: CategoryMode;
   categories: CategoryNode[];
+  categoryUnitDecisions: CategoryUnitDecision[];
+  coverage: CategoryGroupingCoverage;
   categoryRevisions: string[];
   structuralModel: string;
   integratedNarrative: string;
@@ -913,28 +921,46 @@ export async function generateCategories(
 
   const model = getOllamaModel();
   try {
-    const result = await callOllamaJson<{
-      categories?: Array<Partial<CategoryNode>>;
-      categoryRevisions?: string[];
-      structuralModel?: string;
-      integratedNarrative?: string;
-      uncertainties?: string[];
-    }>(
-      [
-        systemMessage(input.mode === "C" ? "integration" : "categorisation"),
-        {
-          role: "user",
-          content: buildCategoryGenerationPrompt(input),
-        },
-      ],
-      {
-        maxTokens: Number(process.env.OLLAMA_CATEGORY_MAX_TOKENS ?? 1800),
-        timeoutMs: getOllamaTimeoutMs(),
-      },
+    const batchSize = Math.max(
+      10,
+      Number(process.env.OLLAMA_CATEGORY_BATCH_SIZE ?? 30),
     );
-    const categories = normalizeCategories(result.categories ?? [], "ai");
-    if (categories.length === 0) {
-      throw new Error("Local AI returned no categories.");
+    const batches =
+      input.mode === "C" ? [input.units] : chunkArray(input.units, batchSize);
+    const drafts = [] as Awaited<ReturnType<typeof generateCategoryBatch>>[];
+    for (const [batchIndex, units] of batches.entries()) {
+      drafts.push(
+        await generateCategoryBatch({
+          batchIndex,
+          input: { ...input, units },
+        }),
+      );
+    }
+
+    let categoryDraft = combineCategoryBatchDrafts(drafts, input.units);
+    const uncertainties = drafts.flatMap((draft) => draft.uncertainties);
+    if (drafts.length > 1 && input.mode !== "C") {
+      try {
+        const consolidated = await generateCategoryConsolidation({
+          categories: categoryDraft.categories,
+          input,
+        });
+        if (consolidated.valid) {
+          categoryDraft = consolidated;
+        } else {
+          uncertainties.push(
+            "Cross-batch consolidation returned conflicting MU assignments, so the complete batch-level groupings were retained for researcher comparison.",
+          );
+        }
+      } catch {
+        uncertainties.push(
+          "Cross-batch consolidation did not complete. All accepted MUs remain accounted for in provisional batch-level groupings for researcher merging and refinement.",
+        );
+      }
+    }
+
+    if (categoryDraft.categories.length === 0) {
+      throw new Error("Local AI returned no usable category groupings.");
     }
 
     return {
@@ -943,12 +969,20 @@ export async function generateCategories(
       caseId: input.units[0]?.caseId ?? "CASE-001",
       researchQuestion: input.project.researchQuestion,
       mode: input.mode,
-      categories,
-      categoryRevisions: stringArray(result.categoryRevisions),
-      structuralModel: result.structuralModel ?? "",
-      integratedNarrative: result.integratedNarrative ?? "",
+      categories: categoryDraft.categories,
+      categoryUnitDecisions: categoryDraft.decisions,
+      coverage: categoryDraft.coverage,
+      categoryRevisions: drafts.flatMap((draft) => draft.categoryRevisions),
+      structuralModel: drafts
+        .map((draft) => draft.structuralModel)
+        .filter(Boolean)
+        .join("\n\n"),
+      integratedNarrative: drafts
+        .map((draft) => draft.integratedNarrative)
+        .filter(Boolean)
+        .join("\n\n"),
       isFallbackDraft: false,
-      uncertainties: stringArray(result.uncertainties),
+      uncertainties,
     };
   } catch (error) {
     const message =
@@ -1114,9 +1148,14 @@ export function prepareTranscriptWithLocalRules(
   };
 }
 
-function buildCategoryGenerationPrompt(input: CategoryInput) {
+function buildCategoryGenerationPrompt(
+  input: CategoryInput,
+  revisionDirective = "",
+) {
   const existingCategories =
-    input.existingCategories && input.existingCategories.length > 0
+    input.mode !== "A" &&
+    input.existingCategories &&
+    input.existingCategories.length > 0
       ? JSON.stringify(input.existingCategories, null, 2)
       : "None";
   const modeInstructions =
@@ -1125,15 +1164,15 @@ function buildCategoryGenerationPrompt(input: CategoryInput) {
 - Use when no existing category system is being refined.
 - Compare summaries within this single-transcript batch.
 - Cluster summaries into substantive categories that answer the research question.
-- Create subcategories only when there are strong internal conceptual distinctions.
+- Produce flat evidence clusters only. Do not create subcategories during initial construction; internal distinctions can be developed after researcher comparison.
 - Define each category clearly and list included MU numbers.
 - Do not produce narrative integration.`
       : input.mode === "B"
         ? `MODE B - Category Expansion and Refinement
 - Mode B generates provisional analytic groupings from confirmed meaning units. These are draft categories for researcher review, not findings.
 - Use the existing category system as the starting point.
-- Compare each confirmed summary against existing categories/subcategories.
-- Decide whether each summary fits, requires a new category/subcategory, or suggests merging/redefining categories.
+- Compare each confirmed summary against existing provisional categories.
+- Decide whether each summary fits, requires a new peer category, or suggests merging/redefining categories.
 - Explicitly report structural changes in categoryRevisions.
 - Maintain parsimony and avoid category proliferation.
 - Generate concise analytic titles, not raw transcript openings.
@@ -1175,13 +1214,18 @@ Global rules:
 - Category titles must be concise analytic labels. Do not use raw transcript greetings, names, identifiers, privacy placeholders, or interviewer wording as titles.
 - Avoid categories that merely repeat interview questions or broad domains.
 - Avoid redundant, trivial, or overly numerous categories.
-- Subcategories must reflect conceptual distinctions, not minor wording differences.
+- Keep this Stage 3 output flat and researcher-editable. Record relationships and higher-order structure later during Integration rather than creating read-only nested outputs here.
 - Preserve tensions, contradictions, qualifications, and uncertainty rather than smoothing them over.
 - Do not turn participant accounts into explanatory mechanisms at category stage; reserve explanations of why/how relationships operate for Integration.
 - Treat participant claims about external institutions, culture, credibility, effectiveness, or prevalence as participant perceptions unless independently verified outside this analysis.
 - In each category definition/rationale, state meaningful variations, tensions, contradictory cases, or uncertainties when they are present in the included MUs.
 - Category includedUnitIds must refer to MU numbers only so every category remains traceable to researcher-accepted/edited evidence.
+- Account for every confirmed MU exactly once. Put it in one primary category, or list it once in unassignedUnits with a transparent reason and decision.
+- Never assign one MU to multiple primary categories. Other relationships belong in the later Integration stage.
+- Do not force a weak fit. A coherent one-MU provisional category or an explicitly documented unique/uncertain case is methodologically preferable to a miscellaneous category.
+- Stage 3 categories must be flat; omit subcategories.
 - Return strict JSON only, with no markdown or commentary.
+${revisionDirective}
 
 Return JSON in this shape:
 {
@@ -1191,15 +1235,20 @@ Return JSON in this shape:
       "definition": "category definition",
       "includedUnitIds": [1, 2],
       "rationale": "brief reason these MUs belong together",
-      "confidence": "low | medium | high",
       "status": "ai_draft",
-      "subcategories": [
-        {
-          "name": "subcategory name",
-          "definition": "subcategory definition",
-          "includedUnitIds": [1]
-        }
-      ]
+      "inclusionCriteria": "what shared meaning belongs here",
+      "exclusionCriteria": "nearby but distinct meanings that do not belong here",
+      "comparisonSimilarityNote": "important shared meaning across included MUs",
+      "comparisonDifferenceNote": "variation, tension, or negative case within the grouping",
+      "groupingDecision": "yes | partly | no"
+    }
+  ],
+  "unassignedUnits": [
+    {
+      "unitNumber": 3,
+      "decision": "intentionally_unassigned | needs_review",
+      "evidenceRole": "unique_case | contradictory | qualifying | core",
+      "reason": "specific transparent reason"
     }
   ],
   "categoryRevisions": ["for Mode B/C: structural changes, merges, renamed categories, uncertainties"],
@@ -1581,6 +1630,160 @@ ${content}`,
       }
     }
   }
+}
+
+interface RawCategoryGenerationResult {
+  categories?: Array<Partial<CategoryNode>>;
+  categoryRevisions?: string[];
+  integratedNarrative?: string;
+  structuralModel?: string;
+  unassignedUnits?: ProposedUnassignedUnit[];
+  uncertainties?: string[];
+}
+
+async function generateCategoryBatch({
+  batchIndex,
+  input,
+}: {
+  batchIndex: number;
+  input: CategoryInput;
+}) {
+  let raw = await callCategoryModel(
+    buildCategoryGenerationPrompt(input),
+    input.mode,
+  );
+  let integrity = validateCategoryGrouping({
+    categories: normalizeCategories(
+      raw.categories ?? [],
+      "ai",
+      `cat_ai_b${batchIndex + 1}`,
+    ),
+    proposedUnassigned: raw.unassignedUnits,
+    units: input.units,
+  });
+  if (!integrity.valid) {
+    raw = await callCategoryModel(
+      buildCategoryGenerationPrompt(
+        input,
+        categoryCoverageCorrection(integrity.coverage),
+      ),
+      input.mode,
+    );
+    integrity = validateCategoryGrouping({
+      categories: normalizeCategories(
+        raw.categories ?? [],
+        "ai",
+        `cat_ai_b${batchIndex + 1}`,
+      ),
+      proposedUnassigned: raw.unassignedUnits,
+      units: input.units,
+    });
+  }
+  return {
+    ...integrity,
+    categoryRevisions: stringArray(raw.categoryRevisions),
+    integratedNarrative: raw.integratedNarrative ?? "",
+    structuralModel: raw.structuralModel ?? "",
+    uncertainties: [
+      ...stringArray(raw.uncertainties),
+      ...(integrity.valid
+        ? []
+        : [
+            `The assistant did not fully account for MU ${integrity.coverage.unaccountedUnits.join(", ") || "coverage"}; these records remain visible as Needs review.`,
+          ]),
+    ],
+  };
+}
+
+async function callCategoryModel(prompt: string, mode: CategoryMode = "A") {
+  return callOllamaJson<RawCategoryGenerationResult>(
+    [
+      systemMessage(mode === "C" ? "integration" : "categorisation"),
+      { role: "user", content: prompt },
+    ],
+    {
+      maxTokens: Number(process.env.OLLAMA_CATEGORY_MAX_TOKENS ?? 3600),
+      timeoutMs: getOllamaTimeoutMs(),
+    },
+  );
+}
+
+function combineCategoryBatchDrafts(
+  drafts: Array<{
+    categories: CategoryNode[];
+    decisions: CategoryUnitDecision[];
+  }>,
+  units: MeaningUnit[],
+) {
+  const categories = drafts.flatMap((draft) => draft.categories);
+  const proposedUnassigned = drafts
+    .flatMap((draft) => draft.decisions)
+    .filter((decision) => decision.decision !== "assigned")
+    .map((decision) => ({
+      decision:
+        decision.decision === "intentionally_unassigned"
+          ? ("intentionally_unassigned" as const)
+          : ("needs_review" as const),
+      evidenceRole: decision.evidenceRole,
+      reason: decision.reason,
+      unitNumber: decision.unitNumber,
+    }));
+  return validateCategoryGrouping({ categories, proposedUnassigned, units });
+}
+
+async function generateCategoryConsolidation({
+  categories,
+  input,
+}: {
+  categories: CategoryNode[];
+  input: CategoryInput;
+}) {
+  const raw = await callCategoryModel(
+    buildCategoryConsolidationPrompt(input, categories),
+    input.mode,
+  );
+  return validateCategoryGrouping({
+    categories: normalizeCategories(
+      raw.categories ?? [],
+      "ai",
+      "cat_ai_consolidated",
+    ),
+    proposedUnassigned: raw.unassignedUnits,
+    units: input.units,
+  });
+}
+
+function categoryCoverageCorrection(coverage: CategoryGroupingCoverage) {
+  return `\nCORRECTION REQUIRED: Replace the entire previous JSON result. Every input MU must appear exactly once: either in one category includedUnitIds array or in unassignedUnits. Duplicate assignments: ${coverage.duplicateAssignments.join(", ") || "none"}. Omitted MUs: ${coverage.unaccountedUnits.join(", ") || "none"}. Invalid references: ${coverage.invalidReferences.join(", ") || "none"}.`;
+}
+
+function buildCategoryConsolidationPrompt(
+  input: CategoryInput,
+  categories: CategoryNode[],
+) {
+  return `/no_think
+Consolidate provisional category groupings created from separate batches of the same transcript. Compare their definitions and rationales semantically, merge only genuinely shared meanings, and preserve meaningful differences, tensions, negative cases, and unique cases.
+
+Rules:
+- Return a complete replacement flat category system, not subcategories.
+- Each MU number from the input set must occur exactly once in one includedUnitIds array, or once in unassignedUnits with a reason.
+- One MU has one primary category only. Do not duplicate MU numbers across categories.
+- Do not force a weak fit merely to reduce the number of categories. A coherent one-MU provisional category is allowed.
+- Keep wording descriptive and data-near. Do not copy a manual category framework or introduce theory.
+- Return strict JSON only in the same shape as the supplied category drafts plus unassignedUnits.
+
+Research question: ${input.project.researchQuestion}
+Valid MU numbers: ${input.units.map((unit) => unit.number).join(", ")}
+
+Batch-level provisional categories:
+${JSON.stringify(categories, null, 2)}`;
+}
+
+function chunkArray<T>(items: T[], size: number) {
+  return Array.from(
+    { length: Math.ceil(items.length / size) },
+    (_, index) => items.slice(index * size, (index + 1) * size),
+  );
 }
 
 function getJsonRetryMaxTokens(maxTokens: number) {
@@ -2669,31 +2872,49 @@ function stripSpeakerPrefix(text: string) {
 
 function normalizeCategories(
   items: Array<Partial<CategoryNode>>,
-  source: CategoryNode["source"] = "ai"
+  source: CategoryNode["source"] = "ai",
+  idPrefix = "cat_ai",
 ): CategoryNode[] {
   return items
     .map((item, index): CategoryNode => {
       const status: CategoryNode["status"] =
         source === "fallback" ? "fallback_draft" : "ai_draft";
       return {
-        id: `cat_ai_${String(index + 1).padStart(3, "0")}`,
+        id: `${idPrefix}_${String(index + 1).padStart(3, "0")}`,
         confidence: normalizeConfidence(item.confidence),
+        comparisonDifferenceNote: cleanText(item.comparisonDifferenceNote),
+        comparisonSimilarityNote: cleanText(item.comparisonSimilarityNote),
         name:
           safeCategoryTitle(cleanText(item.name), index + 1) ||
           `Draft category ${index + 1}: Needs researcher review`,
         definition:
           cleanText(item.definition) ||
           "AI-drafted category definition. Review and edit before using.",
+        exclusionCriteria: cleanText(item.exclusionCriteria),
+        groupingDecision: normalizeGroupingDecision(item.groupingDecision),
         includedUnitIds: numberArray(item.includedUnitIds),
+        inclusionCriteria: cleanText(item.inclusionCriteria),
         rationale: cleanText(item.rationale),
         source,
         status,
-        subcategories: normalizeCategories(item.subcategories ?? [], source)
+        subcategories: normalizeCategories(
+          item.subcategories ?? [],
+          source,
+          `${idPrefix}_${String(index + 1).padStart(3, "0")}`,
+        )
       };
     })
     .map((item) =>
       item.subcategories?.length ? item : { ...item, subcategories: undefined }
     );
+}
+
+function normalizeGroupingDecision(
+  value: unknown,
+): CategoryNode["groupingDecision"] {
+  return value === "yes" || value === "partly" || value === "no"
+    ? value
+    : undefined;
 }
 
 function safeCategoryTitle(title: string, index: number) {

@@ -44,8 +44,9 @@ Run these files in Supabase SQL Editor in this exact order:
 4. `supabase/v1_0_foundation_schema.sql`
 5. `supabase/v1_0_transcript_audio_review_schema.sql`
 6. `supabase/step2_meaning_unit_semantics.sql`
+7. `supabase/stage3_category_grouping_integrity.sql`
 
-Why all five are required:
+Why all seven are required:
 
 - `phase2_schema.sql` creates the original project, transcript, MU, category, reviewer, audit, and export tables.
 - `phase3_segment_workflow.sql` adds interview and segment workflow support.
@@ -53,6 +54,7 @@ Why all five are required:
 - `v1_0_foundation_schema.sql` adds v1.0 project metadata, pre-analysis notes, integration relationships, integrity review, edit logs, export format support, and guidance memos.
 - `v1_0_transcript_audio_review_schema.sql` adds transcript/audio review fields required by the v1.0 workflow.
 - `step2_meaning_unit_semantics.sql` records the immutable AI-proposed excerpt, participant speaker role, analytic classification, source transcript/lines/turns, linked facilitator or moderator context, generation method, and reviewer warnings for each Step 2 MU. Facilitator, moderator, and interviewer turns remain context and are not inserted as meaning units.
+- `stage3_category_grouping_integrity.sql` records category comparison criteria and one explicit primary disposition for every accepted MU: assigned once, intentionally unassigned with a reason, or awaiting researcher comparison.
 
 ## 3. Read-only Schema Verification
 

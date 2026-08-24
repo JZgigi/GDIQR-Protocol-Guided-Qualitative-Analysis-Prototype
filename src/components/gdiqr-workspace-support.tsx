@@ -3,7 +3,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { Check, ChevronRight, FileText, Pencil, Play, RefreshCcw, ShieldCheck, Trash2 } from "lucide-react";
 import type {
-  AuditEvent, CategoryMode, CategoryNode, GuidanceMemo, IntegrationRelationship as StoredIntegrationRelationship, IntegrityReviewItem, IntegrityReviewItemStatus, IntegrationRelationshipLabel, MeaningUnit, Project, ReviewerComment, ReviewerWorkspace, SegmentSpeakerRole, SegmentStatus, TranscriptRecord, TranscriptSegment, WorkflowStep,
+  AuditEvent, CategoryMode, CategoryNode, CategoryUnitDecision, GuidanceMemo, IntegrationRelationship as StoredIntegrationRelationship, IntegrityReviewItem, IntegrityReviewItemStatus, IntegrationRelationshipLabel, MeaningUnit, Project, ReviewerComment, ReviewerWorkspace, SegmentSpeakerRole, SegmentStatus, TranscriptRecord, TranscriptSegment, WorkflowStep,
 } from "@/lib/types";
 import type { RunLog } from "@/lib/run-logs";
 import type { AutoSegmentMode } from "@/lib/auto-segmenter";
@@ -3505,7 +3505,7 @@ export function CategoryBlock({
   onMerge: (category: CategoryNode) => void;
   onReject: (category: CategoryNode) => void;
   onRemoveUnit: (categoryId: string, unitNumber: number) => void;
-  onSplit: (category: CategoryNode) => void;
+  onSplit: (category: CategoryNode, selectedUnitIds: number[]) => void;
   onUpdate: (categoryId: string, updates: Partial<CategoryNode>) => void;
   units: MeaningUnit[];
 }) {
@@ -3520,9 +3520,16 @@ export function CategoryBlock({
   const titleValue = getCategoryTitleInputValue(category);
   const descriptionValue = getCategoryDescriptionValue(category);
   const memoValue = getCategoryMemoValue(category);
-  const [similarityNote, setSimilarityNote] = useState("");
-  const [differenceNote, setDifferenceNote] = useState("");
-  const [clusterDecision, setClusterDecision] = useState("partly");
+  const [similarityNote, setSimilarityNote] = useState(
+    category.comparisonSimilarityNote ?? "",
+  );
+  const [differenceNote, setDifferenceNote] = useState(
+    category.comparisonDifferenceNote ?? "",
+  );
+  const [clusterDecision, setClusterDecision] = useState(
+    category.groupingDecision ?? "partly",
+  );
+  const [selectedSplitUnitIds, setSelectedSplitUnitIds] = useState<number[]>([]);
   const [assistantDraftIgnored, setAssistantDraftIgnored] = useState(false);
   const assistantDraft = getOptionalCategoryDraft(category, includedUnits);
   return (
@@ -3573,6 +3580,20 @@ export function CategoryBlock({
                       {unit.caseId} · {unit.segmentId}
                     </p>
                   </details>
+                  <label className="small">
+                    <input
+                      checked={selectedSplitUnitIds.includes(unit.number)}
+                      onChange={(event) =>
+                        setSelectedSplitUnitIds((current) =>
+                          event.target.checked
+                            ? [...current, unit.number]
+                            : current.filter((number) => number !== unit.number),
+                        )
+                      }
+                      type="checkbox"
+                    />{" "}
+                    Select this MU if its meaning should move to a new split cluster
+                  </label>
                 </div>
                 <div className="button-row">
                   <button
@@ -3617,6 +3638,11 @@ export function CategoryBlock({
           className="textarea compact-textarea"
           id={`${category.id}-similarities`}
           onChange={(event) => setSimilarityNote(event.target.value)}
+          onBlur={() =>
+            onUpdate(category.id, {
+              comparisonSimilarityNote: similarityNote,
+            })
+          }
           placeholder="Note repeated meanings, shared concerns, or common ways of describing experience."
           value={similarityNote}
         />
@@ -3627,6 +3653,11 @@ export function CategoryBlock({
           className="textarea compact-textarea"
           id={`${category.id}-differences`}
           onChange={(event) => setDifferenceNote(event.target.value)}
+          onBlur={() =>
+            onUpdate(category.id, {
+              comparisonDifferenceNote: differenceNote,
+            })
+          }
           placeholder="Note contrasts, exceptions, uncertainties, or reasons this grouping may need revision."
           value={differenceNote}
         />
@@ -3636,7 +3667,11 @@ export function CategoryBlock({
         <select
           className="select"
           id={`${category.id}-decision`}
-          onChange={(event) => setClusterDecision(event.target.value)}
+          onChange={(event) => {
+            const decision = event.target.value as "yes" | "partly" | "no";
+            setClusterDecision(decision);
+            onUpdate(category.id, { groupingDecision: decision });
+          }}
           value={clusterDecision}
         >
           <option value="yes">Yes, develop as a provisional category</option>
@@ -3748,6 +3783,30 @@ export function CategoryBlock({
           placeholder="Describe the shared meaning represented by these meaning units"
           value={descriptionValue}
         />
+        <label className="label" htmlFor={`${category.id}-inclusion`}>
+          Inclusion criterion
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          defaultValue={category.inclusionCriteria ?? ""}
+          id={`${category.id}-inclusion`}
+          onBlur={(event) =>
+            onUpdate(category.id, { inclusionCriteria: event.target.value })
+          }
+          placeholder="State what shared substantive meaning belongs in this category."
+        />
+        <label className="label" htmlFor={`${category.id}-exclusion`}>
+          Exclusion / boundary criterion
+        </label>
+        <textarea
+          className="textarea compact-textarea"
+          defaultValue={category.exclusionCriteria ?? ""}
+          id={`${category.id}-exclusion`}
+          onBlur={(event) =>
+            onUpdate(category.id, { exclusionCriteria: event.target.value })
+          }
+          placeholder="State which nearby but analytically distinct meanings should not be placed here."
+        />
         <label className="label" htmlFor={`${category.id}-memo`}>
           Researcher memo
         </label>
@@ -3786,7 +3845,13 @@ export function CategoryBlock({
         </button>
         <button
           className="button"
-          onClick={() => setClusterDecision("partly")}
+          onClick={() => {
+            setClusterDecision("partly");
+            onUpdate(category.id, {
+              groupingDecision: "partly",
+              status: "needs_review",
+            });
+          }}
           type="button"
         >
           Revise grouping
@@ -3800,10 +3865,11 @@ export function CategoryBlock({
         </button>
         <button
           className="button"
-          onClick={() => onSplit(category)}
+          disabled={selectedSplitUnitIds.length === 0}
+          onClick={() => onSplit(category, selectedSplitUnitIds)}
           type="button"
         >
-          Split cluster
+          Split selected MUs
         </button>
         <button
           className="button"
@@ -3839,13 +3905,20 @@ export function CategoryBlock({
 
 export function UnassignedMeaningUnits({
   categories,
+  decisions,
   onAssign,
   onCreateCategory,
+  onDecision,
   units,
 }: {
   categories: CategoryNode[];
+  decisions: CategoryUnitDecision[];
   onAssign: (unitNumber: number, categoryId: string) => void;
   onCreateCategory: (unitNumbers?: number[]) => void;
+  onDecision: (
+    unit: MeaningUnit,
+    decision: "intentionally_unassigned" | "needs_review",
+  ) => void;
   units: MeaningUnit[];
 }) {
   return (
@@ -3859,13 +3932,8 @@ export function UnassignedMeaningUnits({
             researcher note.
           </p>
         </div>
-        <button
-          className="button"
-          disabled={units.length === 0}
-          onClick={() => onCreateCategory(units.map((unit) => unit.number))}
-          type="button"
-        >
-          Make provisional category from all unassigned
+        <button className="button" onClick={() => onCreateCategory()} type="button">
+          Create empty category for selected comparisons
         </button>
       </div>
       {units.length === 0 ? (
@@ -3878,25 +3946,69 @@ export function UnassignedMeaningUnits({
                 <strong>MU #{unit.number}</strong>{" "}
                 <span className="badge blue">{unit.segmentId}</span>
                 <p className="small">{unit.humanSummary || unit.aiSummary}</p>
+                {decisions.find(
+                  (decision) => decision.unitNumber === unit.number,
+                ) && (
+                  <p className="small panel-note">
+                    {decisions.find(
+                      (decision) => decision.unitNumber === unit.number,
+                    )?.decision === "intentionally_unassigned"
+                      ? "Documented unique/distinct case — intentionally unassigned"
+                      : "Needs further constant comparison"}
+                    :{" "}
+                    {
+                      decisions.find(
+                        (decision) => decision.unitNumber === unit.number,
+                      )?.reason
+                    }
+                  </p>
+                )}
               </div>
-              <select
-                className="select compact"
-                onChange={(event) => {
-                  if (event.target.value) {
-                    onAssign(unit.number, event.target.value);
-                  }
-                }}
-                value=""
-              >
-                <option value="">Assign to category...</option>
-                {categories
-                  .filter((category) => category.status !== "rejected")
-                  .map((category) => (
-                    <option key={category.id} value={category.id}>
-                      {category.name}
-                    </option>
-                  ))}
-              </select>
+              <div>
+                <select
+                  className="select compact"
+                  onChange={(event) => {
+                    if (event.target.value) {
+                      onAssign(unit.number, event.target.value);
+                    }
+                  }}
+                  value=""
+                >
+                  <option value="">Assign one primary category...</option>
+                  {categories
+                    .filter((category) => category.status !== "rejected")
+                    .map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                </select>
+                <div className="button-row">
+                  <button
+                    className="button"
+                    onClick={() => onDecision(unit, "needs_review")}
+                    type="button"
+                  >
+                    Keep for comparison
+                  </button>
+                  <button
+                    className="button"
+                    onClick={() =>
+                      onDecision(unit, "intentionally_unassigned")
+                    }
+                    type="button"
+                  >
+                    Document as distinct case
+                  </button>
+                  <button
+                    className="button"
+                    onClick={() => onCreateCategory([unit.number])}
+                    type="button"
+                  >
+                    New category from this MU
+                  </button>
+                </div>
+              </div>
             </div>
           ))}
         </div>

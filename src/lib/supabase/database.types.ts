@@ -308,6 +308,11 @@ export interface Database {
           parent_category_id: string | null;
           name: string;
           definition: string;
+          inclusion_criteria: string;
+          exclusion_criteria: string;
+          comparison_similarity_note: string;
+          comparison_difference_note: string;
+          grouping_decision: "yes" | "partly" | "no" | null;
           included_unit_numbers: number[];
           sort_order: number;
           memo: string;
@@ -328,6 +333,11 @@ export interface Database {
           parent_category_id?: string | null;
           name: string;
           definition?: string;
+          inclusion_criteria?: string;
+          exclusion_criteria?: string;
+          comparison_similarity_note?: string;
+          comparison_difference_note?: string;
+          grouping_decision?: "yes" | "partly" | "no" | null;
           included_unit_numbers?: number[];
           sort_order?: number;
           memo?: string;
@@ -343,6 +353,52 @@ export interface Database {
           updated_at?: string;
         };
         Update: Partial<Database["public"]["Tables"]["categories"]["Insert"]>;
+        Relationships: [];
+      };
+      category_unit_decisions: {
+        Row: {
+          id: string;
+          category_system_id: string;
+          category_id: string | null;
+          meaning_unit_id: string;
+          unit_number: number;
+          decision:
+            | "assigned"
+            | "intentionally_unassigned"
+            | "needs_review";
+          evidence_role:
+            | "core"
+            | "qualifying"
+            | "contradictory"
+            | "unique_case";
+          reason: string;
+          source: "ai" | "researcher";
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id: string;
+          category_system_id: string;
+          category_id?: string | null;
+          meaning_unit_id: string;
+          unit_number: number;
+          decision:
+            | "assigned"
+            | "intentionally_unassigned"
+            | "needs_review";
+          evidence_role?:
+            | "core"
+            | "qualifying"
+            | "contradictory"
+            | "unique_case";
+          reason?: string;
+          source?: "ai" | "researcher";
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<
+          Database["public"]["Tables"]["category_unit_decisions"]["Insert"]
+        >;
         Relationships: [];
       };
       integration_relationships: {
