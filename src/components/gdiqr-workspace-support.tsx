@@ -2957,6 +2957,7 @@ export function ReviewerPanel({
 }
 
 export function MeaningUnitReviewCard({
+  actionFeedback,
   onAccept,
   onDelete,
   onEditExclusionReason,
@@ -2972,6 +2973,7 @@ export function MeaningUnitReviewCard({
   onSplit,
   unit,
 }: {
+  actionFeedback?: string;
   onAccept: (unitId: string) => void;
   onDelete: (unit: MeaningUnit) => void;
   onEditExclusionReason: (unitId: string, value: string) => void;
@@ -3139,6 +3141,12 @@ export function MeaningUnitReviewCard({
           To exclude this MU, enter a short researcher reason above first. The
           reason remains visible in the audit trail.
         </p>
+      )}
+      {actionFeedback && (
+        <div aria-live="polite" className="mu-card-action-feedback" role="status">
+          <strong>Action status</strong>
+          <span>{actionFeedback}</span>
+        </div>
       )}
       <div className="button-row">
         {!unit.analysisExcluded && (

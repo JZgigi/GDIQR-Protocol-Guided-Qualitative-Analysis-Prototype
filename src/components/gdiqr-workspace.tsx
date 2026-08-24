@@ -496,6 +496,8 @@ export function GdiqrWorkspace({
     useState(false);
   const [meaningUnitActionDraft, setMeaningUnitActionDraft] =
     useState<MeaningUnitActionDraft | null>(null);
+  const [activeMeaningUnitActionId, setActiveMeaningUnitActionId] =
+    useState("");
   const [meaningUnitGenerationScope, setMeaningUnitGenerationScope] = useState<
     "all" | "selected"
   >("selected");
@@ -568,6 +570,8 @@ export function GdiqrWorkspace({
 
   useEffect(() => {
     setLastMeaningUnitGenerationCounts(null);
+    setActiveMeaningUnitActionId("");
+    setMeaningUnitActionDraft(null);
   }, [editableTranscript]);
 
   useEffect(() => {
@@ -7048,15 +7052,17 @@ export function GdiqrWorkspace({
                       <p className="small">{apiStatus}</p>
                     </div>
                     {meaningUnitActionDraft && (
-                      <form
-                        aria-label="Meaning-unit action"
-                        className="mini-card review-required"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          void submitMeaningUnitActionDraft();
-                        }}
-                        role="dialog"
-                      >
+                      <div className="mu-action-overlay">
+                        <form
+                          aria-label="Meaning-unit action"
+                          aria-modal="true"
+                          className="mini-card review-required mu-action-dialog"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void submitMeaningUnitActionDraft();
+                          }}
+                          role="dialog"
+                        >
                         <span className="label">Researcher action</span>
                         <h4>
                           {meaningUnitActionDraft.kind === "manual"
@@ -7196,7 +7202,8 @@ export function GdiqrWorkspace({
                             Cancel
                           </button>
                         </div>
-                      </form>
+                        </form>
+                      </div>
                     )}
                     <div className="summary-list">
                       {reviewableMeaningUnits.length === 0 ? (
@@ -7205,32 +7212,52 @@ export function GdiqrWorkspace({
                         <>
                           {reviewableMeaningUnits.map((unit) => (
                               <MeaningUnitReviewCard
+                                actionFeedback={
+                                  activeMeaningUnitActionId === unit.id
+                                    ? apiStatus
+                                    : undefined
+                                }
                                 key={unit.id}
-                                onAccept={markAccepted}
+                                onAccept={(unitId) => {
+                                  setActiveMeaningUnitActionId(unitId);
+                                  void markAccepted(unitId);
+                                }}
                                 onEditExclusionReason={updateExclusionReason}
                                 onEditExcerpt={updateMeaningUnitExcerpt}
                                 onEditSummary={updateHumanSummary}
-                                onDelete={deleteMeaningUnitFromWorkspace}
-                                onExclude={excludeMeaningUnit}
-                                onMergeNext={(targetUnit) =>
+                                onDelete={(targetUnit) => {
+                                  setActiveMeaningUnitActionId(targetUnit.id);
+                                  void deleteMeaningUnitFromWorkspace(targetUnit);
+                                }}
+                                onExclude={(targetUnit) => {
+                                  setActiveMeaningUnitActionId(targetUnit.id);
+                                  void excludeMeaningUnit(targetUnit);
+                                }}
+                                onMergeNext={(targetUnit) => {
+                                  setActiveMeaningUnitActionId(targetUnit.id);
                                   void mergeMeaningUnitFromCard(
                                     targetUnit,
                                     "next",
-                                  )
-                                }
-                                onMergePrevious={(targetUnit) =>
+                                  );
+                                }}
+                                onMergePrevious={(targetUnit) => {
+                                  setActiveMeaningUnitActionId(targetUnit.id);
                                   void mergeMeaningUnitFromCard(
                                     targetUnit,
                                     "previous",
-                                  )
-                                }
-                                onRestore={restoreMeaningUnit}
+                                  );
+                                }}
+                                onRestore={(targetUnit) => {
+                                  setActiveMeaningUnitActionId(targetUnit.id);
+                                  void restoreMeaningUnit(targetUnit);
+                                }}
                                 onReturnToTranscript={returnToTranscriptForUnit}
                                 onSaveExcerpt={saveMeaningUnitExcerpt}
                                 onSaveSummary={saveMeaningUnitHumanSummary}
-                                onSplit={(targetUnit) =>
-                                  void splitMeaningUnitFromCard(targetUnit)
-                                }
+                                onSplit={(targetUnit) => {
+                                  setActiveMeaningUnitActionId(targetUnit.id);
+                                  void splitMeaningUnitFromCard(targetUnit);
+                                }}
                                 unit={unit}
                               />
                             ))}
@@ -7243,36 +7270,58 @@ export function GdiqrWorkspace({
                               <div className="summary-list">
                                 {contextMaterialRecords.map((unit) => (
                                   <MeaningUnitReviewCard
+                                    actionFeedback={
+                                      activeMeaningUnitActionId === unit.id
+                                        ? apiStatus
+                                        : undefined
+                                    }
                                     key={unit.id}
-                                    onAccept={markAccepted}
+                                    onAccept={(unitId) => {
+                                      setActiveMeaningUnitActionId(unitId);
+                                      void markAccepted(unitId);
+                                    }}
                                     onEditExclusionReason={
                                       updateExclusionReason
                                     }
                                     onEditExcerpt={updateMeaningUnitExcerpt}
                                     onEditSummary={updateHumanSummary}
-                                    onDelete={deleteMeaningUnitFromWorkspace}
-                                    onExclude={excludeMeaningUnit}
-                                    onMergeNext={(targetUnit) =>
+                                    onDelete={(targetUnit) => {
+                                      setActiveMeaningUnitActionId(targetUnit.id);
+                                      void deleteMeaningUnitFromWorkspace(
+                                        targetUnit,
+                                      );
+                                    }}
+                                    onExclude={(targetUnit) => {
+                                      setActiveMeaningUnitActionId(targetUnit.id);
+                                      void excludeMeaningUnit(targetUnit);
+                                    }}
+                                    onMergeNext={(targetUnit) => {
+                                      setActiveMeaningUnitActionId(targetUnit.id);
                                       void mergeMeaningUnitFromCard(
                                         targetUnit,
                                         "next",
-                                      )
-                                    }
-                                    onMergePrevious={(targetUnit) =>
+                                      );
+                                    }}
+                                    onMergePrevious={(targetUnit) => {
+                                      setActiveMeaningUnitActionId(targetUnit.id);
                                       void mergeMeaningUnitFromCard(
                                         targetUnit,
                                         "previous",
-                                      )
-                                    }
-                                    onRestore={restoreMeaningUnit}
+                                      );
+                                    }}
+                                    onRestore={(targetUnit) => {
+                                      setActiveMeaningUnitActionId(targetUnit.id);
+                                      void restoreMeaningUnit(targetUnit);
+                                    }}
                                     onReturnToTranscript={
                                       returnToTranscriptForUnit
                                     }
                                     onSaveExcerpt={saveMeaningUnitExcerpt}
                                     onSaveSummary={saveMeaningUnitHumanSummary}
-                                    onSplit={(targetUnit) =>
-                                      void splitMeaningUnitFromCard(targetUnit)
-                                    }
+                                    onSplit={(targetUnit) => {
+                                      setActiveMeaningUnitActionId(targetUnit.id);
+                                      void splitMeaningUnitFromCard(targetUnit);
+                                    }}
                                     unit={unit}
                                   />
                                 ))}

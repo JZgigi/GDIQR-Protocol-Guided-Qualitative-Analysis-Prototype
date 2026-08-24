@@ -234,6 +234,10 @@ const workspaceSupportSource = fs.readFileSync(
   path.join(root, "src", "components", "gdiqr-workspace-support.tsx"),
   "utf8",
 );
+const globalStylesSource = fs.readFileSync(
+  path.join(root, "src", "app", "globals.css"),
+  "utf8",
+);
 assert.match(
   meaningUnitRouteSource,
   /backgroundController\.signal/,
@@ -288,6 +292,16 @@ assert.match(
   workspaceSupportSource,
   />\s*Accept\s*</,
   "The per-card accept action must have a visible text label rather than an icon alone.",
+);
+assert.match(
+  workspaceSupportSource,
+  /mu-card-action-feedback/,
+  "Blocked and completed MU actions must report their result inside the active card.",
+);
+assert.match(
+  globalStylesSource,
+  /\.mu-action-overlay\s*\{[\s\S]*?position:\s*fixed/,
+  "Split, merge, delete, and manual-MU forms must remain visible above long independently scrolling MU lists.",
 );
 
 console.log(

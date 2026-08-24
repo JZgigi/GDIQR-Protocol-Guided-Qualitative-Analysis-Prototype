@@ -740,6 +740,42 @@ button {
   padding: 14px;
 }
 
+.mu-card-action-feedback {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px 12px;
+  color: var(--accent-strong);
+  font-size: 12px;
+}
+
+.mu-action-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  background: rgba(15, 29, 25, 0.48);
+  padding: 24px;
+}
+
+.mu-action-dialog {
+  display: grid;
+  width: min(680px, 100%);
+  max-height: calc(100vh - 48px);
+  gap: 14px;
+  overflow: auto;
+  box-shadow: 0 24px 70px rgba(15, 29, 25, 0.3);
+}
+
+.mu-action-dialog h4 {
+  margin: 0;
+  font-size: 20px;
+}
+
 .assigned-mu-list {
   display: grid;
   gap: 8px;
