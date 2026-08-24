@@ -6388,12 +6388,11 @@ export function GdiqrWorkspace({
                     )}
                     {editableTranscript.trim() && (
                       <div className="mini-card soft">
-                        <span className="label">
-                          Highlighted transcript review
-                        </span>
+                        <span className="label">Transcript review</span>
                         <p className="small">
-                          Click a highlighted placeholder to locate it in the
-                          editable transcript and review its metadata.
+                          {sensitiveReviewItems.length > 0
+                            ? "Review the complete transcript below. Detected sensitive placeholders are highlighted; click one to locate it in the editable transcript and review its metadata."
+                            : "Review the complete transcript below, including every speaker label and turn. No sensitive placeholders were detected automatically, but you must still check anonymisation and transcript accuracy before confirming."}
                         </p>
                         <SensitiveTranscriptPreview
                           activeItemId={activeSensitiveItemId}

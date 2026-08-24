@@ -2645,9 +2645,7 @@ export function SensitiveTranscriptPreview({
   if (!items.length) {
     return (
       <div className="transcript-highlight-preview">
-        <p className="small">
-          No detected placeholders in the current transcript.
-        </p>
+        {transcript || "No transcript text is available for review."}
       </div>
     );
   }

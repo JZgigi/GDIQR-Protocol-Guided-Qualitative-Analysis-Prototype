@@ -56,9 +56,21 @@ assert.match(support, /Opening\/background candidate — researcher decision/);
 assert.match(support, /Assistant inclusion suggestion/);
 assert.match(support, /Include as substantive/);
 assert.match(support, /const reviewableMeaningUnits = ordered\.filter/);
+assert.match(
+  support,
+  /transcript \|\| "No transcript text is available for review\."/,
+);
+assert.doesNotMatch(
+  support,
+  /No detected placeholders in the current transcript/,
+);
 assert.match(workspace, /Generate provisional structural spans/);
 assert.match(workspace, /Opening\/icebreaker background suggestions/);
 assert.match(workspace, /all\s+participant MU candidates remain visible/i);
+assert.match(
+  workspace,
+  /Review the complete transcript below, including every speaker label and turn/,
+);
 assert.match(workspace, /semantic MU delineation and summaries have not been generated/i);
 assert.match(workspace, /splitMeaningUnit|handleSplitMeaningUnit/);
 assert.match(workspace, /Valid no-substantive windows will be recorded and skipped/);
