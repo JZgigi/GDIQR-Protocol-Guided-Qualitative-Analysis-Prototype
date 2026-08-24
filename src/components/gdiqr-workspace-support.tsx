@@ -10,6 +10,7 @@ import type { AutoSegmentMode } from "@/lib/auto-segmenter";
 import { containsNonTranscriptMaterial } from "@/lib/transcript-source-cleaner";
 import { formatDateTime, formatTime } from "@/lib/date-format";
 import { isOpeningBackgroundCandidate } from "@/lib/meaning-unit-review-flags";
+import { resolveCategoryCardText } from "@/lib/category-presentation";
 
 const METHODOLOGICAL_FRAME = "GDI-QR-informed";
 
@@ -3532,6 +3533,12 @@ export function CategoryBlock({
   const [selectedSplitUnitIds, setSelectedSplitUnitIds] = useState<number[]>([]);
   const [assistantDraftIgnored, setAssistantDraftIgnored] = useState(false);
   const assistantDraft = getOptionalCategoryDraft(category, includedUnits);
+  const cardText = resolveCategoryCardText({
+    assistantDefinition: assistantDraft.definition,
+    assistantLabel: assistantDraft.label,
+    researcherDefinition: descriptionValue,
+    researcherTitle: titleValue,
+  });
   return (
     <article
       className={`category ${isFallback ? "temporary-draft" : ""}`}
@@ -3540,13 +3547,8 @@ export function CategoryBlock({
       <div className="category-header">
         <div>
           <span className="label">Evidence Cluster</span>
-          <h3 className="category-title">
-            {titleValue || "Untitled provisional category"}
-          </h3>
-          <p className="small">
-            {descriptionValue ||
-              "No shared-meaning definition was returned. Review this grouping before using it."}
-          </p>
+          <h3 className="category-title">{cardText.title}</h3>
+          <p className="small">{cardText.definition}</p>
         </div>
         <div className="button-row">
           <span className="badge blue">{clusterStatusLabel}</span>

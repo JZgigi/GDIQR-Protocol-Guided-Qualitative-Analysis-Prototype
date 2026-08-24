@@ -4,6 +4,7 @@ import {
   reconcileCategoryGrouping,
   validateCategoryGrouping,
 } from "../src/lib/category-grouping.ts";
+import { resolveCategoryCardText } from "../src/lib/category-presentation.ts";
 import { readFileSync } from "node:fs";
 
 const units = [1, 2, 3, 4].map((number) => ({
@@ -93,6 +94,27 @@ const reconciled = reconcileCategoryGrouping({
 assert.equal(reconciled[1].decision, "intentionally_unassigned");
 assert.equal(reconciled[1].source, "researcher");
 
+const aiDraftCardText = resolveCategoryCardText({
+  assistantDefinition:
+    "Participants describe uncertainty as part of learning mindfulness practice.",
+  assistantLabel: "Learning Through Early Practice Uncertainty",
+  researcherDefinition: "",
+  researcherTitle: "",
+});
+assert.deepEqual(aiDraftCardText, {
+  definition:
+    "Participants describe uncertainty as part of learning mindfulness practice.",
+  title: "Learning Through Early Practice Uncertainty",
+});
+
+const emptyCardText = resolveCategoryCardText({
+  assistantDefinition: "",
+  assistantLabel: "",
+  researcherDefinition: "",
+  researcherTitle: "",
+});
+assert.equal(emptyCardText.title, "Untitled provisional category");
+
 const providerSource = readFileSync("src/lib/ai-provider.ts", "utf8");
 const categoryUiSource = readFileSync(
   "src/components/gdiqr-workspace-support.tsx",
@@ -115,8 +137,8 @@ assert.match(
 );
 assert.match(
   categoryUiSource,
-  /\{titleValue \|\| "Untitled provisional category"\}/,
-  "AI-proposed category names must remain visible before researcher confirmation.",
+  /resolveCategoryCardText\(\{/,
+  "The category card must resolve AI-proposed text separately from the researcher-owned input fields.",
 );
 
 console.log("Stage 3 category grouping integrity checks passed.");
