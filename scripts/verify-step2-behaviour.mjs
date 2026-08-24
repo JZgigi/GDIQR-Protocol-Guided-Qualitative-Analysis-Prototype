@@ -178,6 +178,90 @@ assert.equal(
   "Anchor recovery may tolerate quote, whitespace, and punctuation differences, but must reconstruct the verbatim excerpt from participant source text.",
 );
 
+const overlapSourceTurn = participantTurns[1];
+const makeSemanticUnit = (number, excerpt) => ({
+  aiExcerpt: excerpt,
+  aiSummary: `Draft summary ${number}`,
+  analysisExcluded: false,
+  caseId: "CASE-001",
+  classification: "substantive_participant",
+  excerpt,
+  generationMethod: "ai_semantic",
+  humanStatus: "Draft",
+  humanSummary: `Draft summary ${number}`,
+  id: `test-mu-${number}`,
+  number,
+  reviewerStatus: "Not run",
+  segmentId: "SEG-001",
+  sourceEndLine: overlapSourceTurn.endLine,
+  sourceStartLine: overlapSourceTurn.startLine,
+  sourceTurnIds: [overlapSourceTurn.id],
+  speaker: overlapSourceTurn.label,
+  speakerRole: "participant",
+});
+const nestedOverlapResult =
+  provider.consolidateOverlappingSemanticMeaningUnits(
+    [
+      makeSemanticUnit(1, overlapSourceTurn.content),
+      makeSemanticUnit(
+        2,
+        "The workload was unfamiliar, but support from colleagues helped me adjust.",
+      ),
+      makeSemanticUnit(3, "support from colleagues helped me adjust."),
+    ],
+    turns,
+  );
+assert.equal(
+  nestedOverlapResult.meaningUnits.length,
+  1,
+  "A whole-span MU and its nested child MUs must not all survive as duplicate evidence.",
+);
+assert.equal(
+  nestedOverlapResult.meaningUnits[0].classification,
+  "uncertain",
+  "An unresolved overlapping group must become one reviewable uncertain span rather than a silently chosen AI boundary.",
+);
+assert.equal(
+  nestedOverlapResult.meaningUnits[0].aiSummary,
+  "",
+  "A collapsed overlap must not retain a summary that implies one disputed boundary was accepted.",
+);
+assert.match(
+  nestedOverlapResult.meaningUnits[0].reviewerWarnings.join(" "),
+  /overlapping AI boundaries/i,
+);
+
+const disjointBoundaryResult =
+  provider.consolidateOverlappingSemanticMeaningUnits(
+    [
+      makeSemanticUnit(1, "The workload was unfamiliar"),
+      makeSemanticUnit(2, "support from colleagues helped me adjust."),
+    ],
+    turns,
+  );
+assert.equal(
+  disjointBoundaryResult.meaningUnits.length,
+  2,
+  "Distinct non-overlapping semantic spans must remain separate.",
+);
+
+const partialOverlapResult =
+  provider.consolidateOverlappingSemanticMeaningUnits(
+    [
+      makeSemanticUnit(
+        1,
+        "The workload was unfamiliar, but support from colleagues",
+      ),
+      makeSemanticUnit(2, "support from colleagues helped me adjust."),
+    ],
+    turns,
+  );
+assert.equal(
+  partialOverlapResult.meaningUnits.length,
+  1,
+  "Materially overlapping source spans must be consolidated even when neither fully contains the other.",
+);
+
 const windows = preprocessing.buildSemanticAnalysisWindows(turns, 6000);
 assert.equal(
   windows.length,

@@ -234,7 +234,20 @@ export async function generateMeaningUnits(
     );
   }
 
-  const reviewedUnits = addCrossUnitBoundaryWarnings(allUnits, turns);
+  const overlapSafeResult = consolidateOverlappingSemanticMeaningUnits(
+    allUnits,
+    turns,
+  );
+  if (overlapSafeResult.overlapGroupCount > 0) {
+    addRunEvent(
+      input.runId,
+      `A final traceability check found ${overlapSafeResult.overlapGroupCount} overlapping semantic boundary group${overlapSafeResult.overlapGroupCount === 1 ? "" : "s"}; ${overlapSafeResult.collapsedCandidateCount} duplicate/nested candidates were collapsed into uncertain source spans for researcher splitting`,
+    );
+  }
+  const reviewedUnits = addCrossUnitBoundaryWarnings(
+    overlapSafeResult.meaningUnits,
+    turns,
+  );
   const meaningUnits = orderAndNumberAnalysisRecords(
     reviewedUnits,
     turns,
@@ -385,6 +398,7 @@ Task-specific rules:
 - Analyse only text explicitly marked PARTICIPANT MATERIAL TO ANALYSE. Context is interpretive support, never participant evidence.
 - Never create a substantive MU from facilitator, moderator, interviewer, or researcher speech.
 - Never combine different participants' speech in one MU. A participant may be reconnected across a short facilitator clarification when the later turn continues the same meaning.
+- Return a non-overlapping partition of participant evidence. Two MUs must never reuse the same source passage, contain one another, or overlap. Each participant phrase may belong to at most one MU in this response.
 - Preserve participant meaning closely and privilege participant wording over facilitator paraphrases or leading questions.
 - Keep each summary concise, descriptive, data-near, and in the transcript language. Condense the central participant meaning without copying the excerpt or adding theory, diagnosis, motivation, unsupported causality, or category-level interpretation.
 - Evaluate relevance against the overall research question, not merely the immediately preceding facilitator question. Mark genuinely uncertain relevance "uncertain" so a researcher can decide; do not silently omit uncertain material.
@@ -602,20 +616,31 @@ async function generateMeaningUnitsForWindowWithSafeguards({
             window,
           );
           if (revisedBoundaryConcerns.length === 0) {
-            return { ...revised, fallbackUsed: false };
+            return ensureNonOverlappingSemanticBoundaries({
+              input,
+              result: revised,
+              startingNumber,
+              window,
+              windowIndex,
+            });
           }
           addRunEvent(
             input.runId,
             `Semantic window ${windowIndex + 1} still has ${revisedBoundaryConcerns.length} unresolved whole-turn boundary candidate${revisedBoundaryConcerns.length === 1 ? "" : "s"}; keeping them out of substantive analysis pending researcher review`,
           );
-          return {
-            ...revised,
-            meaningUnits: markUnresolvedSemanticBoundaries(
-              revised.meaningUnits,
-              revisedBoundaryConcerns,
-            ),
-            fallbackUsed: false,
-          };
+          return ensureNonOverlappingSemanticBoundaries({
+            input,
+            result: {
+              ...revised,
+              meaningUnits: markUnresolvedSemanticBoundaries(
+                revised.meaningUnits,
+                revisedBoundaryConcerns,
+              ),
+            },
+            startingNumber,
+            window,
+            windowIndex,
+          });
         }
       } catch (revisionError) {
         console.warn("[gdiqr:mu] boundary revision failed", {
@@ -626,16 +651,27 @@ async function generateMeaningUnitsForWindowWithSafeguards({
             window: windowIndex + 1,
           });
       }
-      return {
-        ...result,
-        meaningUnits: markUnresolvedSemanticBoundaries(
-          result.meaningUnits,
-          initialBoundaryConcerns,
-        ),
-        fallbackUsed: false,
-      };
+      return ensureNonOverlappingSemanticBoundaries({
+        input,
+        result: {
+          ...result,
+          meaningUnits: markUnresolvedSemanticBoundaries(
+            result.meaningUnits,
+            initialBoundaryConcerns,
+          ),
+        },
+        startingNumber,
+        window,
+        windowIndex,
+      });
     }
-    return { ...result, fallbackUsed: false };
+    return ensureNonOverlappingSemanticBoundaries({
+      input,
+      result,
+      startingNumber,
+      window,
+      windowIndex,
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Meaning-unit window failed.";
@@ -647,6 +683,86 @@ async function generateMeaningUnitsForWindowWithSafeguards({
       `Semantic meaning-unit delineation failed for window ${windowIndex + 1}. Existing meaning units were left unchanged; retry the AI generation instead of treating speaker- or length-based spans as MUs. ${message}`,
     );
   }
+}
+
+async function ensureNonOverlappingSemanticBoundaries({
+  input,
+  result,
+  startingNumber,
+  window,
+  windowIndex,
+}: {
+  input: MeaningUnitInput;
+  result: SemanticWindowResult;
+  startingNumber: number;
+  window: SemanticAnalysisWindow;
+  windowIndex: number;
+}) {
+  const initialOverlapResult = consolidateOverlappingSemanticMeaningUnits(
+    result.meaningUnits,
+    window.turns,
+  );
+  if (initialOverlapResult.overlapGroupCount === 0) {
+    return { ...result, fallbackUsed: false };
+  }
+
+  addRunEvent(
+    input.runId,
+    `Semantic window ${windowIndex + 1} returned ${initialOverlapResult.overlapGroupCount} overlapping or nested MU boundary group${initialOverlapResult.overlapGroupCount === 1 ? "" : "s"}; requesting one focused non-overlap correction`,
+  );
+
+  try {
+    const corrected = await generateMeaningUnitsForWindow({
+      input,
+      revisionDirective:
+        "Replace the previous MU list completely. It reused participant source passages across multiple MUs. Return a non-overlapping semantic partition: no MU may contain another MU, no two excerpts may overlap, and every participant phrase may be assigned to at most one MU. Preserve all distinct substantive or uncertain meanings, use compact exact anchors, and do not merely return both a whole-turn container and its subspans.",
+      startingNumber,
+      window,
+      windowIndex,
+    });
+    if (corrected.meaningUnits.length > 0) {
+      const correctedOverlapResult =
+        consolidateOverlappingSemanticMeaningUnits(
+          corrected.meaningUnits,
+          window.turns,
+        );
+      if (correctedOverlapResult.overlapGroupCount === 0) {
+        const boundaryConcerns = semanticBoundaryConcerns(
+          corrected.meaningUnits,
+          window,
+        );
+        return {
+          ...corrected,
+          meaningUnits:
+            boundaryConcerns.length > 0
+              ? markUnresolvedSemanticBoundaries(
+                  corrected.meaningUnits,
+                  boundaryConcerns,
+                )
+              : corrected.meaningUnits,
+          fallbackUsed: false,
+        };
+      }
+    }
+  } catch (correctionError) {
+    console.warn("[gdiqr:mu] overlap correction failed", {
+      message:
+        correctionError instanceof Error
+          ? correctionError.message
+          : "Unknown overlap correction error",
+      window: windowIndex + 1,
+    });
+  }
+
+  addRunEvent(
+    input.runId,
+    `Semantic window ${windowIndex + 1} still had overlapping boundaries after focused correction; ${initialOverlapResult.collapsedCandidateCount} candidates were collapsed into ${initialOverlapResult.overlapGroupCount} uncertain source span${initialOverlapResult.overlapGroupCount === 1 ? "" : "s"} for researcher splitting`,
+  );
+  return {
+    ...result,
+    meaningUnits: initialOverlapResult.meaningUnits,
+    fallbackUsed: false,
+  };
 }
 
 export function validateNoSubstantiveWindowDecision(
@@ -2093,6 +2209,243 @@ function findParticipantQuote(
     );
   }
   return undefined;
+}
+
+interface LocatedMeaningUnitBoundary {
+  end: number;
+  index: number;
+  start: number;
+  unit: MeaningUnit;
+}
+
+export function consolidateOverlappingSemanticMeaningUnits(
+  units: MeaningUnit[],
+  turns: ClassifiedTranscriptTurn[],
+) {
+  const participantTurns = turns
+    .filter((turn) => turn.role === "participant")
+    .sort((left, right) => left.turnIndex - right.turnIndex);
+  const sourceOffsets = new Map<
+    string,
+    { end: number; start: number; turn: ClassifiedTranscriptTurn }
+  >();
+  let participantSource = "";
+  for (const turn of participantTurns) {
+    if (participantSource) {
+      participantSource += "\n";
+    }
+    const start = participantSource.length;
+    participantSource += turn.content;
+    sourceOffsets.set(turn.id, {
+      end: participantSource.length,
+      start,
+      turn,
+    });
+  }
+
+  const located = units
+    .map((unit, index): LocatedMeaningUnitBoundary | undefined => {
+      if (
+        unit.analysisExcluded ||
+        unit.generationMethod !== "ai_semantic" ||
+        unit.speakerRole !== "participant"
+      ) {
+        return undefined;
+      }
+      const offsets = (unit.sourceTurnIds ?? [])
+        .map((turnId) => sourceOffsets.get(turnId))
+        .filter(
+          (
+            offset,
+          ): offset is {
+            end: number;
+            start: number;
+            turn: ClassifiedTranscriptTurn;
+          } => Boolean(offset),
+        )
+        .sort((left, right) => left.start - right.start);
+      if (offsets.length === 0) {
+        return undefined;
+      }
+      const scopeStart = offsets[0].start;
+      const scopeEnd = offsets[offsets.length - 1].end;
+      const match = findParticipantQuote(
+        participantSource.slice(scopeStart, scopeEnd),
+        unit.excerpt,
+      );
+      if (!match) {
+        return undefined;
+      }
+      return {
+        end: scopeStart + match.end,
+        index,
+        start: scopeStart + match.start,
+        unit,
+      };
+    })
+    .filter(
+      (item): item is LocatedMeaningUnitBoundary => Boolean(item),
+    );
+
+  const adjacency = new Map<number, Set<number>>();
+  for (let leftIndex = 0; leftIndex < located.length; leftIndex += 1) {
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < located.length;
+      rightIndex += 1
+    ) {
+      const left = located[leftIndex];
+      const right = located[rightIndex];
+      if (!meaningUnitBoundariesOverlap(left, right)) {
+        continue;
+      }
+      if (!adjacency.has(left.index)) {
+        adjacency.set(left.index, new Set());
+      }
+      if (!adjacency.has(right.index)) {
+        adjacency.set(right.index, new Set());
+      }
+      adjacency.get(left.index)?.add(right.index);
+      adjacency.get(right.index)?.add(left.index);
+    }
+  }
+
+  const locatedByIndex = new Map(located.map((item) => [item.index, item]));
+  const visited = new Set<number>();
+  const overlapGroups: LocatedMeaningUnitBoundary[][] = [];
+  for (const index of adjacency.keys()) {
+    if (visited.has(index)) {
+      continue;
+    }
+    const pending = [index];
+    const group: LocatedMeaningUnitBoundary[] = [];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (current === undefined || visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+      const locatedUnit = locatedByIndex.get(current);
+      if (locatedUnit) {
+        group.push(locatedUnit);
+      }
+      adjacency.get(current)?.forEach((neighbour) => pending.push(neighbour));
+    }
+    if (group.length > 1) {
+      overlapGroups.push(group.sort((left, right) => left.index - right.index));
+    }
+  }
+
+  if (overlapGroups.length === 0) {
+    return {
+      collapsedCandidateCount: 0,
+      meaningUnits: units,
+      overlapGroupCount: 0,
+    };
+  }
+
+  const groupByIndex = new Map<number, LocatedMeaningUnitBoundary[]>();
+  overlapGroups.forEach((group) =>
+    group.forEach((item) => groupByIndex.set(item.index, group)),
+  );
+  const emittedGroups = new Set<LocatedMeaningUnitBoundary[]>();
+  const meaningUnits: MeaningUnit[] = [];
+  for (const [index, unit] of units.entries()) {
+    const group = groupByIndex.get(index);
+    if (!group) {
+      meaningUnits.push(unit);
+      continue;
+    }
+    if (emittedGroups.has(group)) {
+      continue;
+    }
+    emittedGroups.add(group);
+    const start = Math.min(...group.map((item) => item.start));
+    const end = Math.max(...group.map((item) => item.end));
+    const sourceTurnIds = [
+      ...new Set(group.flatMap((item) => item.unit.sourceTurnIds ?? [])),
+    ].sort(
+      (left, right) =>
+        (sourceOffsets.get(left)?.turn.turnIndex ?? Number.MAX_SAFE_INTEGER) -
+        (sourceOffsets.get(right)?.turn.turnIndex ?? Number.MAX_SAFE_INTEGER),
+    );
+    const base = group[0].unit;
+    const overlapWarning =
+      "Overlapping AI boundaries were collapsed into one source-verbatim span. Split it into non-overlapping semantic MUs before accepting it.";
+    meaningUnits.push({
+      ...base,
+      aiExcerpt: participantSource.slice(start, end).trim(),
+      aiSummary: "",
+      analysisExcluded: false,
+      classification: "uncertain",
+      contextExcerpt: contextForSourceTurns(sourceTurnIds, turns),
+      excerpt: participantSource.slice(start, end).trim(),
+      exclusionReason: undefined,
+      humanStatus: "Needs review",
+      humanSummary: "",
+      reviewerStatus: "Warning",
+      reviewerWarnings: [
+        ...new Set([
+          ...group.flatMap((item) => item.unit.reviewerWarnings ?? []),
+          overlapWarning,
+        ]),
+      ],
+      sourceEndLine: Math.max(
+        ...sourceTurnIds.map(
+          (turnId) => sourceOffsets.get(turnId)?.turn.endLine ?? 0,
+        ),
+      ),
+      sourceStartLine: Math.min(
+        ...sourceTurnIds.map(
+          (turnId) =>
+            sourceOffsets.get(turnId)?.turn.startLine ?? Number.MAX_SAFE_INTEGER,
+        ),
+      ),
+      sourceTurnIds,
+      uncertainty: [base.uncertainty, overlapWarning]
+        .filter(Boolean)
+        .join(" "),
+    });
+  }
+
+  return {
+    collapsedCandidateCount: overlapGroups.reduce(
+      (count, group) => count + group.length,
+      0,
+    ),
+    meaningUnits,
+    overlapGroupCount: overlapGroups.length,
+  };
+}
+
+function meaningUnitBoundariesOverlap(
+  left: LocatedMeaningUnitBoundary,
+  right: LocatedMeaningUnitBoundary,
+) {
+  const sharedTurn = (left.unit.sourceTurnIds ?? []).some((turnId) =>
+    (right.unit.sourceTurnIds ?? []).includes(turnId),
+  );
+  if (!sharedTurn) {
+    return false;
+  }
+  const overlapLength =
+    Math.min(left.end, right.end) - Math.max(left.start, right.start);
+  if (overlapLength <= 0) {
+    return false;
+  }
+  const leftLength = left.end - left.start;
+  const rightLength = right.end - right.start;
+  const shorterLength = Math.min(leftLength, rightLength);
+  const normalizedLeft = buildAnchorSearchText(left.unit.excerpt).text;
+  const normalizedRight = buildAnchorSearchText(right.unit.excerpt).text;
+  if (normalizedLeft === normalizedRight) {
+    return true;
+  }
+  const shorterCoverage = overlapLength / Math.max(shorterLength, 1);
+  return (
+    (overlapLength >= 8 && shorterCoverage >= 0.8) ||
+    (overlapLength >= 20 && shorterCoverage >= 0.3)
+  );
 }
 
 function buildAnchorSearchText(value: string) {
