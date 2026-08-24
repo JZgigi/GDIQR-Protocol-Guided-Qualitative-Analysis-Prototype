@@ -226,6 +226,14 @@ const meaningUnitRouteSource = fs.readFileSync(
   path.join(root, "src", "app", "api", "ai", "meaning-units", "route.ts"),
   "utf8",
 );
+const workspaceSource = fs.readFileSync(
+  path.join(root, "src", "components", "gdiqr-workspace.tsx"),
+  "utf8",
+);
+const workspaceSupportSource = fs.readFileSync(
+  path.join(root, "src", "components", "gdiqr-workspace-support.tsx"),
+  "utf8",
+);
 assert.match(
   meaningUnitRouteSource,
   /backgroundController\.signal/,
@@ -260,6 +268,26 @@ assert.match(
   providerSource,
   /requesting one focused anchor correction/,
   "Invalid model anchors must receive a focused per-window correction before the whole run fails.",
+);
+assert.match(
+  workspaceSource,
+  /role="dialog"/,
+  "Manual, split, merge, delete, and accept-all MU actions must use a visible in-page interaction surface.",
+);
+assert.doesNotMatch(
+  workspaceSource,
+  /First part for MU|Merged MU excerpt|New meaning-unit excerpt/,
+  "Core MU review actions must not fall back to browser-native prompt dialogs.",
+);
+assert.match(
+  workspaceSource,
+  /Latest meaning-unit action/,
+  "MU validation and save feedback must remain visible beside the review cards.",
+);
+assert.match(
+  workspaceSupportSource,
+  />\s*Accept\s*</,
+  "The per-card accept action must have a visible text label rather than an icon alone.",
 );
 
 console.log(

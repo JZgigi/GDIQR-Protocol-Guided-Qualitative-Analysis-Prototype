@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Check, ChevronRight, FileText, Pencil, Play, RefreshCcw, ShieldCheck, Trash2 } from "lucide-react";
 import type {
   AuditEvent, CategoryMode, CategoryNode, GuidanceMemo, IntegrationRelationship as StoredIntegrationRelationship, IntegrityReviewItem, IntegrityReviewItemStatus, IntegrationRelationshipLabel, MeaningUnit, Project, ReviewerComment, ReviewerWorkspace, SegmentSpeakerRole, SegmentStatus, TranscriptRecord, TranscriptSegment, WorkflowStep,
@@ -2989,6 +2989,7 @@ export function MeaningUnitReviewCard({
 }) {
   const validationFlags = getMeaningUnitValidationFlags(unit);
   const openingBackgroundCandidate = isOpeningBackgroundCandidate(unit);
+  const exclusionReasonRef = useRef<HTMLTextAreaElement | null>(null);
 
   return (
     <article
@@ -3129,18 +3130,26 @@ export function MeaningUnitReviewCard({
               ? "Example: interviewer prompt or contextual question"
               : "Required before excluding this meaning unit"
           }
+          ref={exclusionReasonRef}
           value={unit.exclusionReason ?? ""}
         />
       </label>
+      {!unit.analysisExcluded && !unit.exclusionReason?.trim() && (
+        <p className="small panel-note">
+          To exclude this MU, enter a short researcher reason above first. The
+          reason remains visible in the audit trail.
+        </p>
+      )}
       <div className="button-row">
         {!unit.analysisExcluded && (
           <button
-            className="button icon"
+            className="button"
             onClick={() => onAccept(unit.id)}
             title="Accept meaning unit"
             type="button"
           >
             <Check size={18} />
+            Accept
           </button>
         )}
         {unit.analysisExcluded ? (
@@ -3164,7 +3173,12 @@ export function MeaningUnitReviewCard({
             )}
             <button
               className="button"
-              onClick={() => void onExclude(unit)}
+              onClick={() => {
+                if (!unit.exclusionReason?.trim()) {
+                  exclusionReasonRef.current?.focus();
+                }
+                void onExclude(unit);
+              }}
               type="button"
             >
               Exclude

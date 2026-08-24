@@ -216,6 +216,16 @@ interface MeaningUnitValidationFlag {
   tone?: "blue" | "danger" | "warning";
 }
 
+interface MeaningUnitActionDraft {
+  direction?: "previous" | "next";
+  excerpt: string;
+  kind: "manual" | "split" | "merge" | "delete" | "accept_all";
+  note: string;
+  secondExcerpt: string;
+  summary: string;
+  unitId?: string;
+}
+
 interface ReviewerIssueContext {
   label: string;
   text: string;
@@ -400,7 +410,7 @@ export function GdiqrWorkspace({
   const [projectSetupSavedAt, setProjectSetupSavedAt] = useState("");
   const [editableTranscript, setEditableTranscript] = useState(transcript);
   const [transcriptConfirmed, setTranscriptConfirmed] = useState(
-    isTranscriptConfirmed(project),
+    Boolean(transcript.trim()) && isTranscriptConfirmed(project),
   );
   const [aiPrivacyFindings, setAiPrivacyFindings] = useState<string[]>(
     extractPrivacyReviewMarkers(transcript),
@@ -484,6 +494,8 @@ export function GdiqrWorkspace({
   const [isAcceptingMeaningUnits, setIsAcceptingMeaningUnits] = useState(false);
   const [isSavingMeaningUnitAction, setIsSavingMeaningUnitAction] =
     useState(false);
+  const [meaningUnitActionDraft, setMeaningUnitActionDraft] =
+    useState<MeaningUnitActionDraft | null>(null);
   const [meaningUnitGenerationScope, setMeaningUnitGenerationScope] = useState<
     "all" | "selected"
   >("selected");
@@ -838,6 +850,9 @@ export function GdiqrWorkspace({
     [sensitiveReviewItems],
   );
   const unresolvedHighRiskCount = pendingHighRiskItems.length;
+  const hasTranscriptDraft = Boolean(editableTranscript.trim());
+  const transcriptReadyForAnalysis =
+    hasTranscriptDraft && transcriptConfirmed;
   const canProceedWithTranscript =
     unresolvedHighRiskCount === 0 || privacyOverrideAccepted;
   const identifiableSensitiveDatasetSelected =
@@ -878,7 +893,7 @@ export function GdiqrWorkspace({
     [displaySegments, meaningUnitSegmentId],
   );
   const canGenerateMeaningUnits = Boolean(
-    transcriptConfirmed && editableTranscript.trim(),
+    transcriptReadyForAnalysis,
   );
   const currentMeaningUnits = useMemo(
     () => normalizeMeaningUnitNumbersForSegments(units, displaySegments),
@@ -1151,7 +1166,10 @@ export function GdiqrWorkspace({
     setLightInterpretation(workspace.project.lightInterpretation);
     setUploadLanguage(workspace.project.language);
     setEditableTranscript(workspace.transcript);
-    setTranscriptConfirmed(isTranscriptConfirmed(workspace.project));
+    setTranscriptConfirmed(
+      Boolean(workspace.transcript.trim()) &&
+        isTranscriptConfirmed(workspace.project),
+    );
     setAiPrivacyFindings(extractPrivacyReviewMarkers(workspace.transcript));
     setPrivacyOverrideAccepted(false);
     setTranscriptStorageStatus(
@@ -4103,26 +4121,28 @@ export function GdiqrWorkspace({
     return normalizeMeaningUnitNumbersForSegments(nextUnits, displaySegments);
   }
 
-  async function addManualMeaningUnit() {
-    const excerpt = window
-      .prompt(
-        "New meaning-unit excerpt. Keep it close to the participant account:",
-      )
-      ?.trim();
-    if (!excerpt) {
+  async function addManualMeaningUnit(draft?: MeaningUnitActionDraft) {
+    if (!draft) {
+      setMeaningUnitActionDraft({
+        excerpt: "",
+        kind: "manual",
+        note: "Manual MU added during researcher review",
+        secondExcerpt: "",
+        summary: "",
+      });
+      setApiStatus(
+        "Complete the visible manual-MU form, then select Add meaning unit.",
+      );
       return;
     }
-    const humanSummary =
-      window
-        .prompt("Optional researcher summary for this manual MU:", "")
-        ?.trim() ?? "";
+    const excerpt = draft.excerpt.trim();
+    if (!excerpt) {
+      setApiStatus("Enter a participant excerpt before adding a manual MU.");
+      return;
+    }
+    const humanSummary = draft.summary.trim();
     const researcherNote =
-      window
-        .prompt(
-          "Optional audit note for why this manual MU was added:",
-          "Manual MU added during researcher review",
-        )
-        ?.trim() ?? "Manual MU added during researcher review";
+      draft.note.trim() || "Manual MU added during researcher review";
     const sourceSegment = selectedMeaningUnitSegment ?? displaySegments[0];
 
     setIsSavingMeaningUnitAction(true);
@@ -4147,6 +4167,7 @@ export function GdiqrWorkspace({
         setApiStatus(
           "Manual meaning unit added locally. Review it before accepting.",
         );
+        setMeaningUnitActionDraft(null);
         return;
       }
 
@@ -4178,6 +4199,7 @@ export function GdiqrWorkspace({
       setApiStatus(
         "Manual meaning unit added and audit logged. Review it before accepting.",
       );
+      setMeaningUnitActionDraft(null);
     } catch (error) {
       setApiStatus(
         error instanceof Error
@@ -4219,31 +4241,41 @@ export function GdiqrWorkspace({
     };
   }
 
-  async function splitMeaningUnitFromCard(unit: MeaningUnit) {
+  async function splitMeaningUnitFromCard(
+    unit: MeaningUnit,
+    draft?: MeaningUnitActionDraft,
+  ) {
     if (unit.analysisExcluded) {
       setApiStatus("Restore the meaning unit before splitting it.");
       return;
     }
     const suggestion = suggestMeaningUnitSplit(unit.excerpt);
-    const firstExcerpt = window
-      .prompt(`First part for MU #${unit.number}:`, suggestion.first)
-      ?.trim();
-    if (!firstExcerpt) {
+    if (!draft) {
+      setMeaningUnitActionDraft({
+        excerpt: suggestion.first,
+        kind: "split",
+        note: "Split because the original MU contained more than one meaning",
+        secondExcerpt: suggestion.second,
+        summary: "",
+        unitId: unit.id,
+      });
+      setApiStatus(
+        `Review the two visible parts before splitting MU #${unit.number}.`,
+      );
       return;
     }
-    const secondExcerpt = window
-      .prompt(`Second part for MU #${unit.number}:`, suggestion.second)
-      ?.trim();
+    const firstExcerpt = draft.excerpt.trim();
+    if (!firstExcerpt) {
+      setApiStatus(`Enter the first part for MU #${unit.number}.`);
+      return;
+    }
+    const secondExcerpt = draft.secondExcerpt.trim();
     if (!secondExcerpt) {
+      setApiStatus(`Enter the second part for MU #${unit.number}.`);
       return;
     }
     const researcherNote =
-      window
-        .prompt(
-          "Optional audit note for the split decision:",
-          "Split because the original MU contained more than one meaning",
-        )
-        ?.trim() ??
+      draft.note.trim() ||
       "Split because the original MU contained more than one meaning";
 
     setIsSavingMeaningUnitAction(true);
@@ -4295,6 +4327,7 @@ export function GdiqrWorkspace({
         setApiStatus(
           "Meaning unit split locally. Review both MUs before accepting.",
         );
+        setMeaningUnitActionDraft(null);
         return;
       }
 
@@ -4326,6 +4359,7 @@ export function GdiqrWorkspace({
       setApiStatus(
         "Meaning unit split and audit logged. Review both MUs before accepting.",
       );
+      setMeaningUnitActionDraft(null);
     } catch (error) {
       setApiStatus(
         error instanceof Error ? error.message : "Meaning unit split failed.",
@@ -4338,6 +4372,7 @@ export function GdiqrWorkspace({
   async function mergeMeaningUnitFromCard(
     unit: MeaningUnit,
     direction: "previous" | "next",
+    draft?: MeaningUnitActionDraft,
   ) {
     const neighbor = findMeaningUnitNeighbor(unit, direction);
     if (!neighbor) {
@@ -4346,40 +4381,36 @@ export function GdiqrWorkspace({
     }
     const first = neighbor.number < unit.number ? neighbor : unit;
     const second = neighbor.number < unit.number ? unit : neighbor;
-    const confirmed = confirmWorkspaceAction(
-      `Merge MU #${first.number} and MU #${second.number}? This clears category and reviewer outputs because the accepted evidence base changes.`,
-    );
-    if (!confirmed) {
+    if (!draft) {
+      setMeaningUnitActionDraft({
+        direction,
+        excerpt: `${first.excerpt.trim()}\n\n${second.excerpt.trim()}`.trim(),
+        kind: "merge",
+        note: "Merged because the two MUs represented one connected meaning",
+        secondExcerpt: "",
+        summary: [
+          first.humanSummary || first.aiSummary,
+          second.humanSummary || second.aiSummary,
+        ]
+          .filter(Boolean)
+          .join(" / "),
+        unitId: unit.id,
+      });
+      setApiStatus(
+        `Review the visible combined text before merging MU #${first.number} and MU #${second.number}.`,
+      );
       return;
     }
-    const mergedExcerpt = window
-      .prompt(
-        "Merged MU excerpt:",
-        `${first.excerpt.trim()}\n\n${second.excerpt.trim()}`.trim(),
-      )
-      ?.trim();
+    const mergedExcerpt = draft.excerpt.trim();
     if (!mergedExcerpt) {
+      setApiStatus(
+        `Enter the combined excerpt before merging MU #${first.number} and MU #${second.number}.`,
+      );
       return;
     }
-    const mergedSummary =
-      window
-        .prompt(
-          "Optional merged researcher summary:",
-          [
-            first.humanSummary || first.aiSummary,
-            second.humanSummary || second.aiSummary,
-          ]
-            .filter(Boolean)
-            .join(" / "),
-        )
-        ?.trim() ?? "";
+    const mergedSummary = draft.summary.trim();
     const researcherNote =
-      window
-        .prompt(
-          "Optional audit note for the merge decision:",
-          "Merged because the two MUs represented one connected meaning",
-        )
-        ?.trim() ??
+      draft.note.trim() ||
       "Merged because the two MUs represented one connected meaning";
 
     setIsSavingMeaningUnitAction(true);
@@ -4423,6 +4454,7 @@ export function GdiqrWorkspace({
         setApiStatus(
           "Meaning units merged locally. Review the merged MU before accepting.",
         );
+        setMeaningUnitActionDraft(null);
         return;
       }
 
@@ -4453,6 +4485,7 @@ export function GdiqrWorkspace({
       setApiStatus(
         "Meaning units merged and audit logged. Review the merged MU before accepting.",
       );
+      setMeaningUnitActionDraft(null);
     } catch (error) {
       setApiStatus(
         error instanceof Error ? error.message : "Meaning unit merge failed.",
@@ -4572,7 +4605,7 @@ export function GdiqrWorkspace({
     setApiStatus("Meaning-unit summary edit saved.");
   }
 
-  async function acceptAllReviewedMeaningUnits() {
+  async function acceptAllReviewedMeaningUnits(confirmed = false) {
     const includableUnits = currentMeaningUnits.filter(
       (unit) =>
         !unit.analysisExcluded &&
@@ -4606,10 +4639,17 @@ export function GdiqrWorkspace({
       );
       return;
     }
-    const confirmed = confirmWorkspaceAction(
-      "Accept all visible, non-excluded meaning units? This records the current researcher-reviewed excerpts and summaries as accepted analytic material.",
-    );
     if (!confirmed) {
+      setMeaningUnitActionDraft({
+        excerpt: "",
+        kind: "accept_all",
+        note: "",
+        secondExcerpt: "",
+        summary: "",
+      });
+      setApiStatus(
+        `Confirm the visible action to accept ${includableUnits.length} reviewed meaning unit${includableUnits.length === 1 ? "" : "s"}.`,
+      );
       return;
     }
     const acceptedDraftSummaryWithoutEditCount = includableUnits.filter(
@@ -4646,6 +4686,7 @@ export function GdiqrWorkspace({
         setApiStatus(
           "Meaning-unit summaries accepted locally. You can now create and refine provisional categories.",
         );
+        setMeaningUnitActionDraft(null);
         return;
       }
 
@@ -4684,6 +4725,7 @@ export function GdiqrWorkspace({
       setApiStatus(
         "Meaning-unit summaries accepted. You can now create and refine provisional categories.",
       );
+      setMeaningUnitActionDraft(null);
     } catch (error) {
       setApiStatus(
         error instanceof Error
@@ -4863,11 +4905,22 @@ export function GdiqrWorkspace({
     );
   }
 
-  async function deleteMeaningUnitFromWorkspace(unit: MeaningUnit) {
-    const confirmed = confirmWorkspaceAction(
-      `Delete MU #${unit.number}? This removes it from the workspace and clears existing categories because category results may reference it. Use Exclude instead if you want to keep an audit-visible record.`,
-    );
+  async function deleteMeaningUnitFromWorkspace(
+    unit: MeaningUnit,
+    confirmed = false,
+  ) {
     if (!confirmed) {
+      setMeaningUnitActionDraft({
+        excerpt: "",
+        kind: "delete",
+        note: "",
+        secondExcerpt: "",
+        summary: "",
+        unitId: unit.id,
+      });
+      setApiStatus(
+        `Confirm the visible action to permanently delete MU #${unit.number}, or use Exclude to retain an audit-visible record.`,
+      );
       return;
     }
 
@@ -4886,6 +4939,7 @@ export function GdiqrWorkspace({
       setApiStatus(
         `MU #${unit.number} deleted locally. Existing categories were cleared; rerun categories when ready.`,
       );
+      setMeaningUnitActionDraft(null);
       return;
     }
 
@@ -4914,6 +4968,7 @@ export function GdiqrWorkspace({
     setApiStatus(
       `MU #${unit.number} deleted. Existing categories were cleared; rerun categories when ready.`,
     );
+    setMeaningUnitActionDraft(null);
   }
 
   async function askGuidanceQuestion() {
@@ -5549,6 +5604,39 @@ export function GdiqrWorkspace({
     );
   }
 
+  async function submitMeaningUnitActionDraft() {
+    const draft = meaningUnitActionDraft;
+    if (!draft) {
+      return;
+    }
+    if (draft.kind === "manual") {
+      await addManualMeaningUnit(draft);
+      return;
+    }
+    if (draft.kind === "accept_all") {
+      await acceptAllReviewedMeaningUnits(true);
+      return;
+    }
+    const unit = currentMeaningUnits.find((item) => item.id === draft.unitId);
+    if (!unit) {
+      setApiStatus(
+        "That meaning unit is no longer available. Close this action and try again.",
+      );
+      return;
+    }
+    if (draft.kind === "split") {
+      await splitMeaningUnitFromCard(unit, draft);
+      return;
+    }
+    if (draft.kind === "merge" && draft.direction) {
+      await mergeMeaningUnitFromCard(unit, draft.direction, draft);
+      return;
+    }
+    if (draft.kind === "delete") {
+      await deleteMeaningUnitFromWorkspace(unit, true);
+    }
+  }
+
   return (
     <div className="app-shell workbook-shell">
       <header className="topbar">
@@ -5926,29 +6014,34 @@ export function GdiqrWorkspace({
                   <div className="preparation-checklist">
                     <StatusLine
                       label="Transcript available"
-                      status={
-                        editableTranscript.trim() ? "Passed" : "Not addressed"
-                      }
+                      status={hasTranscriptDraft ? "Passed" : "Not addressed"}
                     />
                     <StatusLine
                       label="Readable format"
                       status={
-                        transcriptImportText.trim() || editableTranscript.trim()
-                          ? "Passed"
-                          : "Not addressed"
+                        hasTranscriptDraft ? "Passed" : "Not addressed"
                       }
                     />
                     <StatusLine
-                      label="Anonymisation completed"
+                      label="Anonymisation reviewed"
                       status={
+                        transcriptReadyForAnalysis &&
                         unresolvedHighRiskCount === 0
                           ? "Passed"
-                          : "Needs review"
+                          : hasTranscriptDraft
+                            ? "Needs review"
+                            : "Not addressed"
                       }
                     />
                     <StatusLine
                       label="Ready for analysis"
-                      status={transcriptConfirmed ? "Passed" : "Needs review"}
+                      status={
+                        transcriptReadyForAnalysis
+                          ? "Passed"
+                          : hasTranscriptDraft
+                            ? "Needs review"
+                            : "Not addressed"
+                      }
                     />
                   </div>
                 </div>
@@ -6946,6 +7039,165 @@ export function GdiqrWorkspace({
                         Add manual meaning unit
                       </button>
                     </div>
+                    <div
+                      aria-live="polite"
+                      className="mini-card soft"
+                      role="status"
+                    >
+                      <span className="label">Latest meaning-unit action</span>
+                      <p className="small">{apiStatus}</p>
+                    </div>
+                    {meaningUnitActionDraft && (
+                      <form
+                        aria-label="Meaning-unit action"
+                        className="mini-card review-required"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void submitMeaningUnitActionDraft();
+                        }}
+                        role="dialog"
+                      >
+                        <span className="label">Researcher action</span>
+                        <h4>
+                          {meaningUnitActionDraft.kind === "manual"
+                            ? "Add a manual meaning unit"
+                            : meaningUnitActionDraft.kind === "split"
+                              ? "Split this meaning unit"
+                              : meaningUnitActionDraft.kind === "merge"
+                                ? "Merge adjacent meaning units"
+                                : meaningUnitActionDraft.kind === "delete"
+                                  ? "Delete this meaning unit?"
+                                  : "Accept all reviewed meaning units?"}
+                        </h4>
+                        {meaningUnitActionDraft.kind === "delete" ? (
+                          <p className="small">
+                            This permanently removes the MU and clears derived
+                            category outputs. Use Exclude instead if you want to
+                            retain an audit-visible record.
+                          </p>
+                        ) : meaningUnitActionDraft.kind === "accept_all" ? (
+                          <p className="small">
+                            This records every visible, complete, non-excluded
+                            participant MU as researcher accepted.
+                          </p>
+                        ) : (
+                          <>
+                            <label className="label">
+                              {meaningUnitActionDraft.kind === "split"
+                                ? "First meaning"
+                                : meaningUnitActionDraft.kind === "merge"
+                                  ? "Combined participant excerpt"
+                                  : "Participant excerpt"}
+                              <textarea
+                                autoFocus
+                                className="field"
+                                onChange={(event) =>
+                                  setMeaningUnitActionDraft((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          excerpt: event.target.value,
+                                        }
+                                      : current,
+                                  )
+                                }
+                                required
+                                value={meaningUnitActionDraft.excerpt}
+                              />
+                            </label>
+                            {meaningUnitActionDraft.kind === "split" && (
+                              <label className="label">
+                                Second meaning
+                                <textarea
+                                  className="field"
+                                  onChange={(event) =>
+                                    setMeaningUnitActionDraft((current) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            secondExcerpt: event.target.value,
+                                          }
+                                        : current,
+                                    )
+                                  }
+                                  required
+                                  value={
+                                    meaningUnitActionDraft.secondExcerpt
+                                  }
+                                />
+                              </label>
+                            )}
+                            {meaningUnitActionDraft.kind !== "split" && (
+                              <label className="label">
+                                Researcher summary (optional)
+                                <textarea
+                                  className="field"
+                                  onChange={(event) =>
+                                    setMeaningUnitActionDraft((current) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            summary: event.target.value,
+                                          }
+                                        : current,
+                                    )
+                                  }
+                                  value={meaningUnitActionDraft.summary}
+                                />
+                              </label>
+                            )}
+                            <label className="label">
+                              Audit note (optional)
+                              <textarea
+                                className="field"
+                                onChange={(event) =>
+                                  setMeaningUnitActionDraft((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          note: event.target.value,
+                                        }
+                                      : current,
+                                  )
+                                }
+                                value={meaningUnitActionDraft.note}
+                              />
+                            </label>
+                          </>
+                        )}
+                        <div className="button-row">
+                          <button
+                            className={
+                              meaningUnitActionDraft.kind === "delete"
+                                ? "button danger"
+                                : "button primary"
+                            }
+                            disabled={isSavingMeaningUnitAction}
+                            type="submit"
+                          >
+                            {meaningUnitActionDraft.kind === "manual"
+                              ? "Add meaning unit"
+                              : meaningUnitActionDraft.kind === "split"
+                                ? "Split meaning unit"
+                                : meaningUnitActionDraft.kind === "merge"
+                                  ? "Merge meaning units"
+                                  : meaningUnitActionDraft.kind === "delete"
+                                    ? "Delete meaning unit"
+                                    : "Accept all"}
+                          </button>
+                          <button
+                            className="button"
+                            onClick={() => {
+                              setMeaningUnitActionDraft(null);
+                              setApiStatus("Meaning-unit action cancelled.");
+                            }}
+                            type="button"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    )}
                     <div className="summary-list">
                       {reviewableMeaningUnits.length === 0 ? (
                         <EmptyState text="No summaries yet. Delineate meaning units, then ask for optional assistant support or write summaries manually." />
