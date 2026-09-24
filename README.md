@@ -2,6 +2,8 @@
 
 This is an early MVP for exploring human-in-the-loop AI support for GDI-QR-informed qualitative analysis. It supports a researcher-led workflow for transcript preparation, segmentation, meaning unit generation, reviewer checking, category-level drafting, and export. AI outputs are draft material for researcher review, not final analysis.
 
+The isolated Autonomous Benchmark v1 foundation is documented in [BENCHMARK_V1_FOUNDATION.md](./BENCHMARK_V1_FOUNDATION.md), with the implemented three-pass MU phase in [BENCHMARK_V1_MEANING_UNITS.md](./BENCHMARK_V1_MEANING_UNITS.md). It is a separate research-evaluation path and does not replace the researcher-led workflow.
+
 For non-technical demo setup, see the local demo guide if it is available in your working copy.
 
 ## Current Prototype Scope
